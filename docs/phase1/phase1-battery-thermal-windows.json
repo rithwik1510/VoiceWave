@@ -1,0 +1,15 @@
+﻿{
+    "start_time":  "2026-02-11T15:38:00.8743954+05:30",
+    "end_time":  "2026-02-11T16:09:51.6236233+05:30",
+    "duration_minutes":  31.85,
+    "start_battery_percent":  100,
+    "end_battery_percent":  100,
+    "battery_drain_percent":  0,
+    "start_thermal_celsius":  {
+
+                              },
+    "end_thermal_celsius":  {
+
+                            },
+    "notes":  "Thermal sensors are hardware/driver dependent. Empty arrays indicate sensor unavailable."
+}

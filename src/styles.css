@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #15372f;
+  background-color: #f8fcfa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Manrope", "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+  background: #f2f4f3;
+}
+
+body,
+div,
+nav,
+button,
+span,
+h1,
+h2,
+h3,
+p,
+aside,
+main {
+  transition-property: color, background-color, border-color, transform, box-shadow, border-radius;
+  transition-duration: 400ms;
+  transition-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.glass-gradient {
+  background: radial-gradient(circle at 0% 0%, #1e1b4b 0%, #0f172a 50%, #000000 100%);
+}
+
+.vw-panel {
+  @apply rounded-3xl border border-[#e3ece8] bg-white p-6 shadow-[0_8px_30px_rgba(45,91,82,0.06)];
+}
+
+.vw-panel-soft {
+  background: linear-gradient(180deg, #f7fbf9 0%, #ffffff 100%);
+}
+
+.vw-kicker {
+  @apply text-[11px] font-semibold uppercase tracking-[0.16em] text-[#7d948d];
+}
+
+.vw-chip {
+  @apply inline-flex items-center rounded-full border border-[#d6e3df] bg-[#f5faf8] px-3 py-1 text-xs font-semibold text-[#2d5b52];
+}
+
+.vw-stat-card {
+  @apply rounded-2xl border border-[#e3ece8] bg-white px-4 py-3;
+}
+
+.vw-btn-primary {
+  @apply rounded-full bg-[#2D5B52] px-4 py-2 text-sm font-semibold text-white transition hover:scale-[1.01] hover:opacity-95 active:scale-[0.99];
+}
+
+.vw-btn-secondary {
+  @apply rounded-full border border-[#2D5B52] px-4 py-2 text-sm font-semibold text-[#2D5B52] transition hover:bg-[#edf5f2];
+}
+
+.vw-btn-danger {
+  @apply rounded-full border border-[#C45E5E] px-4 py-2 text-sm font-semibold text-[#C45E5E] transition hover:bg-[#fff4f4];
+}

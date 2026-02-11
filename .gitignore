@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Local app data
+.voicewave/

@@ -1,0 +1,30 @@
+[
+  {
+    "model_id": "tiny.en",
+    "runs": 20,
+    "p50_latency_ms": 323,
+    "p95_latency_ms": 325,
+    "average_rtf": 0.2908182
+  },
+  {
+    "model_id": "base.en",
+    "runs": 20,
+    "p50_latency_ms": 464,
+    "p95_latency_ms": 468,
+    "average_rtf": 0.42172727
+  },
+  {
+    "model_id": "small.en",
+    "runs": 20,
+    "p50_latency_ms": 620,
+    "p95_latency_ms": 623,
+    "average_rtf": 0.5624091
+  },
+  {
+    "model_id": "medium.en",
+    "runs": 20,
+    "p50_latency_ms": 777,
+    "p95_latency_ms": 786,
+    "average_rtf": 0.708
+  }
+]

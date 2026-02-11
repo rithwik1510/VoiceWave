@@ -1,0 +1,320 @@
+import type { Event } from "@tauri-apps/api/event";
+import type {
+  AudioQualityReport,
+  BenchmarkRequest,
+  BenchmarkRun,
+  DiagnosticsExportResult,
+  DiagnosticsStatus,
+  DictionaryQueueItem,
+  DictionaryTerm,
+  DictationMode,
+  HotkeyAction,
+  HotkeyConfig,
+  HotkeyEvent,
+  HotkeyPhase,
+  HotkeySnapshot,
+  InstalledModel,
+  InsertResult,
+  InsertTextRequest,
+  LatencyBreakdownEvent,
+  ModelCatalogItem,
+  ModelDownloadRequest,
+  ModelEvent,
+  ModelRecommendation,
+  ModelStatus,
+  MicLevelEvent,
+  PermissionSnapshot,
+  RecentInsertion,
+  RecommendationConstraints,
+  RetentionPolicy,
+  SessionHistoryQuery,
+  SessionHistoryRecord,
+  TranscriptEvent,
+  UndoResult,
+  VoiceWaveSettings,
+  VoiceWaveSnapshot,
+  VoiceWaveStateEvent
+} from "../types/voicewave";
+
+const isTauriRuntime = () =>
+  typeof window !== "undefined" &&
+  ("__TAURI_INTERNALS__" in window || "__TAURI__" in window || "__TAURI_METADATA__" in window);
+
+type UnlistenFn = () => void;
+
+export async function invokeVoicewave<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauriRuntime()) {
+    throw new Error("Tauri runtime is not available.");
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(command, args);
+}
+
+export async function listenVoicewaveState(
+  callback: (payload: VoiceWaveStateEvent) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://state", (event: Event<VoiceWaveStateEvent>) => callback(event.payload));
+}
+
+export async function listenVoicewaveTranscript(
+  callback: (payload: TranscriptEvent) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://transcript", (event: Event<TranscriptEvent>) => callback(event.payload));
+}
+
+export async function listenVoicewaveInsertion(
+  callback: (payload: InsertResult) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://insertion", (event: Event<InsertResult>) => callback(event.payload));
+}
+
+export async function listenVoicewavePermission(
+  callback: (payload: PermissionSnapshot) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://permission", (event: Event<PermissionSnapshot>) => callback(event.payload));
+}
+
+export async function listenVoicewaveHotkey(
+  callback: (payload: HotkeyEvent) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://hotkey", (event: Event<HotkeyEvent>) => callback(event.payload));
+}
+
+export async function listenVoicewaveModel(
+  callback: (payload: ModelEvent) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://model", (event: Event<ModelEvent>) => callback(event.payload));
+}
+
+export async function listenVoicewaveMicLevel(
+  callback: (payload: MicLevelEvent) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://mic-level", (event: Event<MicLevelEvent>) => callback(event.payload));
+}
+
+export async function listenVoicewaveAudioQuality(
+  callback: (payload: AudioQualityReport) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://audio-quality", (event: Event<AudioQualityReport>) => callback(event.payload));
+}
+
+export async function listenVoicewaveLatency(
+  callback: (payload: LatencyBreakdownEvent) => void
+): Promise<UnlistenFn> {
+  if (!isTauriRuntime()) {
+    return () => undefined;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("voicewave://latency", (event: Event<LatencyBreakdownEvent>) => callback(event.payload));
+}
+
+export function canUseTauri(): boolean {
+  return isTauriRuntime();
+}
+
+export async function loadSnapshot(): Promise<VoiceWaveSnapshot> {
+  return invokeVoicewave<VoiceWaveSnapshot>("get_voicewave_snapshot");
+}
+
+export async function loadSettings(): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("load_settings");
+}
+
+export async function updateSettings(settings: VoiceWaveSettings): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("update_settings", { settings });
+}
+
+export async function getDiagnosticsStatus(): Promise<DiagnosticsStatus> {
+  return invokeVoicewave<DiagnosticsStatus>("get_diagnostics_status");
+}
+
+export async function setDiagnosticsOptIn(enabled: boolean): Promise<DiagnosticsStatus> {
+  return invokeVoicewave<DiagnosticsStatus>("set_diagnostics_opt_in", { enabled });
+}
+
+export async function exportDiagnosticsBundle(): Promise<DiagnosticsExportResult> {
+  return invokeVoicewave<DiagnosticsExportResult>("export_diagnostics_bundle");
+}
+
+export async function loadHotkeyConfig(): Promise<HotkeySnapshot> {
+  return invokeVoicewave<HotkeySnapshot>("load_hotkey_config");
+}
+
+export async function updateHotkeyConfig(config: HotkeyConfig): Promise<HotkeySnapshot> {
+  return invokeVoicewave<HotkeySnapshot>("update_hotkey_config", { config });
+}
+
+export async function getPermissionSnapshot(): Promise<PermissionSnapshot> {
+  return invokeVoicewave<PermissionSnapshot>("get_permission_snapshot");
+}
+
+export async function listInputDevices(): Promise<string[]> {
+  return invokeVoicewave<string[]>("list_input_devices");
+}
+
+export async function requestMicrophoneAccess(): Promise<PermissionSnapshot> {
+  return invokeVoicewave<PermissionSnapshot>("request_microphone_access");
+}
+
+export async function startMicLevelMonitor(): Promise<void> {
+  await invokeVoicewave<void>("start_mic_level_monitor");
+}
+
+export async function stopMicLevelMonitor(): Promise<void> {
+  await invokeVoicewave<void>("stop_mic_level_monitor");
+}
+
+export async function runAudioQualityDiagnostic(durationMs?: number): Promise<AudioQualityReport> {
+  return invokeVoicewave<AudioQualityReport>("run_audio_quality_diagnostic", {
+    durationMs: durationMs ?? null
+  });
+}
+
+export async function insertText(payload: InsertTextRequest): Promise<InsertResult> {
+  return invokeVoicewave<InsertResult>("insert_text", { payload });
+}
+
+export async function undoLastInsertion(): Promise<UndoResult> {
+  return invokeVoicewave<UndoResult>("undo_last_insertion");
+}
+
+export async function getRecentInsertions(limit = 10): Promise<RecentInsertion[]> {
+  return invokeVoicewave<RecentInsertion[]>("get_recent_insertions", { limit });
+}
+
+export async function startDictation(mode: DictationMode = "microphone"): Promise<void> {
+  await invokeVoicewave<void>("start_dictation", { mode });
+}
+
+export async function cancelDictation(): Promise<void> {
+  await invokeVoicewave<void>("cancel_dictation");
+}
+
+export async function stopDictation(): Promise<void> {
+  await invokeVoicewave<void>("stop_dictation");
+}
+
+export async function triggerHotkeyAction(action: HotkeyAction, phase: HotkeyPhase): Promise<void> {
+  await invokeVoicewave<void>("trigger_hotkey_action", { action, phase });
+}
+
+export async function listModelCatalog(): Promise<ModelCatalogItem[]> {
+  return invokeVoicewave<ModelCatalogItem[]>("list_model_catalog");
+}
+
+export async function listInstalledModels(): Promise<InstalledModel[]> {
+  return invokeVoicewave<InstalledModel[]>("list_installed_models");
+}
+
+export async function getModelStatus(modelId: string): Promise<ModelStatus> {
+  return invokeVoicewave<ModelStatus>("get_model_status", { modelId });
+}
+
+export async function downloadModel(request: ModelDownloadRequest): Promise<ModelStatus> {
+  return invokeVoicewave<ModelStatus>("download_model", { request });
+}
+
+export async function cancelModelDownload(modelId: string): Promise<ModelStatus> {
+  return invokeVoicewave<ModelStatus>("cancel_model_download", { modelId });
+}
+
+export async function pauseModelDownload(modelId: string): Promise<ModelStatus> {
+  return invokeVoicewave<ModelStatus>("pause_model_download", { modelId });
+}
+
+export async function resumeModelDownload(modelId: string): Promise<ModelStatus> {
+  return invokeVoicewave<ModelStatus>("resume_model_download", { modelId });
+}
+
+export async function setActiveModel(modelId: string): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("set_active_model", { modelId });
+}
+
+export async function runModelBenchmark(request?: BenchmarkRequest): Promise<BenchmarkRun> {
+  return invokeVoicewave<BenchmarkRun>("run_model_benchmark", { request: request ?? null });
+}
+
+export async function getBenchmarkResults(): Promise<BenchmarkRun | null> {
+  return invokeVoicewave<BenchmarkRun | null>("get_benchmark_results");
+}
+
+export async function recommendModel(
+  constraints?: RecommendationConstraints
+): Promise<ModelRecommendation> {
+  return invokeVoicewave<ModelRecommendation>("recommend_model", { constraints: constraints ?? null });
+}
+
+export async function getSessionHistory(query?: SessionHistoryQuery): Promise<SessionHistoryRecord[]> {
+  return invokeVoicewave<SessionHistoryRecord[]>("get_session_history", { query: query ?? null });
+}
+
+export async function setHistoryRetention(policy: RetentionPolicy): Promise<RetentionPolicy> {
+  return invokeVoicewave<RetentionPolicy>("set_history_retention", { policy });
+}
+
+export async function pruneHistoryNow(): Promise<number> {
+  return invokeVoicewave<number>("prune_history_now");
+}
+
+export async function clearHistory(): Promise<number> {
+  return invokeVoicewave<number>("clear_history");
+}
+
+export async function getDictionaryQueue(limit = 50): Promise<DictionaryQueueItem[]> {
+  return invokeVoicewave<DictionaryQueueItem[]>("get_dictionary_queue", { limit });
+}
+
+export async function approveDictionaryEntry(
+  entryId: string,
+  normalizedText?: string
+): Promise<DictionaryTerm> {
+  return invokeVoicewave<DictionaryTerm>("approve_dictionary_entry", {
+    entryId,
+    normalizedText: normalizedText ?? null
+  });
+}
+
+export async function rejectDictionaryEntry(entryId: string, reason?: string): Promise<void> {
+  await invokeVoicewave<void>("reject_dictionary_entry", { entryId, reason: reason ?? null });
+}
+
+export async function getDictionaryTerms(query?: string): Promise<DictionaryTerm[]> {
+  return invokeVoicewave<DictionaryTerm[]>("get_dictionary_terms", { query: query ?? null });
+}
+
+export async function removeDictionaryTerm(termId: string): Promise<void> {
+  await invokeVoicewave<void>("remove_dictionary_term", { termId });
+}

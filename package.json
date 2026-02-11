@@ -1,0 +1,50 @@
+{
+  "name": "voicewave-phase1",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "phase1:validate": "powershell -ExecutionPolicy Bypass -File ./scripts/phase1/run-phase1-validation.ps1",
+    "phase1:battery": "powershell -ExecutionPolicy Bypass -File ./scripts/phase1/run-battery-thermal.ps1",
+    "phase2:validate": "powershell -ExecutionPolicy Bypass -File ./scripts/phase2/run-phase2-validation.ps1",
+    "phase3:validate": "powershell -ExecutionPolicy Bypass -File ./scripts/phase3/run-phase3-validation.ps1",
+    "phase4:prep": "powershell -ExecutionPolicy Bypass -File ./scripts/phase4/run-phase4-readiness.ps1",
+    "phase4:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/phase4/run-phase4-readiness.ps1 -Enforce",
+    "phase5:prep": "powershell -ExecutionPolicy Bypass -File ./scripts/phase5/run-phase5-readiness.ps1",
+    "phase5:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/phase5/run-phase5-readiness.ps1 -Enforce",
+    "phase5:reliability": "powershell -ExecutionPolicy Bypass -File ./scripts/phase5/run-phase5-reliability.ps1",
+    "phase5:reliability:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/phase5/run-phase5-reliability.ps1 -Enforce",
+    "phaseA:cpu": "powershell -ExecutionPolicy Bypass -File ./scripts/phaseA/run-phaseA-cpu-latency.ps1",
+    "phaseA:cpu:generate": "powershell -ExecutionPolicy Bypass -File ./scripts/phaseA/run-phaseA-cpu-latency.ps1 -Generate",
+    "phaseA:cpu:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/phaseA/run-phaseA-cpu-latency.ps1 -Enforce",
+    "tauri:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/tauri/run-tauri-dev-windows.ps1",
+    "tauri:build": "powershell -ExecutionPolicy Bypass -File ./scripts/tauri/run-tauri-build-windows.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.0",
+    "lucide-react": "^0.563.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^25.2.2",
+    "@types/react": "^18.3.20",
+    "@types/react-dom": "^18.3.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "autoprefixer": "^10.4.21",
+    "jsdom": "^26.0.0",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.9"
+  }
+}

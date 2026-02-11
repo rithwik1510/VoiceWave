@@ -1,0 +1,42 @@
+{
+  "generatedAtUtc": "epoch-ms-1770814623607",
+  "source": "phaseA runtime sweep (real whisper runtime, fixture audio)",
+  "runsPerModel": 10,
+  "releaseToTranscribingP95Ms": 244,
+  "cacheHitRatio": 1.0,
+  "decodeFailureRate": 0.0,
+  "emptyDecodeRate": 0.0,
+  "longUtteranceTailLossCount": 0,
+  "smallEn": {
+    "p50ReleaseToFinalMs": 3700,
+    "p95ReleaseToFinalMs": 3944
+  },
+  "models": [
+    {
+      "modelId": "tiny.en",
+      "p50ReleaseToFinalMs": 562,
+      "p95ReleaseToFinalMs": 591,
+      "p50ModelInitMs": 0,
+      "p95ModelInitMs": 0,
+      "p50DecodeComputeMs": 544,
+      "p95DecodeComputeMs": 576,
+      "cacheHitRatio": 1.0,
+      "decodeFailureRate": 0.0,
+      "emptyDecodeRate": 0.0,
+      "runs": 10
+    },
+    {
+      "modelId": "small.en",
+      "p50ReleaseToFinalMs": 3700,
+      "p95ReleaseToFinalMs": 3944,
+      "p50ModelInitMs": 0,
+      "p95ModelInitMs": 0,
+      "p50DecodeComputeMs": 3666,
+      "p95DecodeComputeMs": 3907,
+      "cacheHitRatio": 1.0,
+      "decodeFailureRate": 0.0,
+      "emptyDecodeRate": 0.0,
+      "runs": 10
+    }
+  ]
+}

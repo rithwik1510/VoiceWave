@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  docs_format_check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Prettier
+        run: npm install --global prettier
+
+      - name: Check formatting
+        run: prettier --check "**/*.{md,yml,yaml,json}"
+
+  markdown_lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install markdownlint-cli2
+        run: npm install --global markdownlint-cli2
+
+      - name: Markdown lint
+        run: markdownlint-cli2 "**/*.md" "#node_modules" "#dist" "#Idea.md"
+
+  secrets_scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  phase0_artifact_check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify Phase 0 artifacts
+        shell: pwsh
+        run: ./scripts/ci/check-phase0-artifacts.ps1
+
+  frontend_quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run unit tests
+        run: npm run test
+
+      - name: Run frontend build
+        run: npm run build
+
+  rust_quality:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo test (core without desktop feature)
+        run: cargo test --no-default-features --manifest-path src-tauri/Cargo.toml
+
+      - name: Cargo desktop-feature compile check
+        run: cargo test --manifest-path src-tauri/Cargo.toml --no-run

@@ -1,0 +1,62 @@
+{
+  "captured_at_utc": "2026-02-10T17:30:00Z",
+  "platform_scope": "windows-only",
+  "criteria_reference": "docs/testing/hardware-tiers.md",
+  "input_artifacts": {
+    "latency_baseline": "docs/phase1/phase1-latency-baseline.json",
+    "stability_baseline": "docs/phase1/phase1-sustained-30m.json",
+    "battery_baseline": "docs/phase1/phase1-battery-thermal-windows.json"
+  },
+  "tier_m_gates": {
+    "max_p95_latency_ms": 900,
+    "max_rtf": 0.7,
+    "battery_drain_percent_over_30m_max": 12
+  },
+  "selection_policy": "Select highest-capability model that satisfies Tier M latency and RTF gates.",
+  "model_evaluation": [
+    {
+      "model_id": "tiny.en",
+      "p95_latency_ms": 325,
+      "average_rtf": 0.2908182,
+      "meets_latency_gate": true,
+      "meets_rtf_gate": true
+    },
+    {
+      "model_id": "base.en",
+      "p95_latency_ms": 468,
+      "average_rtf": 0.42172727,
+      "meets_latency_gate": true,
+      "meets_rtf_gate": true
+    },
+    {
+      "model_id": "small.en",
+      "p95_latency_ms": 623,
+      "average_rtf": 0.5624091,
+      "meets_latency_gate": true,
+      "meets_rtf_gate": true
+    },
+    {
+      "model_id": "medium.en",
+      "p95_latency_ms": 786,
+      "average_rtf": 0.708,
+      "meets_latency_gate": true,
+      "meets_rtf_gate": false
+    }
+  ],
+  "recommendation": {
+    "tier": "Tier M",
+    "recommended_model": "small.en",
+    "reason": "small.en is the highest-capability model that still satisfies Tier M p95 latency and RTF gates."
+  },
+  "battery_gate_status": {
+    "meets_gate": false,
+    "observed_duration_minutes": 1.01,
+    "observed_battery_drain_percent": 0,
+    "note": "Tier M battery gate needs at least 30.0 minutes capture duration for signoff."
+  },
+  "stability_snapshot": {
+    "sessions": 773,
+    "failed_sessions": 0,
+    "crash_free_rate": 1.0
+  }
+}

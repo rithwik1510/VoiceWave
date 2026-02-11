@@ -1,0 +1,6 @@
+{
+  "sessions": 200,
+  "failed_sessions": 0,
+  "crash_free_rate": 1.0,
+  "p95_latency_ms": 77
+}
