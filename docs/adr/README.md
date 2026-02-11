@@ -30,3 +30,4 @@ Use the Nygard ADR style in `docs/adr/template.md`.
 
 1. `0001-phase-0-locked-decisions.md`
 2. `0002-whispercpp-first-execution-reset.md`
+3. `0003-phase-b-runtime-backend-auto.md`

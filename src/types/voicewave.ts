@@ -51,6 +51,14 @@ export interface LatencyBreakdownEvent {
   audioConditionMs: number;
   decodeComputeMs: number;
   runtimeCacheHit: boolean;
+  backendRequested: string;
+  backendUsed: string;
+  backendFallback: boolean;
+  holdToFirstDraftMs: number;
+  incrementalDecodeMs: number;
+  releaseFinalizeMs: number;
+  incrementalWindowsDecoded: number;
+  finalizeTailAudioMs: number;
   decodeMs: number;
   postMs: number;
   insertMs: number;
@@ -228,6 +236,11 @@ export interface BenchmarkRow {
   p50LatencyMs: number;
   p95LatencyMs: number;
   averageRtf: number;
+  observedSampleCount?: number;
+  observedSuccessRatePercent?: number;
+  observedP95ReleaseToFinalMs?: number;
+  observedP95ReleaseToTranscribingMs?: number;
+  observedWatchdogRecoveryRatePercent?: number;
 }
 
 export interface BenchmarkRun {
@@ -248,6 +261,8 @@ export interface ModelRecommendation {
   averageRtf: number;
   meetsLatencyGate: boolean;
   meetsRtfGate: boolean;
+  observedSampleCount?: number;
+  observedSuccessRatePercent?: number;
 }
 
 export type RetentionPolicy = "off" | "days7" | "days30" | "forever";

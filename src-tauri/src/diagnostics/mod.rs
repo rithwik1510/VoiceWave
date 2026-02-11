@@ -28,7 +28,26 @@ pub struct LatencyMetricRecord {
     pub audio_condition_ms: u64,
     pub decode_compute_ms: u64,
     pub runtime_cache_hit: bool,
+    pub backend_requested: String,
+    pub backend_used: String,
+    pub backend_fallback: bool,
+    pub hold_to_first_draft_ms: u64,
+    pub incremental_decode_ms: u64,
+    pub release_finalize_ms: u64,
+    pub incremental_windows_decoded: u32,
+    pub finalize_tail_audio_ms: u64,
     pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelReliabilitySummary {
+    pub model_id: String,
+    pub sample_count: usize,
+    pub success_rate_percent: f32,
+    pub watchdog_recovery_rate_percent: f32,
+    pub p95_release_to_final_ms: u64,
+    pub p95_release_to_transcribing_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +168,56 @@ impl DiagnosticsManager {
             last_exported_at_utc_ms: self.store.last_exported_at_utc_ms,
             watchdog_recovery_count,
         }
+    }
+
+    pub fn summarize_model_reliability(
+        &self,
+        model_id: &str,
+        max_records: usize,
+    ) -> Option<ModelReliabilitySummary> {
+        let keep = max_records.max(1);
+        let mut rows = self
+            .store
+            .records
+            .iter()
+            .filter(|row| row.model_id == model_id)
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return None;
+        }
+        rows.sort_by_key(|row| row.timestamp_utc_ms);
+        if rows.len() > keep {
+            rows = rows[rows.len() - keep..].to_vec();
+        }
+
+        let sample_count = rows.len();
+        let success_count = rows.iter().filter(|row| row.success).count();
+        let watchdog_count = rows.iter().filter(|row| row.watchdog_recovered).count();
+        let success_rate_percent = (success_count as f32 / sample_count as f32) * 100.0;
+        let watchdog_recovery_rate_percent = (watchdog_count as f32 / sample_count as f32) * 100.0;
+        let mut release_to_final_values = rows
+            .iter()
+            .map(|row| {
+                row.release_to_transcribing_ms
+                    .saturating_add(row.decode_ms)
+                    .saturating_add(row.post_ms)
+            })
+            .collect::<Vec<_>>();
+        release_to_final_values.sort_unstable();
+        let mut release_to_transcribing_values = rows
+            .iter()
+            .map(|row| row.release_to_transcribing_ms)
+            .collect::<Vec<_>>();
+        release_to_transcribing_values.sort_unstable();
+
+        Some(ModelReliabilitySummary {
+            model_id: model_id.to_string(),
+            sample_count,
+            success_rate_percent,
+            watchdog_recovery_rate_percent,
+            p95_release_to_final_ms: percentile_u64(&release_to_final_values, 0.95),
+            p95_release_to_transcribing_ms: percentile_u64(&release_to_transcribing_values, 0.95),
+        })
     }
 
     pub fn export_bundle(
@@ -309,6 +378,14 @@ mod tests {
                 audio_condition_ms: 7,
                 decode_compute_ms: 24,
                 runtime_cache_hit: false,
+                backend_requested: "cpu".to_string(),
+                backend_used: "cpu".to_string(),
+                backend_fallback: false,
+                hold_to_first_draft_ms: 0,
+                incremental_decode_ms: 0,
+                release_finalize_ms: 30,
+                incremental_windows_decoded: 0,
+                finalize_tail_audio_ms: 400,
                 success: true,
             },
             LatencyMetricRecord {
@@ -330,6 +407,14 @@ mod tests {
                 audio_condition_ms: 5,
                 decode_compute_ms: 38,
                 runtime_cache_hit: true,
+                backend_requested: "cuda".to_string(),
+                backend_used: "cuda".to_string(),
+                backend_fallback: false,
+                hold_to_first_draft_ms: 850,
+                incremental_decode_ms: 1100,
+                release_finalize_ms: 900,
+                incremental_windows_decoded: 2,
+                finalize_tail_audio_ms: 620,
                 success: true,
             },
         ];
@@ -352,5 +437,81 @@ mod tests {
             .export_bundle(false, "0.1.0", &VoiceWaveSettings::default(), 0)
             .expect_err("export should require opt in");
         assert!(matches!(err, DiagnosticsError::OptInRequired));
+    }
+
+    #[test]
+    fn model_reliability_summary_uses_recent_window() {
+        let mut manager = DiagnosticsManager {
+            store_path: std::env::temp_dir().join("voicewave-diagnostics-summary-test.json"),
+            export_dir: std::env::temp_dir().join("voicewave-diagnostics-summary-exports-test"),
+            store: DiagnosticsStore::default(),
+        };
+        manager.store.records = vec![
+            LatencyMetricRecord {
+                session_id: 1,
+                timestamp_utc_ms: 10,
+                capture_ms: 5,
+                release_to_transcribing_ms: 20,
+                decode_ms: 100,
+                post_ms: 10,
+                insert_ms: 4,
+                total_ms: 134,
+                audio_duration_ms: 800,
+                model_id: "small.en".to_string(),
+                decode_mode: DecodeMode::Balanced,
+                watchdog_recovered: false,
+                segments_captured: 3,
+                release_stop_detected_at_utc_ms: 10,
+                model_init_ms: 0,
+                audio_condition_ms: 0,
+                decode_compute_ms: 0,
+                runtime_cache_hit: true,
+                backend_requested: "cpu".to_string(),
+                backend_used: "cpu".to_string(),
+                backend_fallback: false,
+                hold_to_first_draft_ms: 0,
+                incremental_decode_ms: 0,
+                release_finalize_ms: 0,
+                incremental_windows_decoded: 0,
+                finalize_tail_audio_ms: 0,
+                success: false,
+            },
+            LatencyMetricRecord {
+                session_id: 2,
+                timestamp_utc_ms: 20,
+                capture_ms: 5,
+                release_to_transcribing_ms: 15,
+                decode_ms: 80,
+                post_ms: 10,
+                insert_ms: 4,
+                total_ms: 109,
+                audio_duration_ms: 700,
+                model_id: "small.en".to_string(),
+                decode_mode: DecodeMode::Balanced,
+                watchdog_recovered: false,
+                segments_captured: 3,
+                release_stop_detected_at_utc_ms: 20,
+                model_init_ms: 0,
+                audio_condition_ms: 0,
+                decode_compute_ms: 0,
+                runtime_cache_hit: true,
+                backend_requested: "cpu".to_string(),
+                backend_used: "cpu".to_string(),
+                backend_fallback: false,
+                hold_to_first_draft_ms: 0,
+                incremental_decode_ms: 0,
+                release_finalize_ms: 0,
+                incremental_windows_decoded: 0,
+                finalize_tail_audio_ms: 0,
+                success: true,
+            },
+        ];
+
+        let summary = manager
+            .summarize_model_reliability("small.en", 1)
+            .expect("summary should exist");
+        assert_eq!(summary.sample_count, 1);
+        assert_eq!(summary.success_rate_percent.round() as u32, 100);
+        assert_eq!(summary.p95_release_to_transcribing_ms, 15);
     }
 }

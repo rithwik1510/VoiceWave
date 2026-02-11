@@ -16,7 +16,8 @@ use crate::{
     },
     hotkey::{HotkeyAction, HotkeyConfig, HotkeyError, HotkeyManager, HotkeyPhase, HotkeySnapshot},
     inference::{
-        prewarm_runtime, cpu_runtime_pool_enabled, InferenceError, InferenceWorker,
+        cpu_runtime_pool_enabled, ensure_faster_whisper_ready, is_faster_whisper_model,
+        prefetch_faster_whisper_model, prewarm_runtime, InferenceError, InferenceWorker,
         RuntimeDecodePolicy,
     },
     insertion::{
@@ -30,22 +31,24 @@ use crate::{
     permissions::{MicrophonePermission, PermissionManager, PermissionSnapshot},
     phase1,
     settings::{DecodeMode, SettingsError, SettingsStore, VoiceWaveSettings},
-    transcript::sanitize_user_transcript,
+    transcript::{merge_incremental_transcript, sanitize_user_transcript},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     sync::mpsc::RecvTimeoutError,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +98,14 @@ struct LatencyBreakdownEvent {
     audio_condition_ms: u64,
     decode_compute_ms: u64,
     runtime_cache_hit: bool,
+    backend_requested: String,
+    backend_used: String,
+    backend_fallback: bool,
+    hold_to_first_draft_ms: u64,
+    incremental_decode_ms: u64,
+    release_finalize_ms: u64,
+    incremental_windows_decoded: u32,
+    finalize_tail_audio_ms: u64,
     decode_ms: u64,
     post_ms: u64,
     insert_ms: u64,
@@ -172,6 +183,41 @@ const MAX_RELEASE_TAIL_MS: u64 = 1_500;
 const RELEASE_WATCHDOG_MS: u64 = 300;
 const SHORT_UTTERANCE_MAX_MS: u64 = 8_000;
 const MEDIUM_UTTERANCE_MAX_MS: u64 = 16_000;
+const INCREMENTAL_DECODE_CADENCE_MS: u64 = 220;
+const INCREMENTAL_MIN_VOICED_MS: u64 = 400;
+const INCREMENTAL_WINDOW_MS: u64 = 1_400;
+const INCREMENTAL_WINDOW_OVERLAP_MS: u64 = 280;
+const FINALIZE_LOOKBACK_MS: u64 = 1_200;
+const TRANSCRIPT_OVERLAP_TOKENS: usize = 8;
+const BENCHMARK_RELIABILITY_WINDOW: usize = 40;
+
+#[derive(Debug, Clone)]
+struct IncrementalAudioChunk {
+    samples: Vec<f32>,
+    voiced: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DecodeWindow {
+    end_sample: usize,
+    samples: Vec<f32>,
+}
+
+#[derive(Debug)]
+struct DecodeJobResult {
+    window: DecodeWindow,
+    transcript: Option<String>,
+    elapsed_ms: u64,
+}
+
+#[derive(Debug, Default, Clone)]
+struct IncrementalPreviewResult {
+    committed_draft: String,
+    last_committed_sample: usize,
+    hold_to_first_draft_ms: u64,
+    incremental_decode_ms: u64,
+    incremental_windows_decoded: u32,
+}
 
 pub fn release_watchdog_threshold_ms() -> u64 {
     RELEASE_WATCHDOG_MS
@@ -179,6 +225,15 @@ pub fn release_watchdog_threshold_ms() -> u64 {
 
 pub fn release_watchdog_recovered(release_to_transcribing_ms: u64) -> bool {
     release_to_transcribing_ms > RELEASE_WATCHDOG_MS
+}
+
+fn incremental_pre_release_decode_enabled() -> bool {
+    std::env::var("VOICEWAVE_INCREMENTAL_PRE_RELEASE_DECODE_ENABLED")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !(normalized == "0" || normalized == "false" || normalized == "off")
+        })
+        .unwrap_or(true)
 }
 
 fn clamp_max_utterance_ms(value: u64) -> u64 {
@@ -288,7 +343,7 @@ impl VoiceWaveController {
         let model_manager = crate::model_manager::ModelManager::new()?;
         let dictionary_manager = DictionaryManager::new()?;
         let diagnostics_manager = DiagnosticsManager::new()?;
-        if cpu_runtime_pool_enabled() {
+        if cpu_runtime_pool_enabled() && !is_faster_whisper_model(&settings.active_model) {
             if let Some(installed_model) = model_manager.get_installed(&settings.active_model) {
                 prewarm_runtime(
                     settings.active_model.clone(),
@@ -361,7 +416,7 @@ impl VoiceWaveController {
             push_to_talk: settings.push_to_talk_hotkey.clone(),
         })?;
 
-        if cpu_runtime_pool_enabled() {
+        if cpu_runtime_pool_enabled() && !is_faster_whisper_model(&settings.active_model) {
             let model_path = {
                 let manager = self.model_manager.lock().await;
                 manager
@@ -964,6 +1019,83 @@ impl VoiceWaveController {
     ) -> Result<ModelStatus, ControllerError> {
         let model_id = request.model_id.clone();
         let active_model = self.settings.lock().await.active_model.clone();
+        if is_faster_whisper_model(&model_id) {
+            let preparing = ModelStatus {
+                model_id: model_id.clone(),
+                state: ModelStatusState::Downloading,
+                progress: 15,
+                active: active_model == model_id,
+                installed: false,
+                message: Some(
+                    "Preparing Faster-Whisper runtime (Python + CTranslate2)...".to_string(),
+                ),
+                installed_model: None,
+                downloaded_bytes: Some(0),
+                total_bytes: Some(100),
+                resumable: false,
+            };
+            self.model_statuses
+                .lock()
+                .await
+                .insert(model_id.clone(), preparing.clone());
+            self.emit_model_status(&app, &preparing);
+
+            ensure_faster_whisper_ready().await.map_err(|err| {
+                ControllerError::Runtime(format!(
+                    "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1 first."
+                ))
+            })?;
+            let prefetching = ModelStatus {
+                model_id: model_id.clone(),
+                state: ModelStatusState::Downloading,
+                progress: 65,
+                active: active_model == model_id,
+                installed: false,
+                message: Some("Downloading Faster-Whisper model weights to local cache...".to_string()),
+                installed_model: None,
+                downloaded_bytes: Some(0),
+                total_bytes: Some(100),
+                resumable: false,
+            };
+            self.model_statuses
+                .lock()
+                .await
+                .insert(model_id.clone(), prefetching.clone());
+            self.emit_model_status(&app, &prefetching);
+            let prefetch = prefetch_faster_whisper_model(&model_id).await.map_err(|err| {
+                ControllerError::Runtime(format!(
+                    "Faster-Whisper model prefetch failed: {err}. Check internet access and retry."
+                ))
+            })?;
+            let installed = {
+                let mut manager = self.model_manager.lock().await;
+                manager.install_faster_whisper_model(&model_id, &prefetch.cache_hint_path)?
+            };
+            let final_status = ModelStatus {
+                model_id: model_id.clone(),
+                state: ModelStatusState::Installed,
+                progress: 100,
+                active: active_model == model_id,
+                installed: true,
+                message: Some(
+                    format!(
+                        "Faster-Whisper model ready (cache hit: {}, init {} ms).",
+                        prefetch.runtime_cache_hit, prefetch.model_init_ms
+                    )
+                        .to_string(),
+                ),
+                installed_model: Some(installed),
+                downloaded_bytes: Some(100),
+                total_bytes: Some(100),
+                resumable: false,
+            };
+            self.model_statuses
+                .lock()
+                .await
+                .insert(model_id.clone(), final_status.clone());
+            self.emit_model_status(&app, &final_status);
+            return Ok(final_status);
+        }
         let app_for_emit = app.clone();
 
         let cancel_token = CancellationToken::new();
@@ -1049,6 +1181,21 @@ impl VoiceWaveController {
         app: AppHandle,
         model_id: String,
     ) -> Result<ModelStatus, ControllerError> {
+        if is_faster_whisper_model(&model_id) {
+            let active_model = self.settings.lock().await.active_model.clone();
+            let status = self
+                .model_manager
+                .lock()
+                .await
+                .get_download_status(&model_id, Some(active_model.as_str()))
+                .ok_or(ControllerError::MissingModel(model_id.clone()))?;
+            self.model_statuses
+                .lock()
+                .await
+                .insert(model_id, status.clone());
+            self.emit_model_status(&app, &status);
+            return Ok(status);
+        }
         if let Some(token) = self
             .model_download_cancels
             .lock()
@@ -1102,6 +1249,21 @@ impl VoiceWaveController {
         app: AppHandle,
         model_id: String,
     ) -> Result<ModelStatus, ControllerError> {
+        if is_faster_whisper_model(&model_id) {
+            let active_model = self.settings.lock().await.active_model.clone();
+            let status = self
+                .model_manager
+                .lock()
+                .await
+                .get_download_status(&model_id, Some(active_model.as_str()))
+                .ok_or(ControllerError::MissingModel(model_id.clone()))?;
+            self.model_statuses
+                .lock()
+                .await
+                .insert(model_id, status.clone());
+            self.emit_model_status(&app, &status);
+            return Ok(status);
+        }
         if let Some(pause_flag) = self
             .model_download_pauses
             .lock()
@@ -1146,6 +1308,9 @@ impl VoiceWaveController {
         app: AppHandle,
         model_id: String,
     ) -> Result<ModelStatus, ControllerError> {
+        if is_faster_whisper_model(&model_id) {
+            return self.download_model(app, ModelDownloadRequest { model_id }).await;
+        }
         if let Some(pause_flag) = self
             .model_download_pauses
             .lock()
@@ -1180,7 +1345,7 @@ impl VoiceWaveController {
         let state = self.snapshot.lock().await.state.clone();
         self.emit_state(&app, state, Some("Active model updated.".to_string()));
 
-        if cpu_runtime_pool_enabled() {
+        if cpu_runtime_pool_enabled() && !is_faster_whisper_model(&model_id) {
             let model_path = {
                 let manager = self.model_manager.lock().await;
                 manager.get_installed(&model_id).map(|row| row.file_path.clone())
@@ -1198,27 +1363,62 @@ impl VoiceWaveController {
         _app: AppHandle,
         request: BenchmarkRequest,
     ) -> Result<BenchmarkRun, ControllerError> {
-        let model_ids = if let Some(ids) = request.model_ids.clone() {
-            ids
-        } else {
-            self.model_manager
-                .lock()
-                .await
-                .list_catalog()
-                .into_iter()
-                .map(|item| item.model_id)
-                .collect::<Vec<_>>()
-        };
+        let installed_model_ids = self
+            .model_manager
+            .lock()
+            .await
+            .list_installed()
+            .into_iter()
+            .map(|item| item.model_id)
+            .collect::<Vec<_>>();
+        let installed_lookup = installed_model_ids.iter().cloned().collect::<HashSet<_>>();
+
+        let requested_model_ids = request
+            .model_ids
+            .clone()
+            .unwrap_or_else(|| installed_model_ids.clone());
+        let mut seen = HashSet::new();
+        let model_ids = requested_model_ids
+            .into_iter()
+            .filter(|model_id| seen.insert(model_id.clone()))
+            .collect::<Vec<_>>();
 
         if model_ids.is_empty() {
             return Err(ControllerError::Runtime(
-                "Benchmark cannot run without model IDs.".to_string(),
+                "Benchmark requires at least one installed model.".to_string(),
             ));
+        }
+        let missing_models = model_ids
+            .iter()
+            .filter(|model_id| !installed_lookup.contains(*model_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_models.is_empty() {
+            return Err(ControllerError::Runtime(format!(
+                "Benchmark requested models that are not installed: {}. Install them first or rerun benchmark without explicit model IDs.",
+                missing_models.join(", ")
+            )));
         }
 
         let runs = request.runs_per_model.unwrap_or(3).clamp(1, 12);
         let started_at_utc_ms = benchmark::now_utc_ms();
         let mut rows = Vec::new();
+        let reliability_by_model = {
+            let diagnostics = self.diagnostics_manager.lock().await;
+            model_ids
+                .iter()
+                .map(|model_id| {
+                    (
+                        model_id.clone(),
+                        diagnostics
+                            .summarize_model_reliability(
+                                model_id,
+                                BENCHMARK_RELIABILITY_WINDOW,
+                            ),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        };
         let sample_rate = self.audio.target_sample_rate as usize;
         let fixture_segments = phase1::build_fixture_segments(0.014);
         if fixture_segments.is_empty() {
@@ -1241,21 +1441,37 @@ impl VoiceWaveController {
         }
 
         for model_id in model_ids {
-            let model_path = self.resolve_active_model_path(&model_id).await?;
-            let worker =
-                InferenceWorker::new_runtime_with_mode(model_id.clone(), model_path, DecodeMode::Balanced);
+            let worker = self
+                .build_inference_worker(&model_id, DictationMode::Microphone, DecodeMode::Balanced)
+                .await?;
+            // Warm once so benchmark reflects realistic repeated dictation behavior.
+            let warmup_token = CancellationToken::new();
+            let _ = worker
+                .transcribe_segment(&merged_samples, &warmup_token, |_, _, _| {})
+                .await;
             let mut latencies = Vec::with_capacity(runs);
             let mut rtfs = Vec::with_capacity(runs);
+            let mut successful_runs = 0usize;
 
             for _ in 0..runs {
                 let token = CancellationToken::new();
                 let started = Instant::now();
-                let _ = worker
+                let result = worker
                     .transcribe_segment(&merged_samples, &token, |_, _, _| {})
                     .await;
                 let elapsed = started.elapsed().as_millis() as u64;
                 latencies.push(elapsed);
                 rtfs.push(crate::inference::estimate_rtf(elapsed, merged_samples.len()));
+                if let Ok(output) = result {
+                    let is_usable = output
+                        .transcript
+                        .as_ref()
+                        .map(|text| !sanitize_user_transcript(text).is_empty())
+                        .unwrap_or(false);
+                    if is_usable {
+                        successful_runs = successful_runs.saturating_add(1);
+                    }
+                }
             }
 
             latencies.sort_unstable();
@@ -1266,6 +1482,12 @@ impl VoiceWaveController {
             } else {
                 rtfs.iter().sum::<f32>() / rtfs.len() as f32
             };
+            let benchmark_success_rate_percent = if runs == 0 {
+                0.0
+            } else {
+                (successful_runs as f32 / runs as f32) * 100.0
+            };
+            let observed = reliability_by_model.get(&model_id).and_then(|row| row.as_ref());
 
             rows.push(benchmark::BenchmarkRow {
                 model_id,
@@ -1273,6 +1495,19 @@ impl VoiceWaveController {
                 p50_latency_ms: latencies[p50_index],
                 p95_latency_ms: latencies[p95_index],
                 average_rtf,
+                observed_sample_count: observed.map(|row| row.sample_count).unwrap_or(runs),
+                observed_success_rate_percent: observed
+                    .map(|row| row.success_rate_percent)
+                    .unwrap_or(benchmark_success_rate_percent),
+                observed_p95_release_to_final_ms: observed
+                    .map(|row| row.p95_release_to_final_ms)
+                    .unwrap_or(latencies[p95_index]),
+                observed_p95_release_to_transcribing_ms: observed
+                    .map(|row| row.p95_release_to_transcribing_ms)
+                    .unwrap_or(0),
+                observed_watchdog_recovery_rate_percent: observed
+                    .map(|row| row.watchdog_recovery_rate_percent)
+                    .unwrap_or(0.0),
             });
         }
 
@@ -1409,6 +1644,41 @@ impl VoiceWaveController {
         );
         let silence_timeout_ms = ((max_capture_ms as f32) * 0.22).round() as u64;
         let silence_timeout_ms = silence_timeout_ms.clamp(700, 2_000);
+        let use_faster_whisper = is_faster_whisper_model(&settings.active_model);
+        let incremental_enabled = mode == DictationMode::Microphone
+            && incremental_pre_release_decode_enabled()
+            && !use_faster_whisper;
+
+        let draft_worker = if incremental_enabled {
+            Some(
+                self.build_inference_worker(&settings.active_model, mode, DecodeMode::Fast)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        let mut incremental_tx: Option<UnboundedSender<IncrementalAudioChunk>> = None;
+        let mut incremental_task: Option<JoinHandle<IncrementalPreviewResult>> = None;
+        let preview_shared = Arc::new(StdMutex::new(IncrementalPreviewResult::default()));
+        if incremental_enabled {
+            let (tx, rx) = unbounded_channel::<IncrementalAudioChunk>();
+            incremental_tx = Some(tx);
+            let preview_shared_for_task = Arc::clone(&preview_shared);
+            let preview_worker = draft_worker
+                .as_ref()
+                .expect("incremental decode should have worker")
+                .clone();
+            incremental_task = Some(tokio::spawn(run_incremental_preview_decode(
+                rx,
+                preview_worker,
+                cancel_token.clone(),
+                app.clone(),
+                flow_started,
+                self.audio.target_sample_rate,
+                preview_shared_for_task,
+            )));
+        }
 
         let capture_started = Instant::now();
         let segments = match mode {
@@ -1428,13 +1698,22 @@ impl VoiceWaveController {
                     silence_timeout: Duration::from_millis(silence_timeout_ms),
                     release_tail: Duration::from_millis(release_tail_ms),
                 };
+                let tx_for_capture = incremental_tx.clone();
 
                 let captured = tokio::task::spawn_blocking(move || {
-                    audio.capture_segments_from_microphone_with_signals(
+                    audio.capture_segments_from_microphone_with_signals_and_observer(
                         input_device.as_deref(),
                         capture_options,
                         || cancel_for_capture.is_cancelled(),
                         || stop_for_capture.load(Ordering::Relaxed),
+                        move |normalized_chunk, voiced_chunk| {
+                            if let Some(sender) = tx_for_capture.as_ref() {
+                                let _ = sender.send(IncrementalAudioChunk {
+                                    samples: normalized_chunk.to_vec(),
+                                    voiced: voiced_chunk,
+                                });
+                            }
+                        },
                     )
                 })
                 .await
@@ -1445,6 +1724,9 @@ impl VoiceWaveController {
                 match captured {
                     Ok(rows) => rows,
                     Err(AudioError::Cancelled) => {
+                        if let Some(task) = incremental_task.take() {
+                            task.abort();
+                        }
                         self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
                             .await;
                         self.update_state(
@@ -1456,6 +1738,9 @@ impl VoiceWaveController {
                         return Ok(());
                     }
                     Err(AudioError::NoSpeechDetected) => {
+                        if let Some(task) = incremental_task.take() {
+                            task.abort();
+                        }
                         self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
                             .await;
                         self.update_state(
@@ -1469,13 +1754,22 @@ impl VoiceWaveController {
                         .await;
                         return Ok(());
                     }
-                    Err(err) => return Err(ControllerError::Audio(err)),
+                    Err(err) => {
+                        if let Some(task) = incremental_task.take() {
+                            task.abort();
+                        }
+                        return Err(ControllerError::Audio(err));
+                    }
                 }
             }
         };
+        drop(incremental_tx);
         let capture_ms = capture_started.elapsed().as_millis() as u64;
 
         if cancel_token.is_cancelled() {
+            if let Some(task) = incremental_task.take() {
+                task.abort();
+            }
             self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
                 .await;
             self.update_state(
@@ -1487,6 +1781,9 @@ impl VoiceWaveController {
             return Ok(());
         }
         if segments.is_empty() {
+            if let Some(task) = incremental_task.take() {
+                task.abort();
+            }
             self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
                 .await;
             self.update_state(
@@ -1501,6 +1798,22 @@ impl VoiceWaveController {
             return Ok(());
         }
 
+        if let Some(task) = incremental_task.take() {
+            let mut task = task;
+            if task.is_finished() {
+                let _ = task.await;
+            } else {
+                let _ = timeout(Duration::from_millis(80), &mut task).await;
+                if !task.is_finished() {
+                    task.abort();
+                }
+            }
+        }
+        let preview = preview_shared
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default();
+
         let audio_quality = analyze_captured_segments(
             &segments,
             self.audio.target_sample_rate,
@@ -1512,6 +1825,27 @@ impl VoiceWaveController {
         let captured_audio_ms =
             ((total_captured_samples as f64 / self.audio.target_sample_rate as f64) * 1000.0)
                 .round() as u64;
+        let mut effective_decode_mode = match mode {
+            DictationMode::Fixture => settings.decode_mode,
+            DictationMode::Microphone => self
+                .decode_policy
+                .lock()
+                .await
+                .select_mode(captured_audio_ms),
+        };
+        if use_faster_whisper {
+            effective_decode_mode = DecodeMode::Balanced;
+        }
+        if mode == DictationMode::Microphone
+            && settings.active_model == "small.en"
+            && captured_audio_ms <= 6_000
+            && preview.committed_draft.trim().is_empty()
+        {
+            effective_decode_mode = DecodeMode::Fast;
+        }
+        let final_worker = self
+            .build_inference_worker(&settings.active_model, mode, effective_decode_mode)
+            .await?;
         let cap_hit = mode == DictationMode::Microphone
             && !stop_flag.load(Ordering::Relaxed)
             && captured_audio_ms.saturating_add(150) >= max_capture_ms;
@@ -1547,26 +1881,6 @@ impl VoiceWaveController {
         )
         .await;
 
-        let effective_decode_mode = match mode {
-            DictationMode::Fixture => settings.decode_mode,
-            DictationMode::Microphone => self
-                .decode_policy
-                .lock()
-                .await
-                .select_mode(captured_audio_ms),
-        };
-
-        let worker = match mode {
-            DictationMode::Fixture => InferenceWorker::new_fixture(settings.active_model.clone()),
-            DictationMode::Microphone => {
-                let model_path = self.resolve_active_model_path(&settings.active_model).await?;
-                InferenceWorker::new_runtime_with_mode(
-                    settings.active_model.clone(),
-                    model_path,
-                    effective_decode_mode,
-                )
-            }
-        };
         let mut merged_samples = Vec::new();
         let inter_segment_gap = (self.audio.target_sample_rate as usize / 20).max(1); // 50 ms gap
         for (idx, segment) in segments.iter().enumerate() {
@@ -1576,23 +1890,38 @@ impl VoiceWaveController {
             merged_samples.extend_from_slice(segment);
         }
 
-        let app_for_events = app.clone();
         let decode_started = Instant::now();
-        let decode_output = match worker
-            .transcribe_segment(&merged_samples, &cancel_token, |text, _is_final, elapsed_ms| {
-                let sanitized = sanitize_user_transcript(text);
-                if sanitized.is_empty() {
-                    return;
-                }
-                let _ = app_for_events.emit(
-                    "voicewave://transcript",
-                    TranscriptEvent {
-                        text: sanitized,
-                        is_final: false,
-                        elapsed_ms,
-                    },
-                );
-            })
+        let post_started = Instant::now();
+        let source_samples = merged_samples.clone();
+        let lookback_samples = ms_to_sample_count(FINALIZE_LOOKBACK_MS, self.audio.target_sample_rate);
+        let has_committed_draft = !use_faster_whisper && !preview.committed_draft.trim().is_empty();
+        let mut tail_start = 0usize;
+        if has_committed_draft && preview.last_committed_sample > 0 {
+            tail_start = preview
+                .last_committed_sample
+                .saturating_sub(lookback_samples)
+                .min(source_samples.len());
+        }
+        let mut finalize_samples = if use_faster_whisper {
+            source_samples.clone()
+        } else if tail_start < source_samples.len() {
+            source_samples[tail_start..].to_vec()
+        } else {
+            Vec::new()
+        };
+        if finalize_samples.is_empty() {
+            finalize_samples = source_samples.clone();
+            tail_start = 0;
+        }
+        if finalize_samples.is_empty() {
+            finalize_samples = merged_samples.clone();
+            tail_start = 0;
+        }
+        let finalize_tail_audio_ms =
+            sample_count_to_ms(source_samples.len().saturating_sub(tail_start), self.audio.target_sample_rate);
+        let finalize_started = Instant::now();
+        let finalize_output = match final_worker
+            .transcribe_segment(&finalize_samples, &cancel_token, |_text, _is_final, _elapsed_ms| {})
             .await
         {
             Ok(text) => text,
@@ -1612,22 +1941,35 @@ impl VoiceWaveController {
                     self.decode_policy
                         .lock()
                         .await
-                        .record_failure(decode_started.elapsed().as_millis() as u64);
+                        .record_failure(finalize_started.elapsed().as_millis() as u64);
                 }
                 return Err(ControllerError::Runtime(format!(
                     "Inference failed for model '{}': {err}",
-                    worker.active_model()
+                    final_worker.active_model()
                 )))
             }
         };
+        let release_finalize_ms = finalize_started.elapsed().as_millis() as u64;
         let decode_ms = decode_started.elapsed().as_millis() as u64;
-        let post_started = Instant::now();
-        let decode_telemetry = decode_output.telemetry;
-
-        let final_transcript = decode_output
+        let decode_telemetry = finalize_output.telemetry;
+        let finalize_text = finalize_output
             .transcript
             .map(|text| sanitize_user_transcript(&text))
             .unwrap_or_default();
+        let final_transcript = if has_committed_draft {
+            let merged = merge_incremental_transcript(
+                &preview.committed_draft,
+                &finalize_text,
+                TRANSCRIPT_OVERLAP_TOKENS,
+            );
+            if merged.trim().is_empty() {
+                preview.committed_draft.clone()
+            } else {
+                merged
+            }
+        } else {
+            finalize_text
+        };
 
         if final_transcript.trim().is_empty() {
             if cancel_token.is_cancelled() {
@@ -1665,7 +2007,7 @@ impl VoiceWaveController {
             let mut snapshot = self.snapshot.lock().await;
             snapshot.last_partial = None;
             snapshot.last_final = Some(final_transcript.clone());
-            snapshot.active_model = settings.active_model;
+            snapshot.active_model = settings.active_model.clone();
         }
 
         let insert_payload = InsertTextRequest {
@@ -1709,12 +2051,17 @@ impl VoiceWaveController {
 
         let post_ms = post_started.elapsed().as_millis() as u64;
         let total_ms = flow_started.elapsed().as_millis() as u64;
+        let release_to_final_ms = release_to_transcribing_ms
+            .saturating_add(decode_ms)
+            .saturating_add(post_ms);
         if mode == DictationMode::Microphone {
-            self.decode_policy.lock().await.record_success(total_ms);
+            self.decode_policy
+                .lock()
+                .await
+                .record_success(release_to_final_ms);
         }
         let audio_duration_ms =
-            ((merged_samples.len() as f64 / self.audio.target_sample_rate as f64) * 1000.0)
-                .round() as u64;
+            sample_count_to_ms(source_samples.len(), self.audio.target_sample_rate);
         let segments_captured = segments.len() as u32;
         let release_stop_detected_at_utc_ms = self
             .session_release_stop_detected_at_utc_ms(session_id)
@@ -1733,13 +2080,21 @@ impl VoiceWaveController {
                 audio_condition_ms: decode_telemetry.audio_condition_ms,
                 decode_compute_ms: decode_telemetry.decode_compute_ms,
                 runtime_cache_hit: decode_telemetry.runtime_cache_hit,
+                backend_requested: decode_telemetry.backend_requested.clone(),
+                backend_used: decode_telemetry.backend_used.clone(),
+                backend_fallback: decode_telemetry.backend_fallback,
+                hold_to_first_draft_ms: preview.hold_to_first_draft_ms,
+                incremental_decode_ms: preview.incremental_decode_ms,
+                release_finalize_ms,
+                incremental_windows_decoded: preview.incremental_windows_decoded,
+                finalize_tail_audio_ms,
                 decode_ms,
                 post_ms,
                 insert_ms,
                 total_ms,
                 audio_duration_ms,
-                model_id: worker.active_model().to_string(),
-                decode_mode: worker.decode_mode(),
+                model_id: final_worker.active_model().to_string(),
+                decode_mode: final_worker.decode_mode(),
             },
         );
         if settings.diagnostics_opt_in {
@@ -1755,13 +2110,21 @@ impl VoiceWaveController {
                 audio_condition_ms: decode_telemetry.audio_condition_ms,
                 decode_compute_ms: decode_telemetry.decode_compute_ms,
                 runtime_cache_hit: decode_telemetry.runtime_cache_hit,
+                backend_requested: decode_telemetry.backend_requested,
+                backend_used: decode_telemetry.backend_used,
+                backend_fallback: decode_telemetry.backend_fallback,
+                hold_to_first_draft_ms: preview.hold_to_first_draft_ms,
+                incremental_decode_ms: preview.incremental_decode_ms,
+                release_finalize_ms,
+                incremental_windows_decoded: preview.incremental_windows_decoded,
+                finalize_tail_audio_ms,
                 decode_ms,
                 post_ms,
                 insert_ms,
                 total_ms,
                 audio_duration_ms,
-                model_id: worker.active_model().to_string(),
-                decode_mode: worker.decode_mode(),
+                model_id: final_worker.active_model().to_string(),
+                decode_mode: final_worker.decode_mode(),
                 success: insertion_success,
             });
         }
@@ -1871,6 +2234,37 @@ impl VoiceWaveController {
         let _ = app.emit("voicewave://model", ModelEvent::from_status(status));
     }
 
+    async fn build_inference_worker(
+        &self,
+        model_id: &str,
+        mode: DictationMode,
+        decode_mode: DecodeMode,
+    ) -> Result<InferenceWorker, ControllerError> {
+        match mode {
+            DictationMode::Fixture => Ok(InferenceWorker::new_fixture(model_id.to_string())),
+            DictationMode::Microphone => {
+                if is_faster_whisper_model(model_id) {
+                    ensure_faster_whisper_ready().await.map_err(|err| {
+                        ControllerError::Runtime(format!(
+                            "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1."
+                        ))
+                    })?;
+                    Ok(InferenceWorker::new_faster_whisper_with_mode(
+                        model_id.to_string(),
+                        decode_mode,
+                    ))
+                } else {
+                    let model_path = self.resolve_active_model_path(model_id).await?;
+                    Ok(InferenceWorker::new_runtime_with_mode(
+                        model_id.to_string(),
+                        model_path,
+                        decode_mode,
+                    ))
+                }
+            }
+        }
+    }
+
     async fn resolve_active_model_path(&self, model_id: &str) -> Result<PathBuf, ControllerError> {
         {
             let mut manager = self.model_manager.lock().await;
@@ -1894,6 +2288,190 @@ impl VoiceWaveController {
             "Active model '{model_id}' is not installed as a local model artifact. Install it from Models first or set VOICEWAVE_WHISPER_MODEL_PATH."
         )))
     }
+}
+
+fn spawn_incremental_decode_job(
+    worker: InferenceWorker,
+    cancel_token: CancellationToken,
+    window: DecodeWindow,
+) -> JoinHandle<DecodeJobResult> {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let transcript = match worker
+            .transcribe_segment(&window.samples, &cancel_token, |_text, _is_final, _elapsed_ms| {})
+            .await
+        {
+            Ok(output) => output.transcript,
+            Err(InferenceError::Cancelled) => None,
+            Err(err) => {
+                eprintln!("voicewave: incremental draft decode failed: {err}");
+                None
+            }
+        };
+        DecodeJobResult {
+            window,
+            transcript,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        }
+    })
+}
+
+async fn run_incremental_preview_decode(
+    mut rx: UnboundedReceiver<IncrementalAudioChunk>,
+    worker: InferenceWorker,
+    cancel_token: CancellationToken,
+    app: AppHandle,
+    flow_started: Instant,
+    sample_rate: u32,
+    preview_shared: Arc<StdMutex<IncrementalPreviewResult>>,
+) -> IncrementalPreviewResult {
+    let cadence = Duration::from_millis(INCREMENTAL_DECODE_CADENCE_MS);
+    let min_voiced_samples = ms_to_sample_count(INCREMENTAL_MIN_VOICED_MS, sample_rate);
+    let window_samples = ms_to_sample_count(INCREMENTAL_WINDOW_MS, sample_rate).max(1);
+    let overlap_samples = ms_to_sample_count(INCREMENTAL_WINDOW_OVERLAP_MS, sample_rate)
+        .min(window_samples.saturating_sub(1));
+    let step_samples = window_samples.saturating_sub(overlap_samples).max(1);
+
+    let mut captured_audio = Vec::<f32>::new();
+    let mut voiced_samples = 0usize;
+    let mut committed_draft = String::new();
+    let mut last_committed_sample = 0usize;
+    let mut hold_to_first_draft_ms = 0u64;
+    let mut incremental_decode_ms = 0u64;
+    let mut incremental_windows_decoded = 0u32;
+    let mut next_window_target = min_voiced_samples;
+    let mut last_schedule_at: Option<Instant> = None;
+    let mut pending_window: Option<DecodeWindow> = None;
+    let mut inflight: Option<JoinHandle<DecodeJobResult>> = None;
+    let mut channel_closed = false;
+
+    loop {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+
+        if !channel_closed {
+            match timeout(Duration::from_millis(15), rx.recv()).await {
+                Ok(Some(chunk)) => {
+                    if chunk.voiced {
+                        voiced_samples = voiced_samples.saturating_add(chunk.samples.len());
+                    }
+                    captured_audio.extend_from_slice(&chunk.samples);
+                }
+                Ok(None) => {
+                    channel_closed = true;
+                }
+                Err(_) => {}
+            }
+        }
+
+        let can_schedule_now = voiced_samples >= min_voiced_samples
+            && captured_audio.len() >= next_window_target
+            && last_schedule_at
+                .map(|scheduled_at| scheduled_at.elapsed() >= cadence)
+                .unwrap_or(true);
+        if can_schedule_now {
+            let end = captured_audio.len();
+            let start = end.saturating_sub(window_samples);
+            let window = DecodeWindow {
+                end_sample: end,
+                samples: captured_audio[start..end].to_vec(),
+            };
+            next_window_target = end.saturating_add(step_samples);
+            last_schedule_at = Some(Instant::now());
+            if inflight.is_none() {
+                inflight = Some(spawn_incremental_decode_job(
+                    worker.clone(),
+                    cancel_token.clone(),
+                    window,
+                ));
+            } else {
+                pending_window = Some(window);
+            }
+        }
+
+        if inflight.as_ref().is_some_and(|handle| handle.is_finished()) {
+            let handle = inflight.take().expect("inflight decode handle should exist");
+            match handle.await {
+                Ok(result) => {
+                    incremental_windows_decoded = incremental_windows_decoded.saturating_add(1);
+                    incremental_decode_ms = incremental_decode_ms.saturating_add(result.elapsed_ms);
+                    if let Some(text) = result.transcript {
+                        let sanitized = sanitize_user_transcript(&text);
+                        if !sanitized.is_empty() {
+                            committed_draft = merge_incremental_transcript(
+                                &committed_draft,
+                                &sanitized,
+                                TRANSCRIPT_OVERLAP_TOKENS,
+                            );
+                            last_committed_sample = result.window.end_sample;
+                            if hold_to_first_draft_ms == 0 {
+                                hold_to_first_draft_ms =
+                                    flow_started.elapsed().as_millis() as u64;
+                            }
+                            let _ = app.emit(
+                                "voicewave://transcript",
+                                TranscriptEvent {
+                                    text: committed_draft.clone(),
+                                    is_final: false,
+                                    elapsed_ms: flow_started.elapsed().as_millis() as u64,
+                                },
+                            );
+                            if let Ok(mut shared) = preview_shared.lock() {
+                                shared.committed_draft = committed_draft.clone();
+                                shared.last_committed_sample = last_committed_sample;
+                                shared.hold_to_first_draft_ms = hold_to_first_draft_ms;
+                                shared.incremental_decode_ms = incremental_decode_ms;
+                                shared.incremental_windows_decoded = incremental_windows_decoded;
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("voicewave: incremental decode task join failed: {err}");
+                }
+            }
+
+            if let Some(window) = pending_window.take() {
+                inflight = Some(spawn_incremental_decode_job(
+                    worker.clone(),
+                    cancel_token.clone(),
+                    window,
+                ));
+            }
+        }
+
+        if channel_closed && inflight.is_none() && pending_window.is_none() {
+            break;
+        }
+
+        if channel_closed {
+            sleep(Duration::from_millis(6)).await;
+        }
+    }
+
+    let result = IncrementalPreviewResult {
+        committed_draft,
+        last_committed_sample,
+        hold_to_first_draft_ms,
+        incremental_decode_ms,
+        incremental_windows_decoded,
+    };
+    if let Ok(mut shared) = preview_shared.lock() {
+        *shared = result.clone();
+    }
+    result
+}
+
+fn ms_to_sample_count(ms: u64, sample_rate: u32) -> usize {
+    (((ms as f64 / 1000.0) * sample_rate as f64).round() as usize).max(1)
+}
+
+fn sample_count_to_ms(sample_count: usize, sample_rate: u32) -> u64 {
+    if sample_rate == 0 {
+        return 0;
+    }
+    ((sample_count as f64 / sample_rate as f64) * 1000.0).round() as u64
 }
 
 fn now_utc_ms() -> u64 {

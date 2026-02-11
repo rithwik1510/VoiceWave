@@ -34,7 +34,7 @@ impl Default for VoiceWaveSettings {
     fn default() -> Self {
         Self {
             input_device: None,
-            active_model: "small.en".to_string(),
+            active_model: "fw-small.en".to_string(),
             show_floating_hud: true,
             vad_threshold: 0.014,
             max_utterance_ms: 30_000,
@@ -84,7 +84,11 @@ impl SettingsStore {
             return Ok(VoiceWaveSettings::default());
         }
         let raw = fs::read_to_string(&self.path).map_err(SettingsError::Read)?;
-        serde_json::from_str(&raw).map_err(SettingsError::Parse)
+        let normalized = raw.trim_start_matches('\u{feff}').trim();
+        if normalized.is_empty() {
+            return Ok(VoiceWaveSettings::default());
+        }
+        serde_json::from_str(normalized).map_err(SettingsError::Parse)
     }
 
     pub fn save(&self, settings: &VoiceWaveSettings) -> Result<(), SettingsError> {
@@ -115,7 +119,7 @@ mod tests {
         let path = temp_settings_path();
         let store = SettingsStore::from_path(path);
         let loaded = store.load().expect("load should succeed");
-        assert_eq!(loaded.active_model, "small.en");
+        assert_eq!(loaded.active_model, "fw-small.en");
     }
 
     #[test]
@@ -145,6 +149,19 @@ mod tests {
         assert_eq!(loaded.decode_mode, DecodeMode::Fast);
         assert!(loaded.diagnostics_opt_in);
         assert!(loaded.prefer_clipboard_fallback);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_accepts_utf8_bom_prefixed_json() {
+        let path = temp_settings_path();
+        let store = SettingsStore::from_path(path.clone());
+        let raw = "\u{feff}{\"activeModel\":\"tiny.en\"}";
+        std::fs::write(&path, raw).expect("write should succeed");
+
+        let loaded = store.load().expect("load should succeed");
+        assert_eq!(loaded.active_model, "tiny.en");
+
         let _ = std::fs::remove_file(path);
     }
 }

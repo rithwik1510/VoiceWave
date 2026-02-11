@@ -139,7 +139,10 @@ impl InsertionEngine {
             .or_else(|| self.backend.detect_target_app());
         let target_ref = resolved_target.as_deref();
 
-        let method_order = if request.prefer_clipboard {
+        let prefer_clipboard = request.prefer_clipboard
+            || should_auto_prefer_clipboard(&request.text, target_ref);
+
+        let method_order = if prefer_clipboard {
             vec![
                 InsertionMethod::ClipboardPaste,
                 InsertionMethod::ClipboardOnly,
@@ -274,12 +277,66 @@ impl InsertionEngine {
     }
 }
 
+fn should_auto_prefer_clipboard(text: &str, target_app: Option<&str>) -> bool {
+    const LONG_TEXT_THRESHOLD: usize = 48;
+    if text.chars().count() >= LONG_TEXT_THRESHOLD {
+        return true;
+    }
+
+    let Some(app) = target_app else {
+        return false;
+    };
+    let normalized = app.to_ascii_lowercase();
+    normalized.contains("visual studio code")
+        || normalized.contains("vscode")
+        || normalized.contains("cursor")
+        || normalized.contains("chrome")
+        || normalized.contains("edge")
+        || normalized.contains("firefox")
+        || normalized.contains("slack")
+        || normalized.contains("notion")
+}
+
 #[derive(Default)]
 pub struct PlatformInsertionBackend;
 
 impl InsertionBackend for PlatformInsertionBackend {
     fn detect_target_app(&mut self) -> Option<String> {
-        None
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+            };
+
+            let hwnd = unsafe { GetForegroundWindow() };
+            if hwnd.is_null() {
+                return None;
+            }
+
+            let len = unsafe { GetWindowTextLengthW(hwnd) };
+            if len <= 0 {
+                return None;
+            }
+
+            let mut buffer = vec![0u16; len as usize + 1];
+            let copied = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+            if copied <= 0 {
+                return None;
+            }
+
+            let title = String::from_utf16_lossy(&buffer[..copied as usize]);
+            let trimmed = title.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
     }
 
     fn direct_insert(
@@ -652,6 +709,37 @@ mod tests {
                 prefer_clipboard: false,
             })
             .expect("fallback should work");
+        assert!(result.success);
+        assert_eq!(result.method, InsertionMethod::ClipboardPaste);
+    }
+
+    #[test]
+    fn auto_prefers_clipboard_for_vscode_targets() {
+        let backend = DeterministicMatrixBackend::new();
+        let mut engine = InsertionEngine::new(Box::new(backend));
+        let result = engine
+            .insert_text(InsertTextRequest {
+                text: "short text".to_string(),
+                target_app: Some("Visual Studio Code".to_string()),
+                prefer_clipboard: false,
+            })
+            .expect("insert should work");
+        assert!(result.success);
+        assert_eq!(result.method, InsertionMethod::ClipboardPaste);
+    }
+
+    #[test]
+    fn auto_prefers_clipboard_for_long_text() {
+        let backend = DeterministicMatrixBackend::new();
+        let mut engine = InsertionEngine::new(Box::new(backend));
+        let long_text = "this is a longer transcript that should use clipboard for speed";
+        let result = engine
+            .insert_text(InsertTextRequest {
+                text: long_text.to_string(),
+                target_app: Some("Notepad".to_string()),
+                prefer_clipboard: false,
+            })
+            .expect("insert should work");
         assert!(result.success);
         assert_eq!(result.method, InsertionMethod::ClipboardPaste);
     }

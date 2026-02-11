@@ -1,6 +1,7 @@
 use super::{
     cold_decode_whisper_blocking, decode_profile_version, decode_with_context,
-    model_artifact_fingerprint, validate_model_artifact, InferenceError, WhisperDecodeOutput,
+    initialize_context_with_backend, model_artifact_fingerprint, validate_model_artifact,
+    InferenceError, RuntimeBackend, WhisperDecodeOutput,
 };
 use crate::settings::DecodeMode;
 use std::{
@@ -9,11 +10,10 @@ use std::{
     path::PathBuf,
     sync::{mpsc, OnceLock},
     thread,
-    time::Instant,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
-use whisper_rs::{WhisperContext, WhisperContextParameters};
+use whisper_rs::WhisperContext;
 
 const MAX_WARMED_RUNTIMES: usize = 2;
 
@@ -62,8 +62,15 @@ enum RuntimeCommand {
 
 #[derive(Default)]
 struct RuntimeCache {
-    runtimes: HashMap<RuntimeKey, WhisperContext>,
+    runtimes: HashMap<RuntimeKey, CachedRuntime>,
     lru: VecDeque<RuntimeKey>,
+}
+
+struct CachedRuntime {
+    context: WhisperContext,
+    backend_requested: RuntimeBackend,
+    backend_used: RuntimeBackend,
+    backend_fallback: bool,
 }
 
 impl RuntimeCache {
@@ -72,8 +79,8 @@ impl RuntimeCache {
         self.lru.push_back(key.clone());
     }
 
-    fn insert(&mut self, key: RuntimeKey, ctx: WhisperContext) {
-        self.runtimes.insert(key.clone(), ctx);
+    fn insert(&mut self, key: RuntimeKey, runtime: CachedRuntime) {
+        self.runtimes.insert(key.clone(), runtime);
         self.touch(&key);
         while self.runtimes.len() > MAX_WARMED_RUNTIMES {
             if let Some(oldest) = self.lru.pop_front() {
@@ -82,7 +89,7 @@ impl RuntimeCache {
         }
     }
 
-    fn get(&self, key: &RuntimeKey) -> Option<&WhisperContext> {
+    fn get(&self, key: &RuntimeKey) -> Option<&CachedRuntime> {
         self.runtimes.get(key)
     }
 }
@@ -196,13 +203,16 @@ fn try_prewarm(
     }
 
     let model_path_str = model_path.to_string_lossy().to_string();
-    let ctx = WhisperContext::new_with_params(&model_path_str, WhisperContextParameters::default())
-        .map_err(|err| InferenceError::ModelLoadFailed {
-            model_id: model_id.to_string(),
-            path: model_path_str,
-            reason: err.to_string(),
-        })?;
-    cache.insert(key, ctx);
+    let context_init = initialize_context_with_backend(model_id, &model_path_str)?;
+    cache.insert(
+        key,
+        CachedRuntime {
+            context: context_init.context,
+            backend_requested: context_init.backend_requested,
+            backend_used: context_init.backend_used,
+            backend_fallback: context_init.backend_fallback,
+        },
+    );
     Ok(())
 }
 
@@ -219,21 +229,29 @@ fn decode_with_cache(
 
     let mut runtime_cache_hit = true;
     let mut model_init_ms = 0u64;
+    let mut backend_requested = RuntimeBackend::Cpu;
+    let mut backend_used = RuntimeBackend::Cpu;
+    let mut backend_fallback = false;
     if cache.get(&key).is_none() {
         runtime_cache_hit = false;
         let model_path_str = model_path.to_string_lossy().to_string();
-        let init_started = Instant::now();
-        let ctx = WhisperContext::new_with_params(&model_path_str, WhisperContextParameters::default())
-            .map_err(|err| InferenceError::ModelLoadFailed {
-                model_id: model_id.to_string(),
-                path: model_path_str.clone(),
-                reason: err.to_string(),
-            });
+        let context_init = initialize_context_with_backend(model_id, &model_path_str);
 
-        match ctx {
-            Ok(ctx) => {
-                model_init_ms = init_started.elapsed().as_millis() as u64;
-                cache.insert(key.clone(), ctx);
+        match context_init {
+            Ok(context_init) => {
+                model_init_ms = context_init.model_init_ms;
+                backend_requested = context_init.backend_requested;
+                backend_used = context_init.backend_used;
+                backend_fallback = context_init.backend_fallback;
+                cache.insert(
+                    key.clone(),
+                    CachedRuntime {
+                        context: context_init.context,
+                        backend_requested: context_init.backend_requested,
+                        backend_used: context_init.backend_used,
+                        backend_fallback: context_init.backend_fallback,
+                    },
+                );
             }
             Err(_) => {
                 // Fallback: attempt a cold decode for this utterance instead of hard-failing pool path.
@@ -249,20 +267,28 @@ fn decode_with_cache(
     }
 
     cache.touch(&key);
-    let Some(ctx) = cache.get(&key) else {
+    let Some(runtime) = cache.get(&key) else {
         return Err(InferenceError::RuntimeJoin(
             "runtime cache lost warmed context entry".to_string(),
         ));
     };
+    if runtime_cache_hit {
+        backend_requested = runtime.backend_requested;
+        backend_used = runtime.backend_used;
+        backend_fallback = runtime.backend_fallback;
+    }
 
     decode_with_context(
-        ctx,
+        &runtime.context,
         samples,
         model_id,
         decode_mode,
         cancel_token,
         model_init_ms,
         runtime_cache_hit,
+        backend_requested,
+        backend_used,
+        backend_fallback,
     )
 }
 
@@ -276,6 +302,10 @@ fn build_runtime_key(
         model_id: model_id.to_string(),
         model_path: model_path.to_string_lossy().to_string(),
         model_fingerprint,
-        profile_version: decode_profile_version(model_id, decode_mode),
+        profile_version: format!(
+            "{}:{}",
+            decode_profile_version(model_id, decode_mode),
+            super::backend::backend_policy_version(model_id)
+        ),
     })
 }

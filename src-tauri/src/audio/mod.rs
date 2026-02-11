@@ -155,6 +155,28 @@ impl AudioCaptureService {
         F: Fn() -> bool,
         G: Fn() -> bool,
     {
+        self.capture_segments_from_microphone_with_signals_and_observer(
+            requested_device_name,
+            options,
+            should_cancel,
+            should_stop,
+            |_normalized_chunk, _voiced_chunk| {},
+        )
+    }
+
+    pub fn capture_segments_from_microphone_with_signals_and_observer<F, G, H>(
+        &self,
+        requested_device_name: Option<&str>,
+        options: CaptureOptions,
+        should_cancel: F,
+        should_stop: G,
+        mut on_normalized_chunk: H,
+    ) -> Result<Vec<Vec<f32>>, AudioError>
+    where
+        F: Fn() -> bool,
+        G: Fn() -> bool,
+        H: FnMut(&[f32], bool),
+    {
         let host = cpal::default_host();
         let device = self.select_input_device(&host, requested_device_name)?;
         let supported_config = device
@@ -181,6 +203,7 @@ impl AudioCaptureService {
             options,
             should_cancel,
             should_stop,
+            &mut on_normalized_chunk,
         )?;
 
         drop(stream);
@@ -259,6 +282,7 @@ impl AudioCaptureService {
         options: CaptureOptions,
         should_cancel: impl Fn() -> bool,
         should_stop: impl Fn() -> bool,
+        mut on_normalized_chunk: impl FnMut(&[f32], bool),
     ) -> Result<Vec<Vec<f32>>, AudioError> {
         let started = Instant::now();
         let mut vad = VadSegmenter::new(options.vad_config);
@@ -295,6 +319,8 @@ impl AudioCaptureService {
                         channels,
                         samples: raw_chunk,
                     });
+                    let chunk_is_voiced = rms(&normalized) >= options.vad_config.threshold;
+                    on_normalized_chunk(&normalized, chunk_is_voiced);
                     capture_accum.extend_from_slice(&normalized);
                     normalized_pending.extend(normalized);
 
@@ -893,6 +919,7 @@ mod tests {
                 options,
                 || false,
                 || false,
+                |_normalized_chunk, _voiced_chunk| {},
             )
             .expect("capture should complete");
 

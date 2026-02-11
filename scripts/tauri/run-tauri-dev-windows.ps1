@@ -94,6 +94,64 @@ function Ensure-NoSpaceTargetDir {
   $env:CARGO_TARGET_DIR = Join-Path $safeRoot "target-gnu"
 }
 
+function Test-TruthyValue([string]$value) {
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return $false
+  }
+  switch ($value.Trim().ToLowerInvariant()) {
+    "1" { return $true }
+    "true" { return $true }
+    "yes" { return $true }
+    "on" { return $true }
+    default { return $false }
+  }
+}
+
+function Test-CommandAvailable([string]$commandName) {
+  $command = Get-Command $commandName -ErrorAction SilentlyContinue
+  return $null -ne $command
+}
+
+function Resolve-WhisperFeatureArgs {
+  if (Test-TruthyValue $env:VOICEWAVE_DISABLE_CUDA_FEATURE) {
+    return @()
+  }
+
+  $cudaToolkitDetected = $false
+  $forceCuda = Test-TruthyValue $env:VOICEWAVE_FORCE_CUDA_FEATURE
+  if ($forceCuda) {
+    $cudaToolkitDetected = $true
+  }
+  elseif (-not [string]::IsNullOrWhiteSpace($env:CUDA_PATH)) {
+    $cudaLibPath = Join-Path $env:CUDA_PATH "lib\\x64"
+    if (Test-Path $cudaLibPath) {
+      $cudaToolkitDetected = $true
+    }
+  }
+
+  if (-not $cudaToolkitDetected) {
+    return @()
+  }
+
+  if (-not (Test-CommandAvailable "cl.exe")) {
+    if ($forceCuda) {
+      throw "VOICEWAVE_FORCE_CUDA_FEATURE is set, but cl.exe was not found in PATH. Install Visual Studio Build Tools or unset VOICEWAVE_FORCE_CUDA_FEATURE."
+    }
+    Write-Warning "CUDA toolkit detected but cl.exe was not found. Falling back to CPU build for this run."
+    return @()
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($env:CUDA_PATH)) {
+    $cudaBinPath = Join-Path $env:CUDA_PATH "bin"
+    if (Test-Path $cudaBinPath) {
+      $env:PATH = "$cudaBinPath;$env:PATH"
+    }
+  }
+
+  Write-Host "CUDA toolkit detected. Enabling whisper-cuda feature for this Tauri run."
+  return @("--features", "whisper-cuda")
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Ensure-GnuRustToolchain
 Add-MingwToPathIfAvailable
@@ -104,7 +162,14 @@ Ensure-NoSpaceTargetDir
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
 $env:CARGO_BUILD_TARGET = "x86_64-pc-windows-gnu"
 
-$commandArgs = @("exec", "tauri", "dev", "--", "--target", "x86_64-pc-windows-gnu")
+$tauriCli = Join-Path $repoRoot "node_modules\.bin\tauri.cmd"
+if (-not (Test-Path $tauriCli)) {
+  throw "Tauri CLI not found at $tauriCli. Run npm install first."
+}
+
+$commandArgs = @("dev")
+$commandArgs += Resolve-WhisperFeatureArgs
+$commandArgs += @("--", "--target", "x86_64-pc-windows-gnu")
 if ($TauriArgs) {
   $commandArgs += $TauriArgs
 }
@@ -114,13 +179,13 @@ if ($DryRun) {
   Write-Host "RUSTUP_TOOLCHAIN=$env:RUSTUP_TOOLCHAIN"
   Write-Host "CARGO_BUILD_TARGET=$env:CARGO_BUILD_TARGET"
   Write-Host "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
-  Write-Host ("npm " + ($commandArgs -join " "))
+  Write-Host ($tauriCli + " " + ($commandArgs -join " "))
   exit 0
 }
 
 Push-Location $repoRoot
 try {
-  npm @commandArgs
+  & $tauriCli @commandArgs
   if ($LASTEXITCODE -ne 0) {
     throw "tauri dev failed"
   }

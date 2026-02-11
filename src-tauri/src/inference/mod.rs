@@ -1,24 +1,33 @@
+mod backend;
 mod executor;
+mod faster_whisper;
 mod policy;
 
 pub use executor::{cpu_runtime_pool_enabled, prewarm_runtime};
+pub use faster_whisper::ensure_faster_whisper_ready;
 pub use policy::RuntimeDecodePolicy;
 
 use crate::settings::DecodeMode;
+use backend::{
+    context_params_for_backend, note_gpu_runtime_failure, preferred_backend_for_model, RuntimeBackend,
+};
 use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DecodeTelemetry {
     pub model_init_ms: u64,
     pub audio_condition_ms: u64,
     pub decode_compute_ms: u64,
     pub runtime_cache_hit: bool,
+    pub backend_requested: String,
+    pub backend_used: String,
+    pub backend_fallback: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +57,26 @@ pub fn decode_profile(model_id: &str) -> ModelDecodeProfile {
 
 pub fn decode_profile_for_mode(model_id: &str, decode_mode: DecodeMode) -> ModelDecodeProfile {
     let balanced = match model_id {
+        "fw-small.en" => ModelDecodeProfile {
+            partial_delay_ms: 70,
+            strategy: DecodeStrategy::BeamSearch {
+                beam_size: 2,
+                patience: -1.0,
+            },
+            no_speech_thold: 0.5,
+            thread_cap: 12,
+            no_context: false,
+        },
+        "fw-large-v3" => ModelDecodeProfile {
+            partial_delay_ms: 120,
+            strategy: DecodeStrategy::BeamSearch {
+                beam_size: 3,
+                patience: -1.0,
+            },
+            no_speech_thold: 0.45,
+            thread_cap: 12,
+            no_context: false,
+        },
         "tiny.en" => ModelDecodeProfile {
             partial_delay_ms: 60,
             strategy: DecodeStrategy::Greedy { best_of: 2 },
@@ -156,6 +185,9 @@ enum InferenceBackend {
         model_path: PathBuf,
         decode_mode: DecodeMode,
     },
+    FasterWhisper {
+        decode_mode: DecodeMode,
+    },
     Scripted,
 }
 
@@ -204,6 +236,25 @@ impl InferenceWorker {
         }
     }
 
+    pub fn new_faster_whisper(active_model: impl Into<String>) -> Self {
+        Self::new_faster_whisper_with_mode(active_model, DecodeMode::Balanced)
+    }
+
+    pub fn new_faster_whisper_with_mode(
+        active_model: impl Into<String>,
+        decode_mode: DecodeMode,
+    ) -> Self {
+        let active_model = active_model.into();
+        let profile = decode_profile_for_mode(&active_model, decode_mode);
+        Self {
+            active_model,
+            scripted_output: None,
+            partial_delay_ms: profile.partial_delay_ms,
+            decode_mode,
+            backend: InferenceBackend::FasterWhisper { decode_mode },
+        }
+    }
+
     pub fn with_script(
         active_model: impl Into<String>,
         scripted_output: impl Into<String>,
@@ -230,6 +281,7 @@ impl InferenceWorker {
     pub fn model_path(&self) -> Option<&Path> {
         match &self.backend {
             InferenceBackend::Whisper { model_path, .. } => Some(model_path.as_path()),
+            InferenceBackend::FasterWhisper { .. } => None,
             InferenceBackend::Scripted => None,
         }
     }
@@ -281,6 +333,19 @@ impl InferenceWorker {
                     telemetry: decode.telemetry,
                 }
             }
+            InferenceBackend::FasterWhisper { decode_mode } => {
+                let decode = transcribe_with_faster_whisper(
+                    samples.to_vec(),
+                    self.active_model.clone(),
+                    *decode_mode,
+                    cancel_token.clone(),
+                )
+                .await?;
+                SegmentTranscription {
+                    transcript: Some(decode.text),
+                    telemetry: decode.telemetry,
+                }
+            }
         };
 
         let Some(text) = maybe_text.transcript.clone() else {
@@ -296,7 +361,10 @@ impl InferenceWorker {
             });
         }
 
-        if matches!(self.backend, InferenceBackend::Whisper { .. }) {
+        if matches!(
+            self.backend,
+            InferenceBackend::Whisper { .. } | InferenceBackend::FasterWhisper { .. }
+        ) {
             // Runtime decode is already complete here; avoid synthetic per-word delay.
             on_event(&text, true, started.elapsed().as_millis() as u64);
             return Ok(SegmentTranscription {
@@ -362,6 +430,43 @@ pub fn estimate_rtf(elapsed_ms: u64, sample_count: usize) -> f32 {
     (elapsed_ms as f32 / 1000.0) / audio_duration_s
 }
 
+pub fn is_faster_whisper_model(model_id: &str) -> bool {
+    faster_whisper_runtime_model_id(model_id).is_some()
+}
+
+pub fn faster_whisper_runtime_model_id(model_id: &str) -> Option<&'static str> {
+    match model_id {
+        "fw-small.en" => Some("small.en"),
+        "fw-large-v3" => Some("large-v3"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FasterWhisperPrefetchResult {
+    pub model_init_ms: u64,
+    pub runtime_cache_hit: bool,
+    pub cache_hint_path: String,
+}
+
+pub async fn prefetch_faster_whisper_model(
+    model_id: &str,
+) -> Result<FasterWhisperPrefetchResult, InferenceError> {
+    let runtime_model = faster_whisper_runtime_model_id(model_id).ok_or_else(|| {
+        InferenceError::DecodeFailed {
+            model_id: model_id.to_string(),
+            reason: "unsupported faster-whisper model id".to_string(),
+        }
+    })?;
+    let prefetch = faster_whisper::prefetch_model(runtime_model).await?;
+    let cache_hint = faster_whisper::cache_hint_for_model(runtime_model);
+    Ok(FasterWhisperPrefetchResult {
+        model_init_ms: prefetch.model_init_ms,
+        runtime_cache_hit: prefetch.runtime_cache_hit,
+        cache_hint_path: cache_hint.to_string_lossy().to_string(),
+    })
+}
+
 async fn transcribe_with_whisper(
     samples: Vec<f32>,
     model_id: String,
@@ -400,6 +505,53 @@ async fn transcribe_with_whisper(
     .map_err(|err| InferenceError::RuntimeJoin(err.to_string()))?
 }
 
+async fn transcribe_with_faster_whisper(
+    samples: Vec<f32>,
+    model_id: String,
+    decode_mode: DecodeMode,
+    cancel_token: CancellationToken,
+) -> Result<WhisperDecodeOutput, InferenceError> {
+    if cancel_token.is_cancelled() {
+        return Err(InferenceError::Cancelled);
+    }
+
+    let condition_started = Instant::now();
+    let conditioned_samples = condition_audio_for_decode(&samples);
+    let audio_condition_ms = condition_started.elapsed().as_millis() as u64;
+    if conditioned_samples.is_empty() {
+        return Err(InferenceError::DecodeFailed {
+            model_id,
+            reason: "no usable audio samples after conditioning".to_string(),
+        });
+    }
+
+    let runtime_model = faster_whisper_runtime_model_id(&model_id).ok_or_else(|| {
+        InferenceError::DecodeFailed {
+            model_id: model_id.clone(),
+            reason: "unsupported faster-whisper model id".to_string(),
+        }
+    })?;
+    let decode = faster_whisper::transcribe_samples(
+        &conditioned_samples,
+        runtime_model,
+        decode_mode,
+        &cancel_token,
+    )
+    .await?;
+    Ok(WhisperDecodeOutput {
+        text: decode.text,
+        telemetry: DecodeTelemetry {
+            model_init_ms: decode.model_init_ms,
+            audio_condition_ms,
+            decode_compute_ms: decode.decode_compute_ms,
+            runtime_cache_hit: decode.runtime_cache_hit,
+            backend_requested: "cpu".to_string(),
+            backend_used: "cpu".to_string(),
+            backend_fallback: false,
+        },
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct WhisperDecodeOutput {
     pub text: String,
@@ -415,22 +567,18 @@ pub(crate) fn cold_decode_whisper_blocking(
 ) -> Result<WhisperDecodeOutput, InferenceError> {
     validate_model_artifact(model_path)?;
     let model_path_str = model_path.to_string_lossy().to_string();
-    let init_started = Instant::now();
-    let ctx = WhisperContext::new_with_params(&model_path_str, WhisperContextParameters::default())
-        .map_err(|err| InferenceError::ModelLoadFailed {
-            model_id: model_id.to_string(),
-            path: model_path_str.clone(),
-            reason: err.to_string(),
-        })?;
-    let model_init_ms = init_started.elapsed().as_millis() as u64;
+    let context_init = initialize_context_with_backend(model_id, &model_path_str)?;
     decode_with_context(
-        &ctx,
+        &context_init.context,
         samples,
         model_id,
         decode_mode,
         cancel_token,
-        model_init_ms,
+        context_init.model_init_ms,
         false,
+        context_init.backend_requested,
+        context_init.backend_used,
+        context_init.backend_fallback,
     )
 }
 
@@ -442,6 +590,9 @@ pub(crate) fn decode_with_context(
     cancel_token: &CancellationToken,
     model_init_ms: u64,
     runtime_cache_hit: bool,
+    backend_requested: RuntimeBackend,
+    backend_used: RuntimeBackend,
+    backend_fallback: bool,
 ) -> Result<WhisperDecodeOutput, InferenceError> {
     let condition_started = Instant::now();
     let conditioned_samples = condition_audio_for_decode(samples);
@@ -538,8 +689,78 @@ pub(crate) fn decode_with_context(
             audio_condition_ms,
             decode_compute_ms: decode_started.elapsed().as_millis() as u64,
             runtime_cache_hit,
+            backend_requested: backend_requested.as_str().to_string(),
+            backend_used: backend_used.as_str().to_string(),
+            backend_fallback,
         },
     })
+}
+
+pub(crate) struct ContextInitResult {
+    pub context: WhisperContext,
+    pub model_init_ms: u64,
+    pub backend_requested: RuntimeBackend,
+    pub backend_used: RuntimeBackend,
+    pub backend_fallback: bool,
+}
+
+pub(crate) fn initialize_context_with_backend(
+    model_id: &str,
+    model_path: &str,
+) -> Result<ContextInitResult, InferenceError> {
+    let requested_backend = preferred_backend_for_model(model_id);
+    let init_started = Instant::now();
+    let requested_params = context_params_for_backend(requested_backend);
+
+    match WhisperContext::new_with_params(model_path, requested_params) {
+        Ok(context) => {
+            let model_init_ms = init_started.elapsed().as_millis() as u64;
+            Ok(ContextInitResult {
+                context,
+                model_init_ms,
+                backend_requested: requested_backend,
+                backend_used: requested_backend,
+                backend_fallback: false,
+            })
+        }
+        Err(requested_err) => {
+            if requested_backend == RuntimeBackend::Cpu {
+                return Err(InferenceError::ModelLoadFailed {
+                    model_id: model_id.to_string(),
+                    path: model_path.to_string(),
+                    reason: requested_err.to_string(),
+                });
+            }
+            let gpu_locked = note_gpu_runtime_failure();
+            let lock_note = if gpu_locked {
+                " gpu backend locked to CPU for this app session after repeated failures."
+            } else {
+                ""
+            };
+
+            let fallback_backend = RuntimeBackend::Cpu;
+            let fallback_params = context_params_for_backend(fallback_backend);
+            WhisperContext::new_with_params(model_path, fallback_params)
+                .map(|context| ContextInitResult {
+                    context,
+                    model_init_ms: init_started.elapsed().as_millis() as u64,
+                    backend_requested: requested_backend,
+                    backend_used: fallback_backend,
+                    backend_fallback: true,
+                })
+                .map_err(|fallback_err| InferenceError::ModelLoadFailed {
+                    model_id: model_id.to_string(),
+                    path: model_path.to_string(),
+                    reason: format!(
+                        "preferred backend '{}' failed: {}; cpu fallback failed: {}.{}",
+                        requested_backend.as_str(),
+                        requested_err,
+                        fallback_err,
+                        lock_note
+                    ),
+                })
+        }
+    }
 }
 
 pub(crate) fn validate_model_artifact(model_path: &Path) -> Result<(), InferenceError> {

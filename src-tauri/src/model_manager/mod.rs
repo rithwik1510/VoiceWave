@@ -13,6 +13,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+const FASTER_WHISPER_FORMAT: &str = "faster-whisper";
+const FASTER_WHISPER_VERSION: &str = "faster-whisper-v1";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedModelManifest {
@@ -251,6 +254,48 @@ impl ModelManager {
             self.persist_installed()?;
         }
         Ok(())
+    }
+
+    pub fn install_faster_whisper_model(
+        &mut self,
+        model_id: &str,
+        cache_path: &str,
+    ) -> Result<InstalledModel, ModelError> {
+        let manifest = self
+            .catalog
+            .iter()
+            .find(|item| item.model_id == model_id)
+            .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))?;
+        if !is_virtual_model_format(&manifest.format) {
+            return Err(ModelError::UnsupportedModelFormat {
+                model_id: model_id.to_string(),
+                format: manifest.format.clone(),
+            });
+        }
+
+        let cache_path = PathBuf::from(cache_path);
+        if !cache_path.exists() {
+            return Err(ModelError::SourceMissing {
+                model_id: model_id.to_string(),
+                expected_path: cache_path.to_string_lossy().to_string(),
+            });
+        }
+
+        let size_bytes = directory_size_bytes(&cache_path).unwrap_or(manifest.size);
+        let installed = InstalledModel {
+            model_id: manifest.model_id.clone(),
+            version: manifest.version.clone(),
+            format: manifest.format.clone(),
+            size_bytes,
+            file_path: cache_path.to_string_lossy().to_string(),
+            sha256: manifest.sha256.clone(),
+            installed_at_utc_ms: now_utc_ms(),
+            checksum_verified: true,
+        };
+        self.installed
+            .insert(installed.model_id.clone(), installed.clone());
+        self.persist_installed()?;
+        Ok(installed)
     }
 
     pub fn get_catalog_item(&self, model_id: &str) -> Option<ModelCatalogItem> {
@@ -759,6 +804,13 @@ impl ModelManager {
         let mut changed = false;
         let mut to_remove = Vec::new();
         for (model_id, model) in &self.installed {
+            if is_virtual_model_format(&model.format) {
+                if !Path::new(&model.file_path).exists() {
+                    to_remove.push(model_id.clone());
+                    changed = true;
+                }
+                continue;
+            }
             let path = Path::new(&model.file_path);
             if !path.exists() {
                 to_remove.push(model_id.clone());
@@ -1070,6 +1122,21 @@ fn now_utc_ms() -> u64 {
         .unwrap_or_default()
 }
 
+fn directory_size_bytes(path: &Path) -> Option<u64> {
+    let mut total = 0_u64;
+    let entries = fs::read_dir(path).ok()?;
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let metadata = fs::metadata(&entry_path).ok()?;
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            total = total.saturating_add(directory_size_bytes(&entry_path)?);
+        }
+    }
+    Some(total)
+}
+
 fn allow_synthetic_sources() -> bool {
     cfg!(test)
         || env::var("VOICEWAVE_SYNTHETIC_MODEL_SOURCES")
@@ -1079,7 +1146,14 @@ fn allow_synthetic_sources() -> bool {
 
 fn is_supported_format(format: &str) -> bool {
     let normalized = format.trim().to_ascii_lowercase();
-    matches!(normalized.as_str(), "gguf" | "bin" | "ggml" | "ggml-bin")
+    matches!(
+        normalized.as_str(),
+        "gguf" | "bin" | "ggml" | "ggml-bin" | "faster-whisper"
+    )
+}
+
+fn is_virtual_model_format(format: &str) -> bool {
+    format.trim().eq_ignore_ascii_case(FASTER_WHISPER_FORMAT)
 }
 
 fn model_extension_for(format: &str) -> &'static str {
@@ -1105,9 +1179,14 @@ fn default_model_format() -> String {
 }
 
 fn manifest_to_catalog_item(manifest: &SignedModelManifest) -> ModelCatalogItem {
+    let display_name = match manifest.model_id.as_str() {
+        "fw-small.en" => "faster-whisper small.en".to_string(),
+        "fw-large-v3" => "faster-whisper large-v3".to_string(),
+        _ => manifest.model_id.clone(),
+    };
     ModelCatalogItem {
         model_id: manifest.model_id.clone(),
-        display_name: manifest.model_id.clone(),
+        display_name,
         version: manifest.version.clone(),
         format: manifest.format.clone(),
         size_bytes: manifest.size,
@@ -1170,19 +1249,47 @@ fn build_catalog() -> Vec<SignedModelManifest> {
 
 fn build_synthetic_catalog() -> Vec<SignedModelManifest> {
     let version = "phase3-local-synthetic-1";
-    ["tiny.en", "base.en", "small.en", "medium.en"]
+    [
+        "fw-small.en",
+        "fw-large-v3",
+        "tiny.en",
+        "base.en",
+        "small.en",
+        "medium.en",
+    ]
         .iter()
         .map(|model_id| {
+            let is_fw = model_id.starts_with("fw-");
             let size = model_artifact_size_for(model_id);
             let payload = source_payload_for_manifest(model_id, version, size);
             let mut manifest = SignedModelManifest {
                 model_id: (*model_id).to_string(),
-                version: version.to_string(),
-                format: default_model_format(),
+                version: if is_fw {
+                    FASTER_WHISPER_VERSION.to_string()
+                } else {
+                    version.to_string()
+                },
+                format: if is_fw {
+                    FASTER_WHISPER_FORMAT.to_string()
+                } else {
+                    default_model_format()
+                },
                 size,
                 sha256: sha256_hex(&payload),
-                license: "MIT-Local-Eval".to_string(),
-                download_url: format!("local://model-artifacts/{model_id}/{version}"),
+                license: if is_fw {
+                    "MIT (faster-whisper + model license)".to_string()
+                } else {
+                    "MIT-Local-Eval".to_string()
+                },
+                download_url: if is_fw {
+                    if *model_id == "fw-small.en" {
+                        "faster-whisper://small.en".to_string()
+                    } else {
+                        "faster-whisper://large-v3".to_string()
+                    }
+                } else {
+                    format!("local://model-artifacts/{model_id}/{version}")
+                },
                 signature: String::new(),
             };
             manifest.signature = sign_manifest(&manifest);
@@ -1223,7 +1330,8 @@ fn build_whispercpp_catalog() -> Vec<SignedModelManifest> {
         },
     ];
 
-    rows.iter()
+    let mut manifests = rows
+        .iter()
         .map(|row| {
             let mut manifest = SignedModelManifest {
                 model_id: row.model_id.to_string(),
@@ -1238,11 +1346,35 @@ fn build_whispercpp_catalog() -> Vec<SignedModelManifest> {
             manifest.signature = sign_manifest(&manifest);
             manifest
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    let faster_rows = [
+        ("fw-small.en", "small.en", 487_614_201_u64),
+        ("fw-large-v3", "large-v3", 3_094_000_000_u64),
+    ];
+
+    for (voicewave_id, runtime_id, size) in faster_rows {
+        let mut manifest = SignedModelManifest {
+            model_id: voicewave_id.to_string(),
+            version: FASTER_WHISPER_VERSION.to_string(),
+            format: FASTER_WHISPER_FORMAT.to_string(),
+            size,
+            sha256: format!("{:064x}", size),
+            license: "MIT (faster-whisper + model license)".to_string(),
+            download_url: format!("faster-whisper://{runtime_id}"),
+            signature: String::new(),
+        };
+        manifest.signature = sign_manifest(&manifest);
+        manifests.push(manifest);
+    }
+
+    manifests
 }
 
 fn model_artifact_size_for(model_id: &str) -> u64 {
     match model_id {
+        "fw-small.en" => 1024 * 1024,
+        "fw-large-v3" => 2 * 1024 * 1024,
         "tiny.en" => 256 * 1024,
         "base.en" => 512 * 1024,
         "small.en" => 1024 * 1024,

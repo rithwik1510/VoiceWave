@@ -1,5 +1,5 @@
 {
-  "generatedAtUtc": "epoch-ms-1770814623607",
+  "generatedAtUtc": "epoch-ms-1770833111233",
   "source": "phaseA runtime sweep (real whisper runtime, fixture audio)",
   "runsPerModel": 10,
   "releaseToTranscribingP95Ms": 244,
@@ -8,32 +8,38 @@
   "emptyDecodeRate": 0.0,
   "longUtteranceTailLossCount": 0,
   "smallEn": {
-    "p50ReleaseToFinalMs": 3700,
-    "p95ReleaseToFinalMs": 3944
+    "p50ReleaseToFinalMs": 4235,
+    "p95ReleaseToFinalMs": 5960
   },
   "models": [
     {
       "modelId": "tiny.en",
-      "p50ReleaseToFinalMs": 562,
-      "p95ReleaseToFinalMs": 591,
+      "p50ReleaseToFinalMs": 597,
+      "p95ReleaseToFinalMs": 662,
       "p50ModelInitMs": 0,
       "p95ModelInitMs": 0,
-      "p50DecodeComputeMs": 544,
-      "p95DecodeComputeMs": 576,
+      "p50DecodeComputeMs": 578,
+      "p95DecodeComputeMs": 644,
       "cacheHitRatio": 1.0,
+      "requestedCudaRatio": 0.0,
+      "usedCudaRatio": 0.0,
+      "backendFallbackRatio": 0.0,
       "decodeFailureRate": 0.0,
       "emptyDecodeRate": 0.0,
       "runs": 10
     },
     {
       "modelId": "small.en",
-      "p50ReleaseToFinalMs": 3700,
-      "p95ReleaseToFinalMs": 3944,
+      "p50ReleaseToFinalMs": 4235,
+      "p95ReleaseToFinalMs": 5960,
       "p50ModelInitMs": 0,
       "p95ModelInitMs": 0,
-      "p50DecodeComputeMs": 3666,
-      "p95DecodeComputeMs": 3907,
+      "p50DecodeComputeMs": 4186,
+      "p95DecodeComputeMs": 5914,
       "cacheHitRatio": 1.0,
+      "requestedCudaRatio": 0.0,
+      "usedCudaRatio": 0.0,
+      "backendFallbackRatio": 0.0,
       "decodeFailureRate": 0.0,
       "emptyDecodeRate": 0.0,
       "runs": 10

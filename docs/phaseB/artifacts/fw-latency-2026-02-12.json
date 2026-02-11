@@ -1,0 +1,27 @@
+{
+  "generatedAtUtc": "epoch-ms-1770838896963",
+  "source": "phaseB runtime sweep (fixture audio, whispercpp small vs faster-whisper small)",
+  "runsPerModel": 20,
+  "models": [
+    {
+      "modelId": "small.en",
+      "runs": 20,
+      "p50ReleaseToFinalMs": 3806,
+      "p95ReleaseToFinalMs": 4540,
+      "p50DecodeComputeMs": 3770,
+      "p95DecodeComputeMs": 4501,
+      "cacheHitRatio": 1.0,
+      "successRate": 1.0
+    },
+    {
+      "modelId": "fw-small.en",
+      "runs": 20,
+      "p50ReleaseToFinalMs": 1745,
+      "p95ReleaseToFinalMs": 1927,
+      "p50DecodeComputeMs": 1684,
+      "p95DecodeComputeMs": 1857,
+      "cacheHitRatio": 1.0,
+      "successRate": 1.0
+    }
+  ]
+}

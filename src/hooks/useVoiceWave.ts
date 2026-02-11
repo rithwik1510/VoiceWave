@@ -89,7 +89,7 @@ const DEFAULT_DECODE_MODE: DecodeMode = "balanced";
 
 const fallbackSettings: VoiceWaveSettings = {
   inputDevice: null,
-  activeModel: "small.en",
+  activeModel: "fw-small.en",
   showFloatingHud: true,
   vadThreshold: 0.014,
   maxUtteranceMs: DEFAULT_MAX_UTTERANCE_MS,
@@ -105,7 +105,7 @@ const fallbackSnapshot: VoiceWaveSnapshot = {
   state: "idle",
   lastPartial: null,
   lastFinal: null,
-  activeModel: "small.en"
+  activeModel: "fw-small.en"
 };
 
 const fallbackHotkeys: HotkeySnapshot = {
@@ -133,6 +133,28 @@ const fallbackDiagnosticsStatus: DiagnosticsStatus = {
 };
 
 const fallbackModelCatalog: ModelCatalogItem[] = [
+  {
+    modelId: "fw-small.en",
+    displayName: "faster-whisper small.en",
+    version: "faster-whisper-v1",
+    format: "faster-whisper",
+    sizeBytes: 487_614_201,
+    sha256: "000000000000000000000000000000000000000000000000000000001d10d5f9",
+    license: "MIT (faster-whisper + model license)",
+    downloadUrl: "faster-whisper://small.en",
+    signature: "local"
+  },
+  {
+    modelId: "fw-large-v3",
+    displayName: "faster-whisper large-v3",
+    version: "faster-whisper-v1",
+    format: "faster-whisper",
+    sizeBytes: 3_094_000_000,
+    sha256: "00000000000000000000000000000000000000000000000000000000b8684430",
+    license: "MIT (faster-whisper + model license)",
+    downloadUrl: "faster-whisper://large-v3",
+    signature: "local"
+  },
   {
     modelId: "tiny.en",
     displayName: "tiny.en",
@@ -390,6 +412,7 @@ export function useVoiceWave() {
   const [error, setError] = useState<string | null>(null);
   const timeoutHandles = useRef<number[]>([]);
   const pushToTalkLatchedRef = useRef(false);
+  const autoModelSelectionTriggeredRef = useRef(false);
 
   const clearWebTimers = useCallback(() => {
     timeoutHandles.current.forEach((timeoutId) => {
@@ -492,7 +515,23 @@ export function useVoiceWave() {
       return settings.activeModel;
     }
 
-    const preferredInstalledOrder = ["tiny.en", "base.en", "small.en", "medium.en"];
+    if (settings.activeModel.startsWith("fw-")) {
+      const fwStatus = await downloadModel({ modelId: settings.activeModel });
+      setModelStatuses((prev) => ({ ...prev, [settings.activeModel]: fwStatus }));
+      if (fwStatus.state === "installed") {
+        await refreshPhase3Data(settings.activeModel);
+        return settings.activeModel;
+      }
+    }
+
+    const preferredInstalledOrder = [
+      "fw-small.en",
+      "fw-large-v3",
+      "tiny.en",
+      "base.en",
+      "small.en",
+      "medium.en"
+    ];
     const installedSet = new Set(installedModels.map((row) => row.modelId));
     const fallbackInstalled =
       preferredInstalledOrder.find((modelId) => installedSet.has(modelId)) ??
@@ -508,7 +547,10 @@ export function useVoiceWave() {
     }
 
     const bootstrapModelId =
-      modelCatalog.find((row) => row.modelId === "tiny.en")?.modelId ?? modelCatalog[0]?.modelId ?? null;
+      modelCatalog.find((row) => row.modelId === "fw-small.en")?.modelId ??
+      modelCatalog.find((row) => row.modelId === "tiny.en")?.modelId ??
+      modelCatalog[0]?.modelId ??
+      null;
     if (!bootstrapModelId) {
       throw new Error("No models are available in catalog. Open Models and refresh runtime state.");
     }
@@ -1015,12 +1057,33 @@ export function useVoiceWave() {
       return;
     }
     try {
-      setBenchmarkResults(await runModelBenchmark());
-      setModelRecommendation(await recommendModel());
+      if (installedModels.length === 0) {
+        setError("Install at least one model before running benchmark.");
+        return;
+      }
+
+      const benchmarkRequest = {
+        modelIds: installedModels.map((model) => model.modelId)
+      };
+      const run = await runModelBenchmark(benchmarkRequest);
+      setBenchmarkResults(run);
+
+      const recommendation = await recommendModel();
+      setModelRecommendation(recommendation);
+
+      const recommendedInstalled = installedModels.some(
+        (model) => model.modelId === recommendation.modelId
+      );
+      if (recommendedInstalled && recommendation.modelId !== settings.activeModel) {
+        const nextSettings = normalizeSettings(await setActiveModel(recommendation.modelId));
+        setSettings(nextSettings);
+        setSnapshot((prev) => ({ ...prev, activeModel: nextSettings.activeModel }));
+        await refreshPhase3Data(nextSettings.activeModel);
+      }
     } catch (benchmarkErr) {
       setError(benchmarkErr instanceof Error ? benchmarkErr.message : "Benchmark flow failed");
     }
-  }, [tauriAvailable]);
+  }, [installedModels, refreshPhase3Data, settings.activeModel, tauriAvailable]);
 
   const updateRetentionPolicy = useCallback(async (policy: RetentionPolicy) => {
     if (!tauriAvailable) {
@@ -1420,6 +1483,34 @@ export function useVoiceWave() {
       pushToTalkLatchedRef.current = false;
     };
   }, [applyHotkeyAction, hotkeys.config.pushToTalk, hotkeys.config.toggle, tauriAvailable]);
+
+  useEffect(() => {
+    if (!tauriAvailable) {
+      return;
+    }
+    if (autoModelSelectionTriggeredRef.current) {
+      return;
+    }
+    if (benchmarkResults) {
+      autoModelSelectionTriggeredRef.current = true;
+      return;
+    }
+    if (installedModels.length < 2) {
+      return;
+    }
+    if (snapshot.state !== "idle") {
+      return;
+    }
+
+    autoModelSelectionTriggeredRef.current = true;
+    void runBenchmarkAndRecommend();
+  }, [
+    benchmarkResults,
+    installedModels.length,
+    runBenchmarkAndRecommend,
+    snapshot.state,
+    tauriAvailable
+  ]);
 
   const activeState: VoiceWaveHudState = useMemo(() => snapshot.state, [snapshot.state]);
   const micQualityWarning = useMemo<MicQualityWarning | null>(() => {

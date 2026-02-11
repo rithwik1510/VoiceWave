@@ -15,6 +15,7 @@ tauri-build = { version = "2.0.2", features = [] }
 [features]
 default = ["desktop"]
 desktop = ["dep:tauri"]
+whisper-cuda = ["whisper-rs/cuda"]
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -31,7 +32,7 @@ tauri = { version = "2.2.5", features = [], optional = true }
 thiserror = "2.0.12"
 tokio = { version = "1.44.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = "0.7.13"
-windows-sys = { version = "0.59.0", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.59.0", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 whisper-rs = "0.15.1"
 ureq = "2.12.0"
 

@@ -7,7 +7,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use voicewave_core_lib::{
     audio::{mock_audio_fixture_frames, VadConfig, VadSegmenter},
-    inference::InferenceWorker,
+    inference::{prefetch_faster_whisper_model, InferenceWorker},
     model_manager::ModelManager,
     settings::DecodeMode,
 };
@@ -16,49 +16,30 @@ const SAMPLE_RATE: usize = 16_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelLatencyRow {
+struct SweepModelRow {
     model_id: String,
+    runs: usize,
     p50_release_to_final_ms: u64,
     p95_release_to_final_ms: u64,
-    p50_model_init_ms: u64,
-    p95_model_init_ms: u64,
     p50_decode_compute_ms: u64,
     p95_decode_compute_ms: u64,
     cache_hit_ratio: f32,
-    requested_cuda_ratio: f32,
-    used_cuda_ratio: f32,
-    backend_fallback_ratio: f32,
-    decode_failure_rate: f32,
-    empty_decode_rate: f32,
-    runs: usize,
+    success_rate: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SmallEnSummary {
-    p50_release_to_final_ms: u64,
-    p95_release_to_final_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PhaseAArtifact {
+struct SweepArtifact {
     generated_at_utc: String,
     source: String,
     runs_per_model: usize,
-    release_to_transcribing_p95_ms: u64,
-    cache_hit_ratio: f32,
-    decode_failure_rate: f32,
-    empty_decode_rate: f32,
-    long_utterance_tail_loss_count: u64,
-    small_en: SmallEnSummary,
-    models: Vec<ModelLatencyRow>,
+    models: Vec<SweepModelRow>,
 }
 
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("phaseA CPU sweep failed: {err}");
+        eprintln!("phaseB fw sweep failed: {err}");
         std::process::exit(1);
     }
 }
@@ -70,18 +51,12 @@ async fn run() -> Result<(), String> {
         .unwrap_or_else(default_output_path);
     let runs = parse_arg_value(&args, "--runs")
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(10)
-        .clamp(4, 30);
+        .unwrap_or(20)
+        .clamp(8, 40);
     let warmup_runs = parse_arg_value(&args, "--warmup-runs")
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(2)
-        .clamp(1, 5);
-    let release_to_transcribing_p95_ms = parse_arg_value(&args, "--release-to-transcribing-p95-ms")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(244);
-    let long_utterance_tail_loss_count = parse_arg_value(&args, "--tail-loss-count")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
+        .unwrap_or(3)
+        .clamp(1, 8);
 
     let merged_samples = build_fixture_samples();
     if merged_samples.is_empty() {
@@ -90,102 +65,52 @@ async fn run() -> Result<(), String> {
 
     let manager = ModelManager::new().map_err(|err| format!("model manager init failed: {err}"))?;
     let installed = manager.list_installed();
-    let mut model_rows = Vec::new();
-    for model_id in ["tiny.en", "small.en"] {
-        let Some(installed_model) = installed.iter().find(|row| row.model_id == model_id) else {
-            return Err(format!(
-                "required model '{model_id}' is not installed; install it from Models before running sweep"
-            ));
-        };
-        let row = run_model_sweep(
-            model_id,
-            Path::new(&installed_model.file_path),
-            &merged_samples,
-            warmup_runs,
-            runs,
-        )
-        .await?;
-        model_rows.push(row);
-    }
-
-    let small = model_rows
+    let small_model = installed
         .iter()
         .find(|row| row.model_id == "small.en")
-        .ok_or_else(|| "small.en sweep row missing".to_string())?;
+        .ok_or_else(|| {
+            "required model 'small.en' is not installed; install it before running sweep".to_string()
+        })?;
 
-    let (total_runs, total_cache_hits, total_failures, total_empty) = model_rows.iter().fold(
-        (0usize, 0usize, 0usize, 0usize),
-        |(runs_acc, cache_hits_acc, failures_acc, empty_acc), row| {
-            let runs_for_row = row.runs;
-            let cache_hits_for_row = (row.cache_hit_ratio * runs_for_row as f32).round() as usize;
-            let failures_for_row = (row.decode_failure_rate * runs_for_row as f32).round() as usize;
-            let empty_for_row = (row.empty_decode_rate * runs_for_row as f32).round() as usize;
-            (
-                runs_acc + runs_for_row,
-                cache_hits_acc + cache_hits_for_row,
-                failures_acc + failures_for_row,
-                empty_acc + empty_for_row,
-            )
-        },
+    let small_worker = InferenceWorker::new_runtime_with_mode(
+        "small.en".to_string(),
+        Path::new(&small_model.file_path).to_path_buf(),
+        DecodeMode::Balanced,
     );
-    let cache_hit_ratio = if total_runs == 0 {
-        0.0
-    } else {
-        total_cache_hits as f32 / total_runs as f32
-    };
-    let decode_failure_rate = if total_runs == 0 {
-        0.0
-    } else {
-        total_failures as f32 / total_runs as f32
-    };
-    let empty_decode_rate = if total_runs == 0 {
-        0.0
-    } else {
-        total_empty as f32 / total_runs as f32
-    };
 
-    let artifact = PhaseAArtifact {
+    let _ = prefetch_faster_whisper_model("fw-small.en")
+        .await
+        .map_err(|err| format!("fw-small prefetch failed: {err}"))?;
+    let fw_worker =
+        InferenceWorker::new_faster_whisper_with_mode("fw-small.en".to_string(), DecodeMode::Balanced);
+
+    let small_row = run_worker_sweep("small.en", &small_worker, &merged_samples, warmup_runs, runs).await?;
+    let fw_row = run_worker_sweep("fw-small.en", &fw_worker, &merged_samples, warmup_runs, runs).await?;
+
+    let artifact = SweepArtifact {
         generated_at_utc: now_utc_iso(),
-        source: "phaseA runtime sweep (real whisper runtime, fixture audio)".to_string(),
+        source: "phaseB runtime sweep (fixture audio, whispercpp small vs faster-whisper small)"
+            .to_string(),
         runs_per_model: runs,
-        release_to_transcribing_p95_ms,
-        cache_hit_ratio,
-        decode_failure_rate,
-        empty_decode_rate,
-        long_utterance_tail_loss_count,
-        small_en: SmallEnSummary {
-            p50_release_to_final_ms: small.p50_release_to_final_ms,
-            p95_release_to_final_ms: small.p95_release_to_final_ms,
-        },
-        models: model_rows,
+        models: vec![small_row, fw_row],
     };
 
     write_json_report(&out_path, &artifact)?;
-    println!("phaseA CPU sweep written to {}", out_path.display());
+    println!("phaseB fw sweep written to {}", out_path.display());
     Ok(())
 }
 
-async fn run_model_sweep(
+async fn run_worker_sweep(
     model_id: &str,
-    model_path: &Path,
+    worker: &InferenceWorker,
     samples: &[f32],
     warmup_runs: usize,
     measured_runs: usize,
-) -> Result<ModelLatencyRow, String> {
-    let worker = InferenceWorker::new_runtime_with_mode(
-        model_id.to_string(),
-        model_path.to_path_buf(),
-        DecodeMode::Balanced,
-    );
+) -> Result<SweepModelRow, String> {
     let mut total_runs = 0usize;
     let mut cache_hits = 0usize;
-    let mut failures = 0usize;
-    let mut empties = 0usize;
-    let mut requested_cuda = 0usize;
-    let mut used_cuda = 0usize;
-    let mut backend_fallbacks = 0usize;
+    let mut successes = 0usize;
     let mut total_ms = Vec::new();
-    let mut init_ms = Vec::new();
     let mut compute_ms = Vec::new();
 
     for idx in 0..(warmup_runs + measured_runs) {
@@ -201,49 +126,30 @@ async fn run_model_sweep(
         }
 
         total_runs += 1;
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        total_ms.push(elapsed_ms);
-        init_ms.push(result.telemetry.model_init_ms);
+        total_ms.push(started.elapsed().as_millis() as u64);
         compute_ms.push(result.telemetry.decode_compute_ms);
         if result.telemetry.runtime_cache_hit {
             cache_hits += 1;
         }
         if result
-            .telemetry
-            .backend_requested
-            .eq_ignore_ascii_case("cuda")
+            .transcript
+            .as_ref()
+            .is_some_and(|text| !text.trim().is_empty())
         {
-            requested_cuda += 1;
-        }
-        if result.telemetry.backend_used.eq_ignore_ascii_case("cuda") {
-            used_cuda += 1;
-        }
-        if result.telemetry.backend_fallback {
-            backend_fallbacks += 1;
-        }
-        match result.transcript {
-            Some(text) if text.trim().is_empty() => {
-                empties += 1;
-            }
-            Some(_) => {}
-            None => {
-                failures += 1;
-            }
+            successes += 1;
         }
     }
 
     total_ms.sort_unstable();
-    init_ms.sort_unstable();
     compute_ms.sort_unstable();
     let p50_idx = percentile_index(total_ms.len(), 0.50);
     let p95_idx = percentile_index(total_ms.len(), 0.95);
 
-    Ok(ModelLatencyRow {
+    Ok(SweepModelRow {
         model_id: model_id.to_string(),
+        runs: total_runs,
         p50_release_to_final_ms: total_ms[p50_idx],
         p95_release_to_final_ms: total_ms[p95_idx],
-        p50_model_init_ms: init_ms[p50_idx],
-        p95_model_init_ms: init_ms[p95_idx],
         p50_decode_compute_ms: compute_ms[p50_idx],
         p95_decode_compute_ms: compute_ms[p95_idx],
         cache_hit_ratio: if total_runs == 0 {
@@ -251,32 +157,11 @@ async fn run_model_sweep(
         } else {
             cache_hits as f32 / total_runs as f32
         },
-        requested_cuda_ratio: if total_runs == 0 {
+        success_rate: if total_runs == 0 {
             0.0
         } else {
-            requested_cuda as f32 / total_runs as f32
+            successes as f32 / total_runs as f32
         },
-        used_cuda_ratio: if total_runs == 0 {
-            0.0
-        } else {
-            used_cuda as f32 / total_runs as f32
-        },
-        backend_fallback_ratio: if total_runs == 0 {
-            0.0
-        } else {
-            backend_fallbacks as f32 / total_runs as f32
-        },
-        decode_failure_rate: if total_runs == 0 {
-            0.0
-        } else {
-            failures as f32 / total_runs as f32
-        },
-        empty_decode_rate: if total_runs == 0 {
-            0.0
-        } else {
-            empties as f32 / total_runs as f32
-        },
-        runs: total_runs,
     })
 }
 
@@ -320,7 +205,7 @@ fn parse_arg_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
 
 fn default_output_path() -> PathBuf {
     let stamp = now_utc_date();
-    PathBuf::from("../docs/phaseA/artifacts").join(format!("cpu-latency-{stamp}.json"))
+    PathBuf::from("../docs/phaseB/artifacts").join(format!("fw-latency-{stamp}.json"))
 }
 
 fn write_json_report<T: serde::Serialize>(path: &Path, report: &T) -> Result<(), String> {
