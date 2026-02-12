@@ -86,6 +86,12 @@ const DEFAULT_RELEASE_TAIL_MS = 350;
 const MIN_RELEASE_TAIL_MS = 120;
 const MAX_RELEASE_TAIL_MS = 1_500;
 const DEFAULT_DECODE_MODE: DecodeMode = "balanced";
+const SUPPORTED_MODEL_IDS = ["fw-small.en", "fw-large-v3"] as const;
+const LEGACY_MODEL_IDS = ["tiny.en", "base.en", "small.en", "medium.en"] as const;
+
+function isSupportedModelId(modelId: string): boolean {
+  return SUPPORTED_MODEL_IDS.includes(modelId as (typeof SUPPORTED_MODEL_IDS)[number]);
+}
 
 const fallbackSettings: VoiceWaveSettings = {
   inputDevice: null,
@@ -96,8 +102,8 @@ const fallbackSettings: VoiceWaveSettings = {
   releaseTailMs: DEFAULT_RELEASE_TAIL_MS,
   decodeMode: DEFAULT_DECODE_MODE,
   diagnosticsOptIn: false,
-  toggleHotkey: "Ctrl+Shift+Space",
-  pushToTalkHotkey: "Ctrl+Alt+Space",
+  toggleHotkey: "Ctrl+Alt+X",
+  pushToTalkHotkey: "Ctrl+Windows",
   preferClipboardFallback: false
 };
 
@@ -110,8 +116,8 @@ const fallbackSnapshot: VoiceWaveSnapshot = {
 
 const fallbackHotkeys: HotkeySnapshot = {
   config: {
-    toggle: "Ctrl+Shift+Space",
-    pushToTalk: "Ctrl+Alt+Space"
+    toggle: "Ctrl+Alt+X",
+    pushToTalk: "Ctrl+Windows"
   },
   conflicts: [],
   registrationSupported: true,
@@ -154,56 +160,26 @@ const fallbackModelCatalog: ModelCatalogItem[] = [
     license: "MIT (faster-whisper + model license)",
     downloadUrl: "faster-whisper://large-v3",
     signature: "local"
-  },
-  {
-    modelId: "tiny.en",
-    displayName: "tiny.en",
-    version: "whispercpp-ggml-main",
-    format: "bin",
-    sizeBytes: 77_704_715,
-    sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
-    license: "MIT (whisper.cpp)",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
-    signature: "local"
-  },
-  {
-    modelId: "base.en",
-    displayName: "base.en",
-    version: "whispercpp-ggml-main",
-    format: "bin",
-    sizeBytes: 147_964_211,
-    sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
-    license: "MIT (whisper.cpp)",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
-    signature: "local"
-  },
-  {
-    modelId: "small.en",
-    displayName: "small.en",
-    version: "whispercpp-ggml-main",
-    format: "bin",
-    sizeBytes: 487_614_201,
-    sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
-    license: "MIT (whisper.cpp)",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
-    signature: "local"
-  },
-  {
-    modelId: "medium.en",
-    displayName: "medium.en",
-    version: "whispercpp-ggml-main",
-    format: "bin",
-    sizeBytes: 1_533_774_781,
-    sha256: "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
-    license: "MIT (whisper.cpp)",
-    downloadUrl: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
-    signature: "local"
   }
 ];
 
 const RECOMMENDED_VAD_THRESHOLD = 0.014;
 const MIN_VAD_THRESHOLD = 0.005;
 const MAX_VAD_THRESHOLD = 0.04;
+const LOCKED_TOGGLE_HOTKEY = "Ctrl+Alt+X";
+const LOCKED_PUSH_TO_TALK_HOTKEY = "Ctrl+Windows";
+const MODIFIER_TOKENS = [
+  "CTRL",
+  "CONTROL",
+  "SHIFT",
+  "ALT",
+  "OPTION",
+  "META",
+  "SUPER",
+  "CMD",
+  "WIN",
+  "WINDOWS"
+];
 
 export interface MicQualityWarning {
   currentDevice: string;
@@ -218,12 +194,19 @@ function splitCombo(combo: string): string[] {
     .filter(Boolean);
 }
 
+function isModifierToken(token: string): boolean {
+  return MODIFIER_TOKENS.includes(token);
+}
+
 function getComboMainKey(combo: string): string | null {
   const tokens = splitCombo(combo);
-  const main = tokens.find(
-    (token) => !["CTRL", "CONTROL", "SHIFT", "ALT", "OPTION", "META", "SUPER", "CMD"].includes(token)
-  );
+  const main = tokens.find((token) => !isModifierToken(token));
   return main ?? null;
+}
+
+function comboIsModifierOnly(combo: string): boolean {
+  const tokens = splitCombo(combo);
+  return tokens.length > 0 && tokens.every((token) => isModifierToken(token));
 }
 
 function eventMatchesMainKey(event: KeyboardEvent, mainKey: string): boolean {
@@ -250,7 +233,12 @@ function comboMatchesKeyboardEvent(event: KeyboardEvent, combo: string): boolean
   const expectsCtrl = tokens.includes("CTRL") || tokens.includes("CONTROL");
   const expectsAlt = tokens.includes("ALT") || tokens.includes("OPTION");
   const expectsShift = tokens.includes("SHIFT");
-  const expectsMeta = tokens.includes("META") || tokens.includes("SUPER") || tokens.includes("CMD");
+  const expectsMeta =
+    tokens.includes("META") ||
+    tokens.includes("SUPER") ||
+    tokens.includes("CMD") ||
+    tokens.includes("WIN") ||
+    tokens.includes("WINDOWS");
 
   if (event.ctrlKey !== expectsCtrl) {
     return false;
@@ -265,11 +253,15 @@ function comboMatchesKeyboardEvent(event: KeyboardEvent, combo: string): boolean
     return false;
   }
 
-  const main = tokens.find(
-    (token) => !["CTRL", "CONTROL", "SHIFT", "ALT", "OPTION", "META", "SUPER", "CMD"].includes(token)
-  );
+  const main = tokens.find((token) => !isModifierToken(token));
   if (!main) {
-    return false;
+    const key = event.key.toUpperCase();
+    const modifierKeyMatch =
+      (expectsCtrl && (key === "CONTROL" || key === "CTRL")) ||
+      (expectsShift && key === "SHIFT") ||
+      (expectsAlt && (key === "ALT" || key === "OPTION")) ||
+      (expectsMeta && (key === "META" || key === "OS" || key === "WIN" || key === "WINDOWS"));
+    return modifierKeyMatch;
   }
 
   if (main === "SPACE") {
@@ -300,14 +292,27 @@ function clampReleaseTailMs(value: number): number {
   return Math.round(Math.min(MAX_RELEASE_TAIL_MS, Math.max(MIN_RELEASE_TAIL_MS, value)));
 }
 
+function normalizeActiveModel(activeModel: string): string {
+  if (SUPPORTED_MODEL_IDS.includes(activeModel as (typeof SUPPORTED_MODEL_IDS)[number])) {
+    return activeModel;
+  }
+  if (LEGACY_MODEL_IDS.includes(activeModel as (typeof LEGACY_MODEL_IDS)[number])) {
+    return "fw-small.en";
+  }
+  return "fw-small.en";
+}
+
 function normalizeSettings(settings: VoiceWaveSettings): VoiceWaveSettings {
   return {
     ...settings,
+    activeModel: normalizeActiveModel(settings.activeModel),
     vadThreshold: clampVadThreshold(settings.vadThreshold),
     maxUtteranceMs: clampMaxUtteranceMs(settings.maxUtteranceMs ?? DEFAULT_MAX_UTTERANCE_MS),
     releaseTailMs: clampReleaseTailMs(settings.releaseTailMs ?? DEFAULT_RELEASE_TAIL_MS),
     decodeMode: settings.decodeMode ?? DEFAULT_DECODE_MODE,
-    diagnosticsOptIn: settings.diagnosticsOptIn ?? false
+    diagnosticsOptIn: settings.diagnosticsOptIn ?? false,
+    toggleHotkey: LOCKED_TOGGLE_HOTKEY,
+    pushToTalkHotkey: LOCKED_PUSH_TO_TALK_HOTKEY
   };
 }
 
@@ -413,6 +418,11 @@ export function useVoiceWave() {
   const timeoutHandles = useRef<number[]>([]);
   const pushToTalkLatchedRef = useRef(false);
   const autoModelSelectionTriggeredRef = useRef(false);
+  const micLevelEventRef = useRef<{ lastAt: number; lastLevel: number; lastError: string | null }>({
+    lastAt: 0,
+    lastLevel: 0,
+    lastError: null
+  });
 
   const clearWebTimers = useCallback(() => {
     timeoutHandles.current.forEach((timeoutId) => {
@@ -457,10 +467,17 @@ export function useVoiceWave() {
         getDictionaryTerms(),
         getBenchmarkResults()
       ]);
-      setModelCatalog(catalogRows);
-      setInstalledModels(installedRows);
+      const supportedCatalog = catalogRows.filter((row) => isSupportedModelId(row.modelId));
+      const supportedInstalled = installedRows.filter((row) => isSupportedModelId(row.modelId));
+      setModelCatalog(supportedCatalog);
+      setInstalledModels(supportedInstalled);
       setModelStatuses((prev) =>
-        deriveModelStatuses(catalogRows, installedRows, activeModelOverride ?? settings.activeModel, prev)
+        deriveModelStatuses(
+          supportedCatalog,
+          supportedInstalled,
+          activeModelOverride ?? settings.activeModel,
+          prev
+        )
       );
       setSessionHistory(historyRows);
       setDictionaryQueue(queueRows);
@@ -524,14 +541,7 @@ export function useVoiceWave() {
       }
     }
 
-    const preferredInstalledOrder = [
-      "fw-small.en",
-      "fw-large-v3",
-      "tiny.en",
-      "base.en",
-      "small.en",
-      "medium.en"
-    ];
+    const preferredInstalledOrder = ["fw-small.en", "fw-large-v3"];
     const installedSet = new Set(installedModels.map((row) => row.modelId));
     const fallbackInstalled =
       preferredInstalledOrder.find((modelId) => installedSet.has(modelId)) ??
@@ -548,7 +558,7 @@ export function useVoiceWave() {
 
     const bootstrapModelId =
       modelCatalog.find((row) => row.modelId === "fw-small.en")?.modelId ??
-      modelCatalog.find((row) => row.modelId === "tiny.en")?.modelId ??
+      modelCatalog.find((row) => row.modelId === "fw-large-v3")?.modelId ??
       modelCatalog[0]?.modelId ??
       null;
     if (!bootstrapModelId) {
@@ -737,14 +747,16 @@ export function useVoiceWave() {
       }
       try {
         setSettings(normalizeSettings(await updateSettings(nextSettings)));
-        await stopMicLevelMonitor();
-        await startMicLevelMonitor();
+        if (snapshot.state === "listening") {
+          await stopMicLevelMonitor();
+          await startMicLevelMonitor();
+        }
         await refreshInputDevices();
       } catch (persistErr) {
         setError(persistErr instanceof Error ? persistErr.message : "Failed to update input device");
       }
     },
-    [refreshInputDevices, settings, tauriAvailable]
+    [refreshInputDevices, settings, snapshot.state, tauriAvailable]
   );
 
   const switchToRecommendedInput = useCallback(async () => {
@@ -810,14 +822,22 @@ export function useVoiceWave() {
   }, [tauriAvailable]);
 
   const updateHotkeys = useCallback(
-    async (config: HotkeyConfig) => {
-      setHotkeys((prev) => ({ ...prev, config }));
-      setSettings((prev) => ({ ...prev, toggleHotkey: config.toggle, pushToTalkHotkey: config.pushToTalk }));
+    async (_config: HotkeyConfig) => {
+      const lockedConfig = {
+        toggle: LOCKED_TOGGLE_HOTKEY,
+        pushToTalk: LOCKED_PUSH_TO_TALK_HOTKEY
+      };
+      setHotkeys((prev) => ({ ...prev, config: lockedConfig }));
+      setSettings((prev) => ({
+        ...prev,
+        toggleHotkey: LOCKED_TOGGLE_HOTKEY,
+        pushToTalkHotkey: LOCKED_PUSH_TO_TALK_HOTKEY
+      }));
       if (!tauriAvailable) {
         return;
       }
       try {
-        setHotkeys(await updateHotkeyConfig(config));
+        setHotkeys(await updateHotkeyConfig(lockedConfig));
       } catch (hotkeyErr) {
         setError(hotkeyErr instanceof Error ? hotkeyErr.message : "Failed to update hotkeys");
       }
@@ -1041,16 +1061,16 @@ export function useVoiceWave() {
         startedAtUtcMs: Date.now() - 1200,
         completedAtUtcMs: Date.now(),
         rows: [
-          { modelId: "small.en", runs: 3, p50LatencyMs: 260, p95LatencyMs: 420, averageRtf: 0.41 },
-          { modelId: "base.en", runs: 3, p50LatencyMs: 200, p95LatencyMs: 330, averageRtf: 0.33 }
+          { modelId: "fw-small.en", runs: 3, p50LatencyMs: 260, p95LatencyMs: 420, averageRtf: 0.41 },
+          { modelId: "fw-large-v3", runs: 3, p50LatencyMs: 510, p95LatencyMs: 830, averageRtf: 0.79 }
         ]
       };
       setBenchmarkResults(run);
       setModelRecommendation({
-        modelId: "base.en",
+        modelId: "fw-small.en",
         reason: "Best model under configured latency and RTF gates.",
-        p95LatencyMs: 330,
-        averageRtf: 0.33,
+        p95LatencyMs: 420,
+        averageRtf: 0.41,
         meetsLatencyGate: true,
         meetsRtfGate: true
       });
@@ -1234,14 +1254,6 @@ export function useVoiceWave() {
         setError(loadErr instanceof Error ? loadErr.message : "Failed to initialize VoiceWave runtime.");
       }
 
-      try {
-        await startMicLevelMonitor();
-      } catch (monitorErr) {
-        setMicLevelError(
-          monitorErr instanceof Error ? monitorErr.message : "Mic level monitor failed to start."
-        );
-      }
-
       stateUnlisten = await listenVoicewaveState(({ message, state }) => {
         setSnapshot((prev) => ({ ...prev, state }));
         if (state === "error" && message) {
@@ -1311,8 +1323,25 @@ export function useVoiceWave() {
 
       micLevelUnlisten = await listenVoicewaveMicLevel((payload: MicLevelEvent) => {
         const level = Math.max(0, Math.min(payload.level ?? 0, 1));
-        setMicLevel(level);
-        setMicLevelError(payload.error ?? null);
+        const error = payload.error ?? null;
+        const now = performance.now();
+        const prev = micLevelEventRef.current;
+        const shouldUpdateLevel =
+          Math.abs(level - prev.lastLevel) >= 0.03 || now - prev.lastAt >= 70;
+        const shouldUpdateError = error !== prev.lastError;
+        if (shouldUpdateLevel) {
+          setMicLevel(level);
+        }
+        if (shouldUpdateError) {
+          setMicLevelError(error);
+        }
+        if (shouldUpdateLevel || shouldUpdateError) {
+          micLevelEventRef.current = {
+            lastAt: now,
+            lastLevel: level,
+            lastError: error
+          };
+        }
       });
 
       audioQualityUnlisten = await listenVoicewaveAudioQuality((payload: AudioQualityReport) => {
@@ -1425,6 +1454,7 @@ export function useVoiceWave() {
     }
 
     const pushMainKey = getComboMainKey(hotkeys.config.pushToTalk);
+    const pushModifierOnly = comboIsModifierOnly(hotkeys.config.pushToTalk);
     const releasePushToTalk = () => {
       if (!pushToTalkLatchedRef.current) {
         return;
@@ -1452,10 +1482,28 @@ export function useVoiceWave() {
     };
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (!pushToTalkLatchedRef.current || !pushMainKey) {
+      if (!pushToTalkLatchedRef.current) {
         return;
       }
-      if (eventMatchesMainKey(event, pushMainKey)) {
+      if (pushModifierOnly) {
+        const key = event.key.toUpperCase();
+        const isModifierRelease =
+          key === "CONTROL" ||
+          key === "CTRL" ||
+          key === "META" ||
+          key === "OS" ||
+          key === "WIN" ||
+          key === "WINDOWS";
+        if (!isModifierRelease) {
+          return;
+        }
+        if (!comboMatchesKeyboardEvent(event, hotkeys.config.pushToTalk)) {
+          event.preventDefault();
+          releasePushToTalk();
+        }
+        return;
+      }
+      if (pushMainKey && eventMatchesMainKey(event, pushMainKey)) {
         event.preventDefault();
         releasePushToTalk();
       }

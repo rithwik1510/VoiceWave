@@ -279,13 +279,18 @@ impl InsertionEngine {
 
 fn should_auto_prefer_clipboard(text: &str, target_app: Option<&str>) -> bool {
     const LONG_TEXT_THRESHOLD: usize = 48;
+    const UNKNOWN_TARGET_THRESHOLD: usize = 1;
     if text.chars().count() >= LONG_TEXT_THRESHOLD {
         return true;
     }
 
     let Some(app) = target_app else {
-        return false;
+        return text.chars().count() >= UNKNOWN_TARGET_THRESHOLD;
     };
+    is_clipboard_preferred_target(app)
+}
+
+fn is_clipboard_preferred_target(app: &str) -> bool {
     let normalized = app.to_ascii_lowercase();
     normalized.contains("visual studio code")
         || normalized.contains("vscode")
@@ -293,6 +298,9 @@ fn should_auto_prefer_clipboard(text: &str, target_app: Option<&str>) -> bool {
         || normalized.contains("chrome")
         || normalized.contains("edge")
         || normalized.contains("firefox")
+        || normalized.contains("google ai studio")
+        || normalized.contains("aistudio.google")
+        || normalized.contains("gemini")
         || normalized.contains("slack")
         || normalized.contains("notion")
 }
@@ -363,7 +371,7 @@ impl InsertionBackend for PlatformInsertionBackend {
     fn clipboard_paste(
         &mut self,
         text: &str,
-        _target_app: Option<&str>,
+        target_app: Option<&str>,
     ) -> Result<BackendInsertSuccess, String> {
         #[cfg(target_os = "windows")]
         {
@@ -374,7 +382,13 @@ impl InsertionBackend for PlatformInsertionBackend {
                 .set_text(text.to_string())
                 .map_err(|err| format!("failed to write clipboard text: {err}"))?;
             send_ctrl_chord(b'V' as u16)?;
-            std::thread::sleep(std::time::Duration::from_millis(35));
+            let restore_delay_ms = if target_app.map(is_clipboard_preferred_target).unwrap_or(true)
+            {
+                210
+            } else {
+                90
+            };
+            std::thread::sleep(std::time::Duration::from_millis(restore_delay_ms));
             if let Some(previous) = previous_text {
                 let _ = clipboard.set_text(previous);
             }
@@ -721,6 +735,36 @@ mod tests {
             .insert_text(InsertTextRequest {
                 text: "short text".to_string(),
                 target_app: Some("Visual Studio Code".to_string()),
+                prefer_clipboard: false,
+            })
+            .expect("insert should work");
+        assert!(result.success);
+        assert_eq!(result.method, InsertionMethod::ClipboardPaste);
+    }
+
+    #[test]
+    fn auto_prefers_clipboard_for_google_ai_studio_targets() {
+        let backend = DeterministicMatrixBackend::new();
+        let mut engine = InsertionEngine::new(Box::new(backend));
+        let result = engine
+            .insert_text(InsertTextRequest {
+                text: "short text".to_string(),
+                target_app: Some("Google AI Studio - Google Chrome".to_string()),
+                prefer_clipboard: false,
+            })
+            .expect("insert should work");
+        assert!(result.success);
+        assert_eq!(result.method, InsertionMethod::ClipboardPaste);
+    }
+
+    #[test]
+    fn auto_prefers_clipboard_when_target_is_unknown() {
+        let backend = DeterministicMatrixBackend::new();
+        let mut engine = InsertionEngine::new(Box::new(backend));
+        let result = engine
+            .insert_text(InsertTextRequest {
+                text: "hello".to_string(),
+                target_app: None,
                 prefer_clipboard: false,
             })
             .expect("insert should work");

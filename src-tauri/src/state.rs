@@ -30,8 +30,11 @@ use crate::{
     },
     permissions::{MicrophonePermission, PermissionManager, PermissionSnapshot},
     phase1,
-    settings::{DecodeMode, SettingsError, SettingsStore, VoiceWaveSettings},
-    transcript::{merge_incremental_transcript, sanitize_user_transcript},
+    settings::{
+        normalize_hotkey_bindings, DecodeMode, SettingsError, SettingsStore, VoiceWaveSettings,
+        LOCKED_PUSH_TO_TALK_HOTKEY, LOCKED_TOGGLE_HOTKEY,
+    },
+    transcript::{finalize_user_transcript, merge_incremental_transcript, sanitize_user_transcript},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -307,6 +310,9 @@ impl VoiceWaveController {
         let clamped_max_utterance = clamp_max_utterance_ms(settings.max_utterance_ms);
         let clamped_release_tail = clamp_release_tail_ms(settings.release_tail_ms);
         let decode_mode = settings.decode_mode;
+        let previous_toggle_hotkey = settings.toggle_hotkey.clone();
+        let previous_push_to_talk_hotkey = settings.push_to_talk_hotkey.clone();
+        normalize_hotkey_bindings(&mut settings);
         let mut settings_changed = false;
         if (clamped_vad - settings.vad_threshold).abs() > f32::EPSILON {
             settings.vad_threshold = clamped_vad;
@@ -318,6 +324,11 @@ impl VoiceWaveController {
         }
         if settings.release_tail_ms != clamped_release_tail {
             settings.release_tail_ms = clamped_release_tail;
+            settings_changed = true;
+        }
+        if settings.toggle_hotkey != previous_toggle_hotkey
+            || settings.push_to_talk_hotkey != previous_push_to_talk_hotkey
+        {
             settings_changed = true;
         }
         settings.decode_mode = decode_mode;
@@ -400,6 +411,7 @@ impl VoiceWaveController {
         settings.vad_threshold = clamp_vad_threshold(settings.vad_threshold);
         settings.max_utterance_ms = clamp_max_utterance_ms(settings.max_utterance_ms);
         settings.release_tail_ms = clamp_release_tail_ms(settings.release_tail_ms);
+        normalize_hotkey_bindings(&mut settings);
         self.settings_store.save(&settings)?;
         {
             let mut current = self.settings.lock().await;
@@ -467,6 +479,12 @@ impl VoiceWaveController {
             flag
         };
 
+        if mode == DictationMode::Microphone {
+            if let Err(err) = self.start_mic_level_monitor(app.clone()).await {
+                eprintln!("voicewave: mic level monitor start skipped: {err}");
+            }
+        }
+
         let run_result = self
             .run_dictation_flow(app.clone(), mode, session_id, cancel_token, stop_flag)
             .await;
@@ -486,6 +504,9 @@ impl VoiceWaveController {
             {
                 *active = None;
             }
+        }
+        if mode == DictationMode::Microphone {
+            self.stop_mic_level_monitor().await;
         }
 
         if let Err(err) = run_result {
@@ -514,6 +535,7 @@ impl VoiceWaveController {
         if let Some(stop_flag) = self.stop_flag.lock().await.clone() {
             stop_flag.store(true, Ordering::Relaxed);
         }
+        self.stop_mic_level_monitor().await;
         self.set_any_active_session_state(DictationLifecycleState::Idle, None, None)
             .await;
         self.update_state(
@@ -528,6 +550,7 @@ impl VoiceWaveController {
         if let Some(stop_flag) = self.stop_flag.lock().await.clone() {
             stop_flag.store(true, Ordering::Relaxed);
         }
+        self.stop_mic_level_monitor().await;
 
         let release_now = Instant::now();
         let release_now_utc_ms = now_utc_ms();
@@ -635,8 +658,12 @@ impl VoiceWaveController {
 
     pub async fn update_hotkey_config(
         &self,
-        config: HotkeyConfig,
+        _config: HotkeyConfig,
     ) -> Result<HotkeySnapshot, ControllerError> {
+        let config = HotkeyConfig {
+            toggle: LOCKED_TOGGLE_HOTKEY.to_string(),
+            push_to_talk: LOCKED_PUSH_TO_TALK_HOTKEY.to_string(),
+        };
         let snapshot = {
             let mut manager = self.hotkey_manager.lock().await;
             manager.update_config(config.clone())?
@@ -1956,7 +1983,7 @@ impl VoiceWaveController {
             .transcript
             .map(|text| sanitize_user_transcript(&text))
             .unwrap_or_default();
-        let final_transcript = if has_committed_draft {
+        let merged_transcript = if has_committed_draft {
             let merged = merge_incremental_transcript(
                 &preview.committed_draft,
                 &finalize_text,
@@ -1970,6 +1997,7 @@ impl VoiceWaveController {
         } else {
             finalize_text
         };
+        let final_transcript = finalize_user_transcript(&merged_transcript);
 
         if final_transcript.trim().is_empty() {
             if cancel_token.is_cancelled() {
