@@ -1,16 +1,6 @@
 import type React from "react";
-import {
-  Activity,
-  CheckCircle,
-  Copy,
-  Cpu,
-  ExternalLink,
-  FileText,
-  Mic,
-  Pause,
-  WifiOff
-} from "lucide-react";
-import { MOCK_SESSIONS, STATUS_LABEL } from "../constants";
+import { Cpu, Mic, Pause, Zap } from "lucide-react";
+import { MOCK_SESSIONS } from "../constants";
 import type { DictationState, ThemeConfig } from "../types";
 
 interface DashboardProps {
@@ -19,14 +9,21 @@ interface DashboardProps {
   onPressStart: () => void;
   onPressEnd: () => void;
   currentModel: string;
-  vadThreshold: number;
   partialTranscript: string | null;
   finalTranscript: string | null;
-  runtimeAvailable: boolean;
-  onVadChange: (value: number) => void;
-  micLevel: number;
-  micLevelError: string | null;
   pushToTalkHotkey: string;
+}
+
+const WAVE_BARS = [18, 34, 26, 44, 30, 50, 22, 42, 28, 36, 24, 40];
+
+function modelLabel(modelId: string): string {
+  if (modelId === "fw-small-en") {
+    return "FW SMALL.EN";
+  }
+  if (modelId === "fw-large-v3") {
+    return "FW LARGE-V3";
+  }
+  return modelId.toUpperCase();
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -35,324 +32,216 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onPressStart,
   onPressEnd,
   currentModel,
-  vadThreshold,
   partialTranscript,
   finalTranscript,
-  runtimeAvailable,
-  onVadChange,
-  micLevel,
-  micLevelError,
   pushToTalkHotkey
 }) => {
   const { colors, typography, shapes, effects } = theme;
   const isRecording = status === "listening" || status === "transcribing";
-  const micLevelDisplay = Math.min(micLevel * 4, 1);
+  const idleHint = finalTranscript ?? partialTranscript ?? `Hold ${pushToTalkHotkey} to start capturing`;
+  const hasFinal = Boolean(finalTranscript && finalTranscript.trim().length > 0);
+  const nowLabel = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+  const transcriptRows = [
+    ...(hasFinal ? [{ id: "latest", time: nowLabel, text: finalTranscript ?? "", latest: true }] : []),
+    ...MOCK_SESSIONS.map((session) => ({
+      id: session.id,
+      time: session.date,
+      text: session.preview,
+      latest: false
+    }))
+  ];
 
   return (
-    <div className="max-w-6xl mx-auto space-y-12 pb-20">
-      <section>
-        <h1 className={`${typography.fontDisplay} text-5xl mb-3 ${colors.textPrimary} tracking-tight`}>
-          Good morning, Alex.
-        </h1>
-        <p className={`${colors.textSecondary} text-xl max-w-2xl font-light opacity-80`}>
-          System is local and secure. Ready to transcribe.
-        </p>
+    <div className="max-w-6xl mx-auto space-y-10 pb-20">
+      <section className="flex flex-col md:flex-row md:items-start justify-between gap-6">
+        <div className="pt-2">
+          <h1 className={`${typography.fontDisplay} text-5xl mb-2 ${colors.textPrimary} tracking-tight`}>Good morning, Alex.</h1>
+          <p className={`${colors.textSecondary} text-lg font-light opacity-80`}>System is local and secure. Ready to transcribe.</p>
+        </div>
+
+        <div className="flex items-center justify-end gap-6 px-6 py-3 mt-2 bg-white/50 backdrop-blur-sm border border-black/5 rounded-full shadow-sm">
+          <div className="flex flex-col items-end">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">Streak</span>
+            <span className={`text-lg font-bold ${colors.textPrimary} leading-none`}>
+              12<span className="text-xs font-medium opacity-50 ml-0.5">days</span>
+            </span>
+          </div>
+          <div className="w-px h-8 bg-black/5" />
+          <div className="flex flex-col items-end">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">Today</span>
+            <span className={`text-lg font-bold ${colors.textPrimary} leading-none`}>
+              2.4k<span className="text-xs font-medium opacity-50 ml-0.5">words</span>
+            </span>
+          </div>
+          <div className="w-px h-8 bg-black/5" />
+          <div className="flex flex-col items-end">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">Accuracy</span>
+            <span
+              className="text-lg font-bold leading-none bg-clip-text text-transparent"
+              style={{ backgroundImage: colors.accentGradient }}
+            >
+              99.2<span className="text-xs font-medium opacity-70 ml-0.5">%</span>
+            </span>
+          </div>
+        </div>
       </section>
 
-      <section className="grid grid-cols-1 md:grid-cols-12 gap-8">
-        <div className="md:col-span-8">
-          <div
-            className={`
-              h-full p-10 flex items-center justify-between
-              ${colors.surface} ${colors.border} ${shapes.borderWidth} ${shapes.radius} ${effects.shadow}
-              relative overflow-hidden group transition-all duration-300
-              ${isRecording ? "ring-2 ring-opacity-50 ring-current" : ""}
-            `}
-          >
-            {theme.id === "D" && (
-              <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-            )}
+      <div className="space-y-6">
+        <section>
+          <div className="grid gap-4 md:grid-cols-[1fr_320px]">
+            <div
+              className={`
+                p-8 flex flex-col md:flex-row md:items-center md:justify-between gap-5
+                ${colors.surface} ${colors.border} ${shapes.borderWidth} ${shapes.radius} ${effects.shadow}
+              `}
+            >
+              <div>
+                <h3 className={`${typography.fontDisplay} text-2xl ${colors.textPrimary} mb-1`}>
+                  {status === "idle" ? "Start Dictation" : "Listening..."}
+                </h3>
+                <p className={`${colors.textSecondary} text-sm`}>Press and hold to talk. Release to transcribe.</p>
+                <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[#71717A]">Model: {currentModel}</p>
+              </div>
 
-            <div className="z-10 relative flex flex-col justify-center h-full">
-              <h3 className={`${typography.fontDisplay} text-3xl ${colors.textPrimary} mb-3`}>
-                {status === "idle" ? "Start Dictation" : `${STATUS_LABEL[status]}...`}
-              </h3>
-              <p className={`${colors.textSecondary} flex items-center gap-3`}>
-                {status === "idle" ? (
-                  <>
-                    Hold{" "}
-                    <kbd className={`px-2 py-1 ${colors.surfaceHighlight} border ${colors.border} ${shapes.radius} text-xs font-mono opacity-80`}>
-                      {pushToTalkHotkey}
-                    </kbd>{" "}
-                    or hold the mic button to talk
-                  </>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-current animate-bounce" />
-                    <span className="w-2 h-2 rounded-full bg-current animate-bounce delay-75" />
-                    <span className="w-2 h-2 rounded-full bg-current animate-bounce delay-150" />
-                  </span>
-                )}
-              </p>
-            </div>
-
-            <button
-              onPointerDown={(event) => {
-                event.preventDefault();
-                onPressStart();
-              }}
-              onPointerUp={(event) => {
-                event.preventDefault();
-                onPressEnd();
-              }}
-              onPointerLeave={() => onPressEnd()}
-              onPointerCancel={() => onPressEnd()}
-              onKeyDown={(event) => {
-                if (event.key === " " || event.key === "Enter") {
+              <button
+                onPointerDown={(event) => {
                   event.preventDefault();
                   onPressStart();
-                }
-              }}
-              onKeyUp={(event) => {
-                if (event.key === " " || event.key === "Enter") {
+                }}
+                onPointerUp={(event) => {
                   event.preventDefault();
                   onPressEnd();
+                }}
+                onPointerLeave={() => onPressEnd()}
+                onPointerCancel={() => onPressEnd()}
+                onKeyDown={(event) => {
+                  if (event.key === " " || event.key === "Enter") {
+                    event.preventDefault();
+                    onPressStart();
+                  }
+                }}
+                onKeyUp={(event) => {
+                  if (event.key === " " || event.key === "Enter") {
+                    event.preventDefault();
+                    onPressEnd();
+                  }
+                }}
+                className={`
+                  h-20 w-20 shrink-0 flex items-center justify-center transition-all duration-300
+                  ${isRecording ? colors.recording : colors.accent}
+                  ${colors.accentFg} ${shapes.buttonShape}
+                  hover:scale-105 active:scale-95 shadow-lg
+                `}
+                style={
+                  isRecording
+                    ? { boxShadow: "0 0 0 3px rgba(56,189,248,0.35), 0 0 0 6px rgba(163,230,53,0.18)" }
+                    : undefined
                 }
-              }}
-              className={`
-                z-10 relative h-24 w-24 flex items-center justify-center transition-all duration-300
-                ${isRecording ? colors.recording : colors.accent}
-                ${colors.accentFg} ${shapes.buttonShape}
-                hover:opacity-90 hover:scale-[1.02] active:scale-[0.98]
-              `}
-              type="button"
-            >
-              {isRecording ? <Pause size={32} fill="currentColor" /> : <Mic size={32} />}
-            </button>
-          </div>
-        </div>
+                type="button"
+                aria-label="Hold to dictate"
+              >
+                {isRecording ? <Pause size={28} fill="currentColor" /> : <Mic size={28} />}
+              </button>
+            </div>
 
-        <div className="md:col-span-4 flex flex-col gap-4">
-          <div
-            className={`
-              flex-1 p-6 flex items-center justify-between cursor-default group transition-all
-              ${colors.surface} ${colors.border} ${shapes.borderWidth} ${shapes.radius} ${effects.shadow}
-            `}
-          >
-            <div className="flex items-center gap-4">
-              <div className={`p-3 ${theme.id === "D" ? "bg-white/5" : "bg-black/5"} ${shapes.radius}`}>
-                <Cpu size={20} className={colors.textTertiary} />
+            <div className="space-y-3">
+              <div className="rounded-3xl border border-black/5 bg-white px-4 py-3 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="h-9 w-9 rounded-full flex items-center justify-center"
+                      style={{ backgroundImage: colors.accentGradientSoft }}
+                    >
+                      <Cpu size={16} className="text-[#18181B]" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-[#09090B] leading-none">Model</p>
+                      <p className="text-[11px] tracking-[0.14em] text-[#71717A] mt-1">
+                        {modelLabel(currentModel)}
+                      </p>
+                    </div>
+                  </div>
+                  <div
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundImage: colors.accentGradient }}
+                  />
+                </div>
               </div>
-              <div>
-                <p className={`text-sm font-bold ${colors.textPrimary} mb-0.5`}>Model</p>
-                <p className={`text-xs ${colors.textSecondary} font-mono`}>{currentModel}</p>
+
+              <div className="rounded-3xl border border-black/5 bg-white px-4 py-3 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="h-9 w-9 rounded-full flex items-center justify-center"
+                      style={{ backgroundImage: colors.accentGradientSoft }}
+                    >
+                      <Zap size={16} className="text-[#18181B]" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-[#09090B] leading-none">Mode</p>
+                      <p className="text-[11px] tracking-[0.14em] text-[#71717A] mt-1">PUSH TO TALK</p>
+                    </div>
+                  </div>
+                  <span className="rounded-full border border-[#D4D4D8] px-2 py-0.5 text-[10px] font-semibold text-[#71717A]">
+                    AUTO
+                  </span>
+                </div>
               </div>
             </div>
-            <div className={`w-2.5 h-2.5 rounded-full ${colors.success} shadow-[0_0_10px_currentColor]`} />
           </div>
+        </section>
 
+        <section>
           <div
             className={`
-              flex-1 p-6 flex items-center justify-between transition-all
-              ${colors.surface} ${colors.border} ${shapes.borderWidth} ${shapes.radius} ${effects.shadow}
+              w-full min-h-24 relative overflow-hidden transition-colors duration-200
+              ${isRecording ? "bg-black shadow-xl" : "bg-white border border-black/5 shadow-sm"}
+              ${shapes.radius} flex items-center px-8 py-6
             `}
           >
-            <div className="flex items-center gap-4">
-              <div className={`p-3 ${theme.id === "D" ? "bg-white/5" : "bg-black/5"} ${shapes.radius}`}>
-                <Activity size={20} className={colors.textTertiary} />
-              </div>
-              <div className="w-full">
-                <p className={`text-sm font-bold ${colors.textPrimary} mb-0.5`}>VAD Threshold</p>
-                <input
-                  className="w-full accent-[#2D5B52]"
-                  type="range"
-                  min={0.005}
-                  max={0.05}
-                  step={0.001}
-                  value={vadThreshold}
-                  onChange={(event) => onVadChange(Number(event.target.value))}
-                />
-                <p className={`text-xs ${colors.textSecondary} font-mono mt-1`}>
-                  {vadThreshold.toFixed(3)}
+            <div className="flex-1 flex items-center justify-center">
+              {isRecording ? (
+                <div className="flex items-center justify-center gap-1 h-8">
+                  {WAVE_BARS.map((height, index) => (
+                    <div
+                      key={index}
+                      className="w-1 bg-white rounded-full animate-pulse"
+                      style={{
+                        height: `${height}%`,
+                        animationDelay: `${index * 0.05}s`,
+                        animationDuration: "0.8s"
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[#52525B] text-sm md:text-base leading-relaxed text-left md:text-center max-w-[56rem]">
+                  {idleHint}
                 </p>
-              </div>
+              )}
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
 
-      <section
-        className={`
-          p-6 flex flex-wrap items-center justify-around gap-6
-          ${theme.id === "D" ? "bg-white/5 border border-white/5" : ""}
-          ${theme.id === "E" ? "bg-transparent border-t-2 border-b-2 border-[#CCCAC2] py-8" : ""}
-          ${theme.id === "F" ? "bg-white shadow-sm" : ""}
-          ${shapes.radius}
-        `}
-      >
-        <div className="flex items-center gap-4">
-          <div className={`p-2 rounded-full ${theme.id === "D" ? "bg-emerald-500/20 text-emerald-400" : "bg-emerald-100 text-emerald-700"}`}>
-            <CheckCircle size={20} />
-          </div>
-          <div className="flex flex-col">
-            <span className={`text-sm font-bold ${colors.textPrimary}`}>Microphone</span>
-            <span className={`text-xs ${colors.textSecondary}`}>Default Input (100%)</span>
-          </div>
-        </div>
-        <div className="flex flex-col items-end">
-          <div className="h-2 w-24 rounded-full bg-black/10 overflow-hidden">
+      <section className="pt-4">
+        <p className="mb-3 text-xs font-semibold tracking-[0.18em] text-[#71717A]">TODAY</p>
+        <div className="overflow-hidden rounded-2xl border border-[#E4E4E7] bg-white">
+          {transcriptRows.map((row, index) => (
             <div
-              className="h-full bg-emerald-500 transition-[width] duration-100"
-              style={{ width: `${micLevelDisplay * 100}%` }}
-            />
-          </div>
-          {micLevelError && (
-            <span className="mt-1 text-[10px] text-[#C45E5E]">{micLevelError}</span>
+              key={row.id}
+              className={`grid grid-cols-[110px_1fr] gap-0 ${index !== transcriptRows.length - 1 ? "border-b border-[#E4E4E7]" : ""}`}
+            >
+              <div className="px-6 py-5 text-sm text-[#71717A]">{row.time}</div>
+              <div className={`px-6 py-5 text-base leading-relaxed ${row.latest ? "text-[#09090B] font-medium" : "text-[#27272A]"}`}>
+                {row.text}
+              </div>
+            </div>
+          ))}
+          {transcriptRows.length === 0 && (
+            <div className="px-6 py-8 text-[#71717A]">No transcript results yet.</div>
           )}
-        </div>
-
-        <div className={`w-[1px] h-10 ${theme.id === "D" ? "bg-white/10" : "bg-black/10"}`} />
-
-        <div className="flex items-center gap-4">
-          <div className={`p-2 rounded-full ${theme.id === "D" ? "bg-emerald-500/20 text-emerald-400" : "bg-emerald-100 text-emerald-700"}`}>
-            <WifiOff size={20} />
-          </div>
-          <div className="flex flex-col">
-            <span className={`text-sm font-bold ${colors.textPrimary}`}>Privacy Core</span>
-            <span className={`text-xs ${colors.textSecondary}`}>Offline & Local</span>
-          </div>
-        </div>
-
-        <div className={`w-[1px] h-10 ${theme.id === "D" ? "bg-white/10" : "bg-black/10"}`} />
-
-        <div className="flex items-center gap-4">
-          <div className={`p-2 rounded-full ${theme.id === "D" ? "bg-white/10 text-white" : runtimeAvailable ? "bg-gray-100 text-gray-600" : "bg-amber-100 text-amber-700"}`}>
-            <CheckCircle size={20} />
-          </div>
-          <div className="flex flex-col">
-            <span className={`text-sm font-bold ${colors.textPrimary}`}>Runtime</span>
-            <span className={`text-xs ${colors.textSecondary}`}>{runtimeAvailable ? "Tauri Connected" : "Web fallback mode"}</span>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <h4 className={`text-xs font-bold uppercase tracking-widest ${colors.textTertiary} mb-4 ml-1`}>Live Transcript</h4>
-        <div className={`p-6 ${colors.surface} ${colors.border} ${shapes.borderWidth} ${shapes.radius} ${effects.shadow}`}>
-          <p className={`text-sm ${colors.textSecondary} mb-2`}>Partial</p>
-          <div className="max-h-[150rem] overflow-y-auto">
-            <p className={`text-base ${colors.textPrimary} min-h-6 whitespace-pre-wrap break-words`}>
-              {partialTranscript ?? "No partial transcript yet."}
-            </p>
-          </div>
-          <p className={`text-sm ${colors.textSecondary} mt-4 mb-2`}>Final</p>
-          <div className="max-h-[150rem] overflow-y-auto">
-            <p className={`text-base ${colors.textPrimary} min-h-6 whitespace-pre-wrap break-words`}>
-              {finalTranscript ?? "No finalized transcript yet."}
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <h4 className={`text-xs font-bold uppercase tracking-widest ${colors.textTertiary} mb-4 ml-1`}>Performance</h4>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-          {[
-            { label: "Day Streak", value: "12", unit: "days", color: theme.id === "D" ? "text-cyan-400" : "text-blue-600" },
-            { label: "Words Today", value: "2,401", unit: "words", color: colors.textPrimary },
-            { label: "Avg Speed", value: "145", unit: "wpm", color: theme.id === "E" ? "text-[#008F39]" : colors.success },
-            { label: "Accuracy", value: "99.2", unit: "%", color: theme.id === "E" ? "text-[#008F39]" : colors.success }
-          ].map((stat) => (
-            <div
-              key={stat.label}
-              className={`
-                p-5 flex flex-col items-start justify-center transition-transform hover:-translate-y-1
-                ${theme.id === "D" ? "bg-white/5 border border-white/5 hover:bg-white/10" : ""}
-                ${theme.id === "E" ? "bg-[#DFDDD6] border-b-2 border-r-2 border-[#CCCAC2]" : ""}
-                ${theme.id === "F" ? "bg-white" : ""}
-                ${shapes.radius}
-              `}
-            >
-              <span className={`text-[10px] uppercase tracking-wide ${colors.textTertiary} font-bold mb-2 opacity-70`}>
-                {stat.label}
-              </span>
-              <div className="flex items-baseline gap-1.5">
-                <span className={`text-3xl ${typography.fontDisplay} font-bold ${stat.color}`}>
-                  {stat.value}
-                </span>
-                <span className={`text-xs ${colors.textSecondary} font-medium`}>{stat.unit}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <div className="flex items-center justify-between mb-6">
-          <h3 className={`${typography.fontDisplay} text-xl font-bold ${colors.textPrimary}`}>Recent Sessions</h3>
-          <button className={`text-sm font-medium ${colors.textSecondary} transition-colors`} type="button">
-            View All
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-4">
-          {MOCK_SESSIONS.map((session) => (
-            <div
-              key={session.id}
-              className={`
-                group flex items-center justify-between p-5 transition-all
-                ${colors.surface} ${colors.border} ${shapes.borderWidth} ${shapes.radius}
-                ${theme.id === "D" ? "hover:bg-white/10 hover:border-white/20" : ""}
-                ${theme.id === "E" ? "hover:bg-[#EAE8E3] hover:border-black/20" : ""}
-                ${theme.id === "F" ? "hover:shadow-md" : ""}
-              `}
-            >
-              <div className="flex items-start gap-5">
-                <div
-                  className={`
-                    w-12 h-12 flex items-center justify-center shrink-0 transition-colors
-                    ${theme.id === "D" ? "bg-white/5 text-cyan-400 group-hover:bg-cyan-500 group-hover:text-black" : ""}
-                    ${theme.id === "E" ? "bg-[#D6D4CD] text-black border border-[#B0AEA6]" : ""}
-                    ${theme.id === "F" ? "bg-[#EBF0EE] text-[#2D5B52]" : ""}
-                    ${shapes.radius}
-                  `}
-                >
-                  <FileText size={22} />
-                </div>
-                <div>
-                  <h4 className={`text-base font-bold ${colors.textPrimary} mb-1 group-hover:underline decoration-1 underline-offset-4`}>
-                    {session.title}
-                  </h4>
-                  <p className={`text-sm ${colors.textSecondary} max-w-md font-medium opacity-80 truncate`}>
-                    {session.preview}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-8">
-                <div className="text-right hidden sm:block">
-                  <p className={`text-sm ${colors.textPrimary} font-bold font-mono`}>{session.duration}</p>
-                  <p className={`text-xs ${colors.textTertiary}`}>{session.date}</p>
-                </div>
-                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
-                  <button
-                    title="Copy Text"
-                    className={`p-2.5 rounded-lg hover:shadow-sm ${theme.id === "D" ? "hover:bg-white/10 text-white" : "hover:bg-black/5 text-black"}`}
-                    type="button"
-                  >
-                    <Copy size={16} />
-                  </button>
-                  <button
-                    title="Open"
-                    className={`p-2.5 rounded-lg hover:shadow-sm ${theme.id === "D" ? "hover:bg-white/10 text-white" : "hover:bg-black/5 text-black"}`}
-                    type="button"
-                  >
-                    <ExternalLink size={16} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
         </div>
       </section>
     </div>

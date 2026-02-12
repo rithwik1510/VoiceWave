@@ -1,6 +1,6 @@
+import React from "react";
 import type { ThemeConfig } from "./types";
 import {
-  Activity,
   Book,
   Cpu,
   FileText,
@@ -11,124 +11,102 @@ import {
   Zap
 } from "lucide-react";
 
-export const THEMES: Record<string, ThemeConfig> = {
-  D: {
-    id: "D",
-    name: "Flux OS",
-    description: "Cyber-physical. Dark glass, neon accents, HUD aesthetics.",
-    colors: {
-      bg: "glass-gradient text-white",
-      sidebarBg: "bg-slate-900/30 backdrop-blur-md border-r border-white/5",
-      surface: "bg-white/5 hover:bg-white/10 border border-white/10 backdrop-blur-sm",
-      surfaceHighlight: "bg-white/10 border border-white/20",
-      border: "border-white/10",
-      textPrimary: "text-white",
-      textSecondary: "text-slate-400",
-      textTertiary: "text-slate-600",
-      accent: "bg-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.5)]",
-      accentFg: "text-black font-bold",
-      success: "text-cyan-400",
-      warning: "text-yellow-400",
-      error: "text-pink-500",
-      recording: "bg-rose-500 shadow-[0_0_30px_rgba(244,63,94,0.6)] animate-pulse"
+const COLOR_L = "#38BDF8";
+const COLOR_R = "#A3E635";
+
+const BaseIcon = ({ children, ...props }: any) =>
+  React.createElement(
+    "svg",
+    {
+      width: props.size || 24,
+      height: props.size || 24,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      strokeWidth: "3",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      ...props
     },
-    typography: {
-      fontDisplay: 'font-["Space_Grotesk"] tracking-tight',
-      fontBody: 'font-["Outfit"]',
-      weightHeading: "font-bold"
-    },
-    shapes: {
-      radius: "rounded-2xl",
-      borderWidth: "border-[1px]",
-      buttonShape: "rounded-xl",
-      navItemShape: "rounded-lg"
-    },
-    effects: {
-      shadow: "shadow-2xl shadow-black/50",
-      blur: "backdrop-blur-xl"
-    }
+    children
+  );
+
+const WaveLogo = (props: any) =>
+  React.createElement(
+    BaseIcon,
+    props,
+    React.createElement("path", { d: "M2 10v4", stroke: COLOR_L }),
+    React.createElement("path", { d: "M6 7v10", stroke: COLOR_L }),
+    React.createElement("path", { d: "M10 3v18", stroke: COLOR_L }),
+    React.createElement("path", { d: "M14 3v18", stroke: COLOR_R }),
+    React.createElement("path", { d: "M18 7v10", stroke: COLOR_R }),
+    React.createElement("path", { d: "M22 10v4", stroke: COLOR_R })
+  );
+
+const ONYX_PALETTE = {
+  bg: "bg-[#FAFAFA]",
+  sidebarBg: "bg-[#F4F4F5]",
+  surface: "bg-white",
+  surfaceHighlight: "bg-[#E4E4E7]",
+  border: "border-transparent",
+  textPrimary: "text-[#09090B]",
+  textSecondary: "text-[#52525B]",
+  textTertiary: "text-[#A1A1AA]",
+  accent: "bg-[#18181B]",
+  accentFg: "text-white",
+  success: "text-[#18181B]",
+  warning: "text-[#3F3F46]",
+  error: "text-[#991B1B]",
+  recording: "bg-[#000000]",
+  navActiveBg: "bg-[#FFFFFF]",
+  navActiveFg: "text-[#18181B]",
+  accentBlue: "#38BDF8",
+  accentLime: "#A3E635",
+  accentGradient: "linear-gradient(90deg, #38BDF8 0%, #A3E635 100%)",
+  accentGradientSoft: "linear-gradient(135deg, rgba(56,189,248,0.14) 0%, rgba(163,230,53,0.14) 100%)"
+};
+
+const SHARED_STRUCTURE = {
+  typography: {
+    fontDisplay: 'font-["Fraunces"]',
+    fontBody: 'font-["Manrope"]',
+    weightHeading: "font-semibold"
   },
-  E: {
-    id: "E",
-    name: "Field Recorder",
-    description: "Tactile retro-modern engineering inspired by classic Hi-Fi interfaces.",
-    colors: {
-      bg: "bg-[#EAE8E3]",
-      sidebarBg: "bg-[#E3E1DB]",
-      surface: "bg-[#DFDDD6] shadow-[inset_1px_1px_3px_rgba(0,0,0,0.05),1px_1px_0px_rgba(255,255,255,0.5)]",
-      surfaceHighlight: "bg-[#D6D4CD] shadow-[inset_2px_2px_5px_rgba(0,0,0,0.1)]",
-      border: "border-[#CCCAC2]",
-      textPrimary: "text-[#282828]",
-      textSecondary: "text-[#666666]",
-      textTertiary: "text-[#999999]",
-      accent: "bg-[#FF4F00]",
-      accentFg: "text-white font-medium tracking-widest uppercase",
-      success: "text-[#008F39]",
-      warning: "text-[#FF8C00]",
-      error: "text-[#D93025]",
-      recording: "bg-[#FF0000] ring-4 ring-[#FF0000]/20"
-    },
-    typography: {
-      fontDisplay: 'font-["IBM_Plex_Mono"]',
-      fontBody: 'font-["IBM_Plex_Mono"]',
-      weightHeading: "font-semibold"
-    },
-    shapes: {
-      radius: "rounded-sm",
-      borderWidth: "border-[2px]",
-      buttonShape: "rounded-[3px]",
-      navItemShape: "rounded-sm"
-    },
-    effects: {
-      shadow: "shadow-sm",
-      blur: "backdrop-blur-none"
-    }
+  shapes: {
+    radius: "rounded-[2rem]",
+    borderWidth: "border-0",
+    buttonShape: "rounded-full",
+    navItemShape: "rounded-full"
   },
-  F: {
-    id: "F",
-    name: "Botanist",
-    description: "Organic and calm with soft earthy tones and fluid shapes.",
-    colors: {
-      bg: "bg-[#F2F4F3]",
-      sidebarBg: "bg-[#EBF0EE]",
-      surface: "bg-white",
-      surfaceHighlight: "bg-[#DCE6E2]",
-      border: "border-transparent",
-      textPrimary: "text-[#1A3832]",
-      textSecondary: "text-[#5C7A72]",
-      textTertiary: "text-[#94ACA6]",
-      accent: "bg-[#2D5B52]",
-      accentFg: "text-[#F2F4F3]",
-      success: "text-[#3E7C68]",
-      warning: "text-[#C89B3C]",
-      error: "text-[#C45E5E]",
-      recording: "bg-[#D66853]"
-    },
-    typography: {
-      fontDisplay: 'font-["Fraunces"]',
-      fontBody: 'font-["Manrope"]',
-      weightHeading: "font-semibold"
-    },
-    shapes: {
-      radius: "rounded-[2rem]",
-      borderWidth: "border-0",
-      buttonShape: "rounded-full",
-      navItemShape: "rounded-full"
-    },
-    effects: {
-      shadow: "shadow-[0_8px_30px_rgba(45,91,82,0.06)]",
-      blur: "backdrop-blur-none"
-    }
+  effects: {
+    blur: "backdrop-blur-none",
+    shadow: "shadow-[0_8px_30px_rgba(0,0,0,0.08)]"
   }
 };
 
-export const NAV_ITEMS = [
+export const THEME: ThemeConfig = {
+  id: "A",
+  name: "Harmonic v1.0",
+  description: "Production Release",
+  logo: WaveLogo,
+  ...SHARED_STRUCTURE,
+  colors: ONYX_PALETTE
+};
+
+export const THEMES: Record<string, ThemeConfig> = {
+  A: THEME,
+  harmonic: THEME
+};
+
+export const NAV_ITEMS_TOP = [
   { id: "home", label: "Home", icon: Home },
   { id: "sessions", label: "Sessions", icon: Book },
-  { id: "dictionary", label: "Dictionary", icon: FileText },
-  { id: "snippets", label: "Snippets", icon: Zap },
-  { id: "style", label: "Style", icon: Palette },
   { id: "models", label: "Models", icon: Cpu },
+  { id: "dictionary", label: "Dictionary", icon: FileText },
+  { id: "snippets", label: "Snippets", icon: Zap }
+];
+
+export const NAV_ITEMS_BOTTOM = [
+  { id: "style", label: "Style", icon: Palette },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "help", label: "Help", icon: HelpCircle }
 ];
@@ -159,45 +137,3 @@ export const MOCK_SESSIONS = [
     wordCount: 1450
   }
 ];
-
-export const STATUS_LABEL: Record<string, string> = {
-  idle: "Idle",
-  listening: "Listening",
-  transcribing: "Transcribing",
-  inserted: "Inserted",
-  error: "Error"
-};
-
-export const STATUS_TONE: Record<string, string> = {
-  idle: "bg-white/70 text-[#1A3832]",
-  listening: "bg-[#D66853] text-white",
-  transcribing: "bg-[#C89B3C] text-white",
-  inserted: "bg-[#3E7C68] text-white",
-  error: "bg-[#C45E5E] text-white"
-};
-
-export const DICTATION_STATES: DictationState[] = [
-  "idle",
-  "listening",
-  "transcribing",
-  "inserted",
-  "error"
-];
-
-type DictationState = "idle" | "listening" | "transcribing" | "inserted" | "error";
-
-export const STATUS_META: Record<DictationState, string> = {
-  idle: "Ready",
-  listening: "Mic open",
-  transcribing: "Processing",
-  inserted: "Delivered",
-  error: "Needs attention"
-};
-
-export const MODE_LABELS = {
-  auto: "AUTO",
-  continuous: "Continuous",
-  local: "Offline & Local"
-};
-
-export const STATUS_ICON = Activity;

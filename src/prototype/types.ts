@@ -1,9 +1,10 @@
-export type ThemeId = "D" | "E" | "F";
+import type React from "react";
 
 export interface ThemeConfig {
-  id: ThemeId;
+  id: string;
   name: string;
   description: string;
+  logo: React.ElementType;
   colors: {
     bg: string;
     sidebarBg: string;
@@ -19,6 +20,12 @@ export interface ThemeConfig {
     warning: string;
     error: string;
     recording: string;
+    navActiveBg: string;
+    navActiveFg: string;
+    accentBlue: string;
+    accentLime: string;
+    accentGradient: string;
+    accentGradientSoft: string;
   };
   typography: {
     fontDisplay: string;
