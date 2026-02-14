@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   canUseTauri,
   loadSnapshot,
@@ -15,94 +15,6 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function usePillSound() {
-  const contextRef = useRef<AudioContext | null>(null);
-  const gainRef = useRef<GainNode | null>(null);
-  const lastToneAtRef = useRef(0);
-
-  const ensureContext = () => {
-    if (typeof window === "undefined") {
-      return null;
-    }
-    if (!contextRef.current) {
-      const context = new window.AudioContext();
-      const gain = context.createGain();
-      gain.gain.value = 0.2;
-      gain.connect(context.destination);
-      contextRef.current = context;
-      gainRef.current = gain;
-    }
-    return contextRef.current;
-  };
-
-  const playTone = useCallback((frequency: number, durationMs: number) => {
-    const now = performance.now();
-    if (now - lastToneAtRef.current < 35) {
-      return;
-    }
-
-    const context = ensureContext();
-    const gain = gainRef.current;
-    if (!context || !gain) {
-      return;
-    }
-
-    const runTone = () => {
-      lastToneAtRef.current = performance.now();
-      const startedAt = context.currentTime;
-      const oscillator = context.createOscillator();
-      const envelope = context.createGain();
-      oscillator.type = "triangle";
-      oscillator.frequency.setValueAtTime(frequency, startedAt);
-      envelope.gain.setValueAtTime(0.0001, startedAt);
-      envelope.gain.exponentialRampToValueAtTime(0.95, startedAt + 0.008);
-      envelope.gain.exponentialRampToValueAtTime(
-        0.0001,
-        startedAt + durationMs / 1000
-      );
-      oscillator.connect(envelope);
-      envelope.connect(gain);
-      oscillator.start(startedAt);
-      oscillator.stop(startedAt + durationMs / 1000 + 0.02);
-    };
-
-    if (context.state !== "running") {
-      void context
-        .resume()
-        .then(() => {
-          runTone();
-        })
-        .catch(() => {
-          // Ignore cue failures in the HUD to avoid disrupting dictation.
-        });
-      return;
-    }
-
-    runTone();
-  }, []);
-
-  const playPressCue = useCallback(() => {
-    playTone(720, 88);
-  }, [playTone]);
-
-  const playReleaseCue = useCallback(() => {
-    playTone(1040, 108);
-  }, [playTone]);
-
-  const playErrorCue = useCallback(() => {
-    playTone(320, 130);
-  }, [playTone]);
-
-  return useMemo(
-    () => ({
-      playPressCue,
-      playReleaseCue,
-      playErrorCue
-    }),
-    [playErrorCue, playPressCue, playReleaseCue]
-  );
-}
-
 export function FloatingPill() {
   const [rawState, setRawState] = useState<VoiceWaveHudState>("idle");
   const [displayState, setDisplayState] = useState<VisualState>("idle");
@@ -110,7 +22,6 @@ export function FloatingPill() {
   const [micLevel, setMicLevel] = useState(0);
   const [smoothedLevel, setSmoothedLevel] = useState(0);
   const [phaseTime, setPhaseTime] = useState(0);
-  const cue = usePillSound();
   const visualState: VisualState = pushHeld && displayState === "idle" ? "listening" : displayState;
 
   useEffect(() => {
@@ -135,10 +46,8 @@ export function FloatingPill() {
         }
         if (payload.phase === "pressed") {
           setPushHeld(true);
-          cue.playPressCue();
         } else if (payload.phase === "released") {
           setPushHeld(false);
-          cue.playReleaseCue();
         }
       });
     })();
@@ -160,7 +69,7 @@ export function FloatingPill() {
       micUnlisten?.();
       hotkeyUnlisten?.();
     };
-  }, [cue]);
+  }, []);
 
   useEffect(() => {
     if (rawState === "inserted" || rawState === "error") {
@@ -168,16 +77,13 @@ export function FloatingPill() {
       const timeout = window.setTimeout(() => {
         setDisplayState("idle");
       }, 820);
-      if (rawState === "error") {
-        cue.playErrorCue();
-      }
       return () => {
         window.clearTimeout(timeout);
       };
     }
     setDisplayState(rawState);
     return undefined;
-  }, [cue, rawState]);
+  }, [rawState]);
 
   useEffect(() => {
     if (rawState !== "listening") {

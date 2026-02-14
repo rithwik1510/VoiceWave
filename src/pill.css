@@ -1,0 +1,195 @@
+:root {
+  color-scheme: dark;
+  --vw-brand-blue: #38bdf8;
+  --vw-brand-lime: #a3e635;
+}
+
+html,
+body,
+#pill-root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "DM Sans", "Segoe UI", sans-serif;
+}
+
+.vw-pill-body {
+  background: transparent;
+}
+
+.vw-pill-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.vw-pill-surface {
+  border: 0;
+  width: 42px;
+  height: 16px;
+  padding: 0;
+  border-radius: 999px;
+  position: relative;
+  isolation: isolate;
+  background: linear-gradient(135deg, rgba(24, 24, 27, 0.92), rgba(39, 39, 42, 0.94));
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.3),
+    inset 0 0 0 1px rgba(228, 228, 231, 0.2),
+    inset 0 -6px 14px rgba(9, 9, 11, 0.25);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  transition:
+    width 200ms cubic-bezier(0.2, 0.9, 0.25, 1),
+    height 200ms cubic-bezier(0.2, 0.9, 0.25, 1),
+    transform 180ms ease,
+    box-shadow 240ms ease;
+  cursor: grab;
+}
+
+.vw-pill-surface:active {
+  cursor: grabbing;
+}
+
+.vw-pill-glow {
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  background: radial-gradient(
+    120% 120% at 20% 10%,
+    rgba(255, 255, 255, 0.2),
+    rgba(255, 255, 255, 0) 40%
+  );
+  pointer-events: none;
+}
+
+.vw-pill-core {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.vw-pill-wave {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 0;
+  opacity: 0;
+  transform: scale(0.96);
+  transform-origin: center;
+  transition:
+    opacity 180ms ease,
+    width 220ms cubic-bezier(0.2, 0.9, 0.25, 1),
+    transform 200ms cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+.vw-pill-bar {
+  width: 2px;
+  height: 10px;
+  border-radius: 999px;
+  transform-origin: 50% 100%;
+  background: linear-gradient(180deg, var(--vw-brand-blue), var(--vw-brand-lime));
+  box-shadow:
+    0 0 9px rgba(56, 189, 248, 0.45),
+    0 0 13px rgba(163, 230, 53, 0.25);
+  transition: transform 42ms linear;
+}
+
+.vw-pill-spinner {
+  grid-area: 1 / 1;
+  width: 0;
+  height: 0;
+  border-radius: 999px;
+  border: 1.2px solid rgba(56, 189, 248, 0.26);
+  border-top-color: rgba(56, 189, 248, 0.96);
+  border-right-color: rgba(163, 230, 53, 0.92);
+  opacity: 0;
+  transform: rotate(0deg);
+  transition:
+    opacity 140ms ease,
+    width 140ms ease,
+    height 140ms ease;
+}
+
+.vw-pill-state-idle .vw-pill-surface {
+  width: 42px;
+  height: 16px;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.3),
+    inset 0 0 0 1px rgba(228, 228, 231, 0.2),
+    inset 0 -6px 14px rgba(9, 9, 11, 0.25);
+}
+
+.vw-pill-state-idle .vw-pill-surface:hover,
+.vw-pill-state-idle .vw-pill-surface:focus-visible {
+  width: 76px;
+  height: 26px;
+  transform: translateY(-1px);
+}
+
+.vw-pill-state-listening .vw-pill-surface {
+  width: 76px;
+  height: 26px;
+  box-shadow:
+    0 12px 26px rgba(0, 0, 0, 0.38),
+    inset 0 0 0 1px rgba(228, 228, 231, 0.24),
+    inset 0 -9px 18px rgba(9, 9, 11, 0.3);
+}
+
+.vw-pill-state-listening .vw-pill-wave {
+  opacity: 1;
+  width: 50px;
+  transform: scale(1);
+}
+
+.vw-pill-state-transcribing .vw-pill-surface {
+  width: 68px;
+  height: 24px;
+  box-shadow:
+    0 10px 22px rgba(0, 0, 0, 0.36),
+    inset 0 0 0 1px rgba(228, 228, 231, 0.22),
+    inset 0 -8px 16px rgba(9, 9, 11, 0.28);
+}
+
+.vw-pill-state-transcribing .vw-pill-wave {
+  opacity: 0;
+  width: 0;
+}
+
+.vw-pill-state-transcribing .vw-pill-spinner {
+  opacity: 1;
+  width: 10px;
+  height: 10px;
+  box-shadow:
+    0 0 10px rgba(56, 189, 248, 0.32),
+    0 0 14px rgba(163, 230, 53, 0.22);
+  animation: vw-pill-spin 0.8s linear infinite;
+}
+
+.vw-pill-state-inserted .vw-pill-surface,
+.vw-pill-state-error .vw-pill-surface {
+  width: 58px;
+  height: 20px;
+}
+
+.vw-pill-state-inserted .vw-pill-wave,
+.vw-pill-state-error .vw-pill-wave {
+  width: 22px;
+  opacity: 0.45;
+}
+
+@keyframes vw-pill-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

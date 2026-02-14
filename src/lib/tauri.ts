@@ -38,7 +38,15 @@ import type {
 
 const isTauriRuntime = () =>
   typeof window !== "undefined" &&
-  ("__TAURI_INTERNALS__" in window || "__TAURI__" in window || "__TAURI_METADATA__" in window);
+  (
+    "__TAURI_INTERNALS__" in window ||
+    "__TAURI__" in window ||
+    "__TAURI_METADATA__" in window ||
+    "__TAURI_IPC__" in window ||
+    window.location.protocol === "tauri:" ||
+    window.location.protocol === "asset:" ||
+    (typeof navigator !== "undefined" && /tauri/i.test(navigator.userAgent))
+  );
 
 type UnlistenFn = () => void;
 
@@ -225,6 +233,10 @@ export async function cancelDictation(): Promise<void> {
 
 export async function stopDictation(): Promise<void> {
   await invokeVoicewave<void>("stop_dictation");
+}
+
+export async function showMainWindow(): Promise<void> {
+  await invokeVoicewave<void>("show_main_window");
 }
 
 export async function triggerHotkeyAction(action: HotkeyAction, phase: HotkeyPhase): Promise<void> {

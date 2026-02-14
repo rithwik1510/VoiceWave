@@ -40,7 +40,20 @@ use state::{DictationMode, VoiceWaveController, VoiceWaveSnapshot};
 #[cfg(feature = "desktop")]
 use std::sync::Arc;
 #[cfg(feature = "desktop")]
-use tauri::{Manager, State};
+use tauri::{
+    Manager, PhysicalPosition, Position, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
+
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_LABEL: &str = "voicewave-pill";
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_WIDTH: f64 = 112.0;
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_HEIGHT: f64 = 40.0;
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_BOTTOM_MARGIN: f64 = 14.0;
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_NUDGE_X: i32 = -22;
 
 #[cfg(feature = "desktop")]
 #[derive(Clone)]
@@ -63,6 +76,90 @@ impl From<AppError> for String {
 }
 
 #[cfg(feature = "desktop")]
+fn ensure_pill_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(PILL_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let builder = WebviewWindowBuilder::new(
+        app,
+        PILL_WINDOW_LABEL,
+        WebviewUrl::App("pill.html".into()),
+    )
+    .title("VoiceWave Pill")
+    .inner_size(PILL_WINDOW_WIDTH, PILL_WINDOW_HEIGHT)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(false)
+    .focused(false)
+    .visible(false)
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .visible_on_all_workspaces(true)
+    .skip_taskbar(true)
+    .shadow(false);
+
+    let window = builder
+        .build()
+        .map_err(|err| format!("failed to create floating pill window: {err}"))?;
+    position_pill_window(app, &window);
+    Ok(window)
+}
+
+#[cfg(feature = "desktop")]
+fn position_pill_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|main| main.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    let Some(monitor) = monitor else {
+        return;
+    };
+
+    let work_area = monitor.work_area();
+    let width = PILL_WINDOW_WIDTH.round() as i32;
+    let height = PILL_WINDOW_HEIGHT.round() as i32;
+    let margin = PILL_WINDOW_BOTTOM_MARGIN.round() as i32;
+    let center_offset_x = ((work_area.size.width as i32 - width) / 2).max(0);
+    let bottom_offset_y = (work_area.size.height as i32 - height - margin).max(0);
+    let x = work_area.position.x + center_offset_x + PILL_WINDOW_NUDGE_X;
+    let y = work_area.position.y + bottom_offset_y;
+    let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+}
+
+#[cfg(feature = "desktop")]
+fn sync_pill_visibility(app: &tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let pill = ensure_pill_window(app)?;
+    // Keep the floating pill purely visual so it never steals pointer focus from the main window.
+    let _ = pill.set_ignore_cursor_events(true);
+    if visible {
+        position_pill_window(app, &pill);
+        pill.show()
+            .map_err(|err| format!("failed to show floating pill: {err}"))?;
+    } else {
+        pill.hide()
+            .map_err(|err| format!("failed to hide floating pill: {err}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+fn configure_main_window_close_behavior(app: &tauri::AppHandle) {
+    if let Some(main_window) = app.get_webview_window("main") {
+        let window_for_handler = main_window.clone();
+        main_window.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window_for_handler.hide();
+            }
+        });
+    }
+}
+
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn get_voicewave_snapshot(
     runtime: State<'_, RuntimeContext>,
@@ -79,14 +176,34 @@ async fn load_settings(runtime: State<'_, RuntimeContext>) -> Result<VoiceWaveSe
 #[cfg(feature = "desktop")]
 #[tauri::command]
 async fn update_settings(
+    app: tauri::AppHandle,
     runtime: State<'_, RuntimeContext>,
     settings: VoiceWaveSettings,
 ) -> Result<VoiceWaveSettings, String> {
-    runtime
+    let updated = runtime
         .controller
         .update_settings(settings)
         .await
-        .map_err(|err| AppError::Controller(err).into())
+        .map_err(|err| AppError::Controller(err).to_string())?;
+    sync_pill_visibility(&app, updated.show_floating_hud)?;
+    Ok(updated)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(main_window) = app.get_webview_window("main") else {
+        return Err("main window not available".to_string());
+    };
+
+    let _ = main_window.unminimize();
+    main_window
+        .show()
+        .map_err(|err| format!("failed to show main window: {err}"))?;
+    main_window
+        .set_focus()
+        .map_err(|err| format!("failed to focus main window: {err}"))?;
+    Ok(())
 }
 
 #[cfg(feature = "desktop")]
@@ -544,6 +661,7 @@ pub fn run() {
                 VoiceWaveController::new()
                     .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?,
             );
+            let initial_settings = tauri::async_runtime::block_on(controller.load_settings());
 
             let controller_for_hotkeys = controller.clone();
             let app_handle = app.handle().clone();
@@ -556,12 +674,19 @@ pub fn run() {
             app.manage(RuntimeContext {
                 controller,
             });
+
+            configure_main_window_close_behavior(&app.handle().clone());
+            sync_pill_visibility(&app.handle().clone(), initial_settings.show_floating_hud)
+                .map_err(|err| -> Box<dyn std::error::Error> {
+                    Box::new(std::io::Error::other(err))
+                })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_voicewave_snapshot,
             load_settings,
             update_settings,
+            show_main_window,
             get_diagnostics_status,
             set_diagnostics_opt_in,
             export_diagnostics_bundle,
