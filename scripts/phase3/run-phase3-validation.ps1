@@ -57,6 +57,42 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "desktop-feature rust compile check failed"
   }
+
+  function Invoke-QualityGuardTest {
+    param([string]$TestName)
+
+    & $cargoExe +stable-x86_64-pc-windows-gnu test --manifest-path $desktopManifest --lib $TestName
+    if ($LASTEXITCODE -eq 0) {
+      return
+    }
+
+    # Some Windows GNU environments can compile desktop tests but fail to execute
+    # GUI-linked test binaries at runtime (STATUS_ENTRYPOINT_NOT_FOUND). Fallback to
+    # no-default-features execution so quality assertions still run.
+    & $cargoExe +stable-x86_64-pc-windows-gnu test --manifest-path $desktopManifest --no-default-features --lib $TestName
+    if ($LASTEXITCODE -eq 0) {
+      Write-Warning "Desktop runtime execution failed for '$TestName'; validated via --no-default-features fallback."
+      return
+    }
+
+    throw "rust quality guard test failed: $TestName"
+  }
+
+  $qualityGuardTests = @(
+    "decode_profile_prefers_beam_for_larger_models",
+    "fast_mode_uses_greedy_strategy",
+    "fw_balanced_profile_has_quality_floor_for_small",
+    "fw_balanced_request_uses_plain_decode_without_prompt_or_context",
+    "fw_detects_low_coherence_with_repetition_pressure",
+    "fw_literal_retry_profile_is_prompted_and_context_free",
+    "high_pass_filter_reduces_dc_offset_component",
+    "asr_integrity_tracks_raw_to_final_word_overlap",
+    "finalize_formats_spoken_numbered_lists",
+    "strips_blank_audio_marker"
+  )
+  foreach ($testName in $qualityGuardTests) {
+    Invoke-QualityGuardTest -TestName $testName
+  }
 }
 finally {
   Pop-Location

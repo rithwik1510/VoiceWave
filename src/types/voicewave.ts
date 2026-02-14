@@ -59,6 +59,9 @@ export interface LatencyBreakdownEvent {
   releaseFinalizeMs: number;
   incrementalWindowsDecoded: number;
   finalizeTailAudioMs: number;
+  asrIntegrityPercent: number;
+  asrRawWordCount: number;
+  asrFinalWordCount: number;
   decodeMs: number;
   postMs: number;
   insertMs: number;

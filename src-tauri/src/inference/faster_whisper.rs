@@ -16,12 +16,29 @@ pub struct FasterWhisperDecodeOutput {
     pub model_init_ms: u64,
     pub decode_compute_ms: u64,
     pub runtime_cache_hit: bool,
+    pub segment_count: u32,
+    pub avg_logprob: f32,
+    pub no_speech_prob: f32,
+    pub compression_ratio: f32,
 }
 
 #[derive(Debug, Clone)]
 pub struct FasterWhisperPrefetchOutput {
     pub model_init_ms: u64,
     pub runtime_cache_hit: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FasterWhisperRequestOverrides {
+    pub beam_size: Option<u32>,
+    pub best_of: Option<u32>,
+    pub vad_filter: Option<bool>,
+    pub condition_on_previous_text: Option<bool>,
+    pub initial_prompt: Option<String>,
+    pub temperature: Option<f32>,
+    pub no_speech_threshold: Option<f32>,
+    pub log_prob_threshold: Option<f32>,
+    pub compression_ratio_threshold: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,9 +50,15 @@ struct WorkerRequest {
     compute_type: String,
     audio_path: String,
     beam_size: u32,
+    best_of: u32,
     language: String,
     vad_filter: bool,
     condition_on_previous_text: bool,
+    initial_prompt: Option<String>,
+    temperature: Option<f32>,
+    no_speech_threshold: Option<f32>,
+    log_prob_threshold: Option<f32>,
+    compression_ratio_threshold: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +74,14 @@ struct WorkerResponse {
     decode_compute_ms: u64,
     #[serde(default)]
     runtime_cache_hit: bool,
+    #[serde(default)]
+    segment_count: u32,
+    #[serde(default)]
+    avg_log_prob: f32,
+    #[serde(default)]
+    no_speech_prob: f32,
+    #[serde(default)]
+    compression_ratio: f32,
 }
 
 struct WorkerProcess {
@@ -78,9 +109,15 @@ pub async fn prefetch_model(model_id: &str) -> Result<FasterWhisperPrefetchOutpu
         compute_type: "int8".to_string(),
         audio_path: String::new(),
         beam_size: 2,
+        best_of: 1,
         language: "en".to_string(),
         vad_filter: false,
         condition_on_previous_text: false,
+        initial_prompt: None,
+        temperature: None,
+        no_speech_threshold: None,
+        log_prob_threshold: None,
+        compression_ratio_threshold: None,
     };
     let response = tokio::task::spawn_blocking(move || send_worker_request_blocking(request))
         .await
@@ -94,10 +131,11 @@ pub async fn prefetch_model(model_id: &str) -> Result<FasterWhisperPrefetchOutpu
     })
 }
 
-pub async fn transcribe_samples(
+pub async fn transcribe_samples_with_overrides(
     samples: &[f32],
     model_id: &str,
     decode_mode: DecodeMode,
+    overrides: FasterWhisperRequestOverrides,
     cancel_token: &CancellationToken,
 ) -> Result<FasterWhisperDecodeOutput, InferenceError> {
     if cancel_token.is_cancelled() {
@@ -105,7 +143,7 @@ pub async fn transcribe_samples(
     }
 
     let audio_path = write_temp_wav(samples)?;
-    let request = worker_request_for(&audio_path, model_id, decode_mode);
+    let request = worker_request_for(&audio_path, model_id, decode_mode, overrides);
     let result = tokio::task::spawn_blocking(move || send_worker_request_blocking(request))
         .await
         .map_err(|err| {
@@ -122,6 +160,10 @@ pub async fn transcribe_samples(
         model_init_ms: response.model_init_ms,
         decode_compute_ms: response.decode_compute_ms,
         runtime_cache_hit: response.runtime_cache_hit,
+        segment_count: response.segment_count,
+        avg_logprob: response.avg_log_prob,
+        no_speech_prob: response.no_speech_prob,
+        compression_ratio: response.compression_ratio,
     })
 }
 
@@ -334,23 +376,127 @@ fn resolve_python_path() -> String {
     "python".to_string()
 }
 
-fn worker_request_for(audio_path: &Path, model_id: &str, decode_mode: DecodeMode) -> WorkerRequest {
-    let beam_size = match decode_mode {
-        DecodeMode::Fast => 1,
-        DecodeMode::Balanced => 3,
-        DecodeMode::Quality => 5,
-    };
+fn worker_request_for(
+    audio_path: &Path,
+    model_id: &str,
+    decode_mode: DecodeMode,
+    overrides: FasterWhisperRequestOverrides,
+) -> WorkerRequest {
+    let (beam_size, best_of) = decode_hyperparams_for(model_id, decode_mode);
+    let initial_prompt = overrides
+        .initial_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
     WorkerRequest {
         id: next_request_id(),
         command: "transcribe".to_string(),
         model_id: model_id.to_string(),
         compute_type: "int8".to_string(),
         audio_path: audio_path.to_string_lossy().to_string(),
-        beam_size,
+        beam_size: overrides.beam_size.unwrap_or(beam_size),
+        best_of: overrides.best_of.unwrap_or(best_of),
         language: "en".to_string(),
         // Push-to-talk path already endpoints speech; avoid double-VAD trimming.
-        vad_filter: false,
-        condition_on_previous_text: false,
+        vad_filter: overrides.vad_filter.unwrap_or(false),
+        condition_on_previous_text: overrides.condition_on_previous_text.unwrap_or(false),
+        initial_prompt,
+        temperature: overrides.temperature,
+        no_speech_threshold: overrides.no_speech_threshold,
+        log_prob_threshold: overrides.log_prob_threshold,
+        compression_ratio_threshold: overrides.compression_ratio_threshold,
+    }
+}
+
+fn decode_hyperparams_for(model_id: &str, decode_mode: DecodeMode) -> (u32, u32) {
+    match (model_id, decode_mode) {
+        ("small.en", DecodeMode::Fast) => (1, 1),
+        ("small.en", DecodeMode::Balanced) => (3, 2),
+        ("small.en", DecodeMode::Quality) => (5, 3),
+        ("large-v3", DecodeMode::Fast) => (1, 1),
+        ("large-v3", DecodeMode::Balanced) => (4, 2),
+        ("large-v3", DecodeMode::Quality) => (5, 3),
+        (_, DecodeMode::Fast) => (1, 1),
+        (_, DecodeMode::Balanced) => (3, 2),
+        (_, DecodeMode::Quality) => (5, 3),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_hyperparams_for, worker_request_for, FasterWhisperRequestOverrides};
+    use crate::settings::DecodeMode;
+    use std::path::Path;
+
+    #[test]
+    fn fw_balanced_profile_has_quality_floor_for_small() {
+        let (beam, best_of) = decode_hyperparams_for("small.en", DecodeMode::Balanced);
+        assert!(beam >= 2);
+        assert!(best_of >= 2);
+    }
+
+    #[test]
+    fn fw_fast_profile_remains_latency_first() {
+        let (beam, best_of) = decode_hyperparams_for("small.en", DecodeMode::Fast);
+        assert_eq!(beam, 1);
+        assert_eq!(best_of, 1);
+    }
+
+    #[test]
+    fn fw_balanced_request_uses_plain_decode_without_prompt_or_context() {
+        let request = worker_request_for(
+            Path::new("C:\\tmp\\sample.wav"),
+            "small.en",
+            DecodeMode::Balanced,
+            FasterWhisperRequestOverrides::default(),
+        );
+        assert!(!request.condition_on_previous_text);
+        assert!(request.initial_prompt.is_none());
+    }
+
+    #[test]
+    fn fw_fast_request_disables_prompt_for_speed() {
+        let request = worker_request_for(
+            Path::new("C:\\tmp\\sample.wav"),
+            "small.en",
+            DecodeMode::Fast,
+            FasterWhisperRequestOverrides::default(),
+        );
+        assert!(!request.condition_on_previous_text);
+        assert!(request.initial_prompt.is_none());
+    }
+
+    #[test]
+    fn fw_overrides_replace_request_defaults() {
+        let request = worker_request_for(
+            Path::new("C:\\tmp\\sample.wav"),
+            "small.en",
+            DecodeMode::Balanced,
+            FasterWhisperRequestOverrides {
+                beam_size: Some(5),
+                best_of: Some(3),
+                initial_prompt: Some(" spell uncommon words literally ".to_string()),
+                condition_on_previous_text: Some(true),
+                vad_filter: Some(true),
+                temperature: Some(0.0),
+                no_speech_threshold: Some(0.5),
+                log_prob_threshold: Some(-1.2),
+                compression_ratio_threshold: Some(2.1),
+            },
+        );
+        assert_eq!(request.beam_size, 5);
+        assert_eq!(request.best_of, 3);
+        assert_eq!(
+            request.initial_prompt.as_deref(),
+            Some("spell uncommon words literally")
+        );
+        assert!(request.condition_on_previous_text);
+        assert!(request.vad_filter);
+        assert_eq!(request.temperature, Some(0.0));
+        assert_eq!(request.no_speech_threshold, Some(0.5));
+        assert_eq!(request.log_prob_threshold, Some(-1.2));
+        assert_eq!(request.compression_ratio_threshold, Some(2.1));
     }
 }
 

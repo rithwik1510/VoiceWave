@@ -36,6 +36,12 @@ pub struct LatencyMetricRecord {
     pub release_finalize_ms: u64,
     pub incremental_windows_decoded: u32,
     pub finalize_tail_audio_ms: u64,
+    #[serde(default)]
+    pub asr_integrity_percent: f32,
+    #[serde(default)]
+    pub asr_raw_word_count: u32,
+    #[serde(default)]
+    pub asr_final_word_count: u32,
     pub success: bool,
 }
 
@@ -386,6 +392,9 @@ mod tests {
                 release_finalize_ms: 30,
                 incremental_windows_decoded: 0,
                 finalize_tail_audio_ms: 400,
+                asr_integrity_percent: 100.0,
+                asr_raw_word_count: 8,
+                asr_final_word_count: 8,
                 success: true,
             },
             LatencyMetricRecord {
@@ -415,6 +424,9 @@ mod tests {
                 release_finalize_ms: 900,
                 incremental_windows_decoded: 2,
                 finalize_tail_audio_ms: 620,
+                asr_integrity_percent: 95.0,
+                asr_raw_word_count: 11,
+                asr_final_word_count: 12,
                 success: true,
             },
         ];
@@ -474,6 +486,9 @@ mod tests {
                 release_finalize_ms: 0,
                 incremental_windows_decoded: 0,
                 finalize_tail_audio_ms: 0,
+                asr_integrity_percent: 72.0,
+                asr_raw_word_count: 4,
+                asr_final_word_count: 7,
                 success: false,
             },
             LatencyMetricRecord {
@@ -503,6 +518,9 @@ mod tests {
                 release_finalize_ms: 0,
                 incremental_windows_decoded: 0,
                 finalize_tail_audio_ms: 0,
+                asr_integrity_percent: 100.0,
+                asr_raw_word_count: 8,
+                asr_final_word_count: 8,
                 success: true,
             },
         ];

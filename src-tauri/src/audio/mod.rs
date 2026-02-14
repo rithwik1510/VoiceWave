@@ -10,6 +10,7 @@ use std::{
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 const FRAME_SIZE: usize = 320;
+const STOP_SIGNAL_DEBOUNCE_MS: u64 = 200;
 
 #[derive(Debug, Clone)]
 pub struct AudioFrame {
@@ -60,6 +61,7 @@ pub struct CaptureOptions {
     pub max_capture_duration: Duration,
     pub silence_timeout: Duration,
     pub release_tail: Duration,
+    pub preserve_full_capture: bool,
 }
 
 impl Default for CaptureOptions {
@@ -69,6 +71,7 @@ impl Default for CaptureOptions {
             max_capture_duration: Duration::from_secs(12),
             silence_timeout: Duration::from_millis(750),
             release_tail: Duration::from_millis(0),
+            preserve_full_capture: false,
         }
     }
 }
@@ -266,6 +269,28 @@ impl AudioCaptureService {
                     }
                 }
             }
+            if let Some(default_device) = host.default_input_device() {
+                let default_name = default_device.name().unwrap_or_default();
+                if is_likely_low_quality_asr_input(&default_name) {
+                    let devices = host.input_devices().map_err(AudioError::Devices)?;
+                    for device in devices {
+                        if let Ok(device_name) = device.name() {
+                            if !is_likely_low_quality_asr_input(&device_name) {
+                                eprintln!(
+                                    "voicewave: requested input '{}' missing; using higher-quality fallback '{}' instead of low-quality default '{}'",
+                                    name, device_name, default_name
+                                );
+                                return Ok(device);
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "voicewave: requested input device '{}' not found; falling back to default input device",
+                    name
+                );
+                return Ok(default_device);
+            }
             return Err(AudioError::DeviceNotFound(name.to_string()));
         }
 
@@ -299,6 +324,9 @@ impl AudioCaptureService {
             }
 
             if stop_requested_at.is_none() && should_stop() {
+                if started.elapsed() < Duration::from_millis(STOP_SIGNAL_DEBOUNCE_MS) {
+                    continue;
+                }
                 stop_requested_at = Some(Instant::now());
                 if options.release_tail.is_zero() {
                     break;
@@ -367,6 +395,15 @@ impl AudioCaptureService {
             }
         }
 
+        if options.preserve_full_capture && !capture_accum.is_empty() {
+            let preserve_threshold = (options.vad_config.threshold * 0.55).clamp(0.0015, 0.02);
+            let trimmed = trim_capture_edges(&capture_accum, FRAME_SIZE, preserve_threshold);
+            if !trimmed.is_empty() {
+                return Ok(vec![trimmed]);
+            }
+            return Ok(vec![capture_accum]);
+        }
+
         if segments.is_empty() && !capture_accum.is_empty() {
             let fallback_len =
                 (self.target_sample_rate as usize * 3).min(capture_accum.len());
@@ -382,6 +419,17 @@ impl AudioCaptureService {
 
         Ok(segments)
     }
+}
+
+fn is_likely_low_quality_asr_input(device_name: &str) -> bool {
+    let normalized = device_name.to_ascii_lowercase();
+    normalized.contains("hands-free")
+        || normalized.contains("hand free")
+        || normalized.contains("bluetooth headset")
+        || normalized.contains("headset")
+        || normalized.contains("hfp")
+        || normalized.contains("ag audio")
+        || normalized.contains("sco")
 }
 
 fn build_input_stream(
@@ -639,6 +687,39 @@ pub fn mock_audio_fixture_frames() -> Vec<Vec<f32>> {
 fn rms(samples: &[f32]) -> f32 {
     let power_sum: f32 = samples.iter().map(|s| s * s).sum();
     (power_sum / samples.len() as f32).sqrt()
+}
+
+fn trim_capture_edges(samples: &[f32], frame_size: usize, threshold: f32) -> Vec<f32> {
+    if samples.is_empty() || frame_size == 0 {
+        return Vec::new();
+    }
+
+    let mut first_voiced_frame = None::<usize>;
+    let mut last_voiced_frame = None::<usize>;
+    for (idx, frame) in samples.chunks(frame_size).enumerate() {
+        if !frame.is_empty() && rms(frame) >= threshold {
+            if first_voiced_frame.is_none() {
+                first_voiced_frame = Some(idx);
+            }
+            last_voiced_frame = Some(idx);
+        }
+    }
+
+    let Some(first) = first_voiced_frame else {
+        return samples.to_vec();
+    };
+    let last = last_voiced_frame.unwrap_or(first);
+
+    let start_frame = first.saturating_sub(1);
+    let end_frame_exclusive = last.saturating_add(2);
+    let start = start_frame.saturating_mul(frame_size).min(samples.len());
+    let end = end_frame_exclusive
+        .saturating_mul(frame_size)
+        .min(samples.len());
+    if start >= end {
+        return samples.to_vec();
+    }
+    samples[start..end].to_vec()
 }
 
 fn rms_i16(samples: &[i16]) -> f32 {
@@ -903,6 +984,7 @@ mod tests {
             max_capture_duration: Duration::from_millis(140),
             silence_timeout: Duration::from_millis(25),
             release_tail: Duration::from_millis(120),
+            preserve_full_capture: false,
         };
 
         audio_tx
@@ -928,6 +1010,44 @@ mod tests {
             "capture ended before explicit stop/max duration guard"
         );
         assert!(!segments.is_empty());
+    }
+
+    #[test]
+    fn capture_preserve_full_capture_keeps_audio_when_vad_is_too_strict() {
+        let service = AudioCaptureService::default();
+        let (audio_tx, audio_rx) = std::sync::mpsc::channel::<Vec<f32>>();
+        let (_error_tx, error_rx) = std::sync::mpsc::channel::<String>();
+        let options = CaptureOptions {
+            vad_config: VadConfig {
+                threshold: 0.08,
+                ..VadConfig::default()
+            },
+            max_capture_duration: Duration::from_millis(200),
+            silence_timeout: Duration::from_millis(40),
+            release_tail: Duration::from_millis(0),
+            preserve_full_capture: true,
+        };
+
+        audio_tx
+            .send(vec![0.03_f32; FRAME_SIZE * 3])
+            .expect("test frame should be queued");
+        drop(audio_tx);
+
+        let segments = service
+            .collect_segments_from_stream(
+                service.target_sample_rate,
+                1,
+                audio_rx,
+                error_rx,
+                options,
+                || false,
+                || false,
+                |_normalized_chunk, _voiced_chunk| {},
+            )
+            .expect("capture should complete");
+
+        assert_eq!(segments.len(), 1);
+        assert!(!segments[0].is_empty());
     }
 
     #[test]

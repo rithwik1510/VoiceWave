@@ -30,9 +30,19 @@ def transcribe(req: dict) -> dict:
     model_id = req.get("modelId")
     compute_type = req.get("computeType", "int8")
     beam_size = int(req.get("beamSize", 2))
+    best_of = int(req.get("bestOf", 1))
     language = req.get("language", "en")
     vad_filter = bool(req.get("vadFilter", True))
     condition_on_previous_text = bool(req.get("conditionOnPreviousText", False))
+    initial_prompt = req.get("initialPrompt")
+    temperature = req.get("temperature")
+    no_speech_threshold = req.get("noSpeechThreshold")
+    log_prob_threshold = req.get("logProbThreshold")
+    compression_ratio_threshold = req.get("compressionRatioThreshold")
+    if isinstance(initial_prompt, str):
+        initial_prompt = initial_prompt.strip() or None
+    else:
+        initial_prompt = None
 
     if not audio_path or not Path(audio_path).exists():
         return {
@@ -56,21 +66,50 @@ def transcribe(req: dict) -> dict:
     model, runtime_cache_hit, model_init_ms = load_model(model_id, compute_type)
 
     decode_started = time.perf_counter()
-    segments, _info = model.transcribe(
-        audio_path,
-        beam_size=beam_size,
-        language=language,
-        vad_filter=vad_filter,
-        condition_on_previous_text=condition_on_previous_text,
-    )
+    transcribe_kwargs = {
+        "beam_size": beam_size,
+        "best_of": best_of,
+        "language": language,
+        "vad_filter": vad_filter,
+        "condition_on_previous_text": condition_on_previous_text,
+        "initial_prompt": initial_prompt,
+    }
+    if temperature is not None:
+        transcribe_kwargs["temperature"] = float(temperature)
+    if no_speech_threshold is not None:
+        transcribe_kwargs["no_speech_threshold"] = float(no_speech_threshold)
+    if log_prob_threshold is not None:
+        transcribe_kwargs["log_prob_threshold"] = float(log_prob_threshold)
+    if compression_ratio_threshold is not None:
+        transcribe_kwargs["compression_ratio_threshold"] = float(
+            compression_ratio_threshold
+        )
+
+    segments, _info = model.transcribe(audio_path, **transcribe_kwargs)
     segments = list(segments)
     decode_ms = int((time.perf_counter() - decode_started) * 1000)
 
     parts = []
+    avg_logprobs = []
+    no_speech_probs = []
+    compression_ratios = []
     for segment in segments:
         text = (segment.text or "").strip()
         if text:
             parts.append(text)
+        avg_logprobs.append(float(getattr(segment, "avg_logprob", 0.0)))
+        no_speech_probs.append(float(getattr(segment, "no_speech_prob", 0.0)))
+        compression_ratios.append(float(getattr(segment, "compression_ratio", 0.0)))
+
+    mean_avg_logprob = (
+        sum(avg_logprobs) / len(avg_logprobs) if avg_logprobs else 0.0
+    )
+    mean_no_speech_prob = (
+        sum(no_speech_probs) / len(no_speech_probs) if no_speech_probs else 0.0
+    )
+    mean_compression_ratio = (
+        sum(compression_ratios) / len(compression_ratios) if compression_ratios else 0.0
+    )
 
     return {
         "id": request_id,
@@ -79,6 +118,10 @@ def transcribe(req: dict) -> dict:
         "modelInitMs": model_init_ms,
         "decodeComputeMs": decode_ms,
         "runtimeCacheHit": runtime_cache_hit,
+        "segmentCount": len(segments),
+        "avgLogProb": mean_avg_logprob,
+        "noSpeechProb": mean_no_speech_prob,
+        "compressionRatio": mean_compression_ratio,
     }
 
 

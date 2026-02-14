@@ -305,6 +305,22 @@ fn is_clipboard_preferred_target(app: &str) -> bool {
         || normalized.contains("notion")
 }
 
+#[cfg(target_os = "windows")]
+fn schedule_clipboard_restore(previous_text: Option<String>, restore_delay_ms: u64) {
+    let Some(previous) = previous_text else {
+        return;
+    };
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(restore_delay_ms));
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(previous);
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn schedule_clipboard_restore(_previous_text: Option<String>, _restore_delay_ms: u64) {}
+
 #[derive(Default)]
 pub struct PlatformInsertionBackend;
 
@@ -388,10 +404,7 @@ impl InsertionBackend for PlatformInsertionBackend {
             } else {
                 90
             };
-            std::thread::sleep(std::time::Duration::from_millis(restore_delay_ms));
-            if let Some(previous) = previous_text {
-                let _ = clipboard.set_text(previous);
-            }
+            schedule_clipboard_restore(previous_text, restore_delay_ms);
             return Ok(BackendInsertSuccess {
                 message: Some("Inserted via clipboard fallback.".to_string()),
                 undo_token: Some(UndoToken::KeyboardUndo),

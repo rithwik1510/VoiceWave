@@ -11,7 +11,9 @@ use crate::settings::DecodeMode;
 use backend::{
     context_params_for_backend, note_gpu_runtime_failure, preferred_backend_for_model, RuntimeBackend,
 };
+use faster_whisper::FasterWhisperRequestOverrides;
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -28,6 +30,13 @@ pub struct DecodeTelemetry {
     pub backend_requested: String,
     pub backend_used: String,
     pub backend_fallback: bool,
+    pub fw_segment_count: Option<u32>,
+    pub fw_avg_logprob: Option<f32>,
+    pub fw_no_speech_prob: Option<f32>,
+    pub fw_compression_ratio: Option<f32>,
+    pub fw_low_coherence: bool,
+    pub fw_retry_used: bool,
+    pub fw_literal_retry_used: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +196,7 @@ enum InferenceBackend {
     },
     FasterWhisper {
         decode_mode: DecodeMode,
+        terminology_hint: Option<String>,
     },
     Scripted,
 }
@@ -244,14 +254,30 @@ impl InferenceWorker {
         active_model: impl Into<String>,
         decode_mode: DecodeMode,
     ) -> Self {
+        Self::new_faster_whisper_with_mode_and_hint(active_model, decode_mode, None)
+    }
+
+    pub fn new_faster_whisper_with_mode_and_hint(
+        active_model: impl Into<String>,
+        decode_mode: DecodeMode,
+        terminology_hint: Option<String>,
+    ) -> Self {
         let active_model = active_model.into();
         let profile = decode_profile_for_mode(&active_model, decode_mode);
+        let hint = terminology_hint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
         Self {
             active_model,
             scripted_output: None,
             partial_delay_ms: profile.partial_delay_ms,
             decode_mode,
-            backend: InferenceBackend::FasterWhisper { decode_mode },
+            backend: InferenceBackend::FasterWhisper {
+                decode_mode,
+                terminology_hint: hint,
+            },
         }
     }
 
@@ -333,11 +359,15 @@ impl InferenceWorker {
                     telemetry: decode.telemetry,
                 }
             }
-            InferenceBackend::FasterWhisper { decode_mode } => {
+            InferenceBackend::FasterWhisper {
+                decode_mode,
+                terminology_hint,
+            } => {
                 let decode = transcribe_with_faster_whisper(
                     samples.to_vec(),
                     self.active_model.clone(),
                     *decode_mode,
+                    terminology_hint.clone(),
                     cancel_token.clone(),
                 )
                 .await?;
@@ -509,12 +539,19 @@ async fn transcribe_with_faster_whisper(
     samples: Vec<f32>,
     model_id: String,
     decode_mode: DecodeMode,
+    terminology_hint: Option<String>,
     cancel_token: CancellationToken,
 ) -> Result<WhisperDecodeOutput, InferenceError> {
     if cancel_token.is_cancelled() {
         return Err(InferenceError::Cancelled);
     }
 
+    if samples.is_empty() {
+        return Err(InferenceError::DecodeFailed {
+            model_id,
+            reason: "no usable audio samples captured".to_string(),
+        });
+    }
     let condition_started = Instant::now();
     let conditioned_samples = condition_audio_for_decode(&samples);
     let audio_condition_ms = condition_started.elapsed().as_millis() as u64;
@@ -531,25 +568,330 @@ async fn transcribe_with_faster_whisper(
             reason: "unsupported faster-whisper model id".to_string(),
         }
     })?;
-    let decode = faster_whisper::transcribe_samples(
+    let primary = faster_whisper::transcribe_samples_with_overrides(
         &conditioned_samples,
         runtime_model,
         decode_mode,
+        fw_primary_overrides(decode_mode, terminology_hint.as_deref()),
         &cancel_token,
     )
     .await?;
+    if cancel_token.is_cancelled() {
+        return Err(InferenceError::Cancelled);
+    }
+
+    let audio_duration_ms = ((conditioned_samples.len() as f64 / 16_000.0) * 1000.0).round() as u64;
+    let mut final_decode = primary.clone();
+    let mut total_model_init_ms = primary.model_init_ms;
+    let mut total_decode_compute_ms = primary.decode_compute_ms;
+    let mut runtime_cache_hit = primary.runtime_cache_hit;
+    let low_coherence = fw_decode_is_low_coherence(&primary, audio_duration_ms);
+    let substitution_suspected =
+        fw_decode_looks_common_substitution(&primary, audio_duration_ms);
+    let needs_retry = fw_decode_needs_retry(&primary, audio_duration_ms)
+        || (low_coherence && (primary.avg_logprob < -0.82 || substitution_suspected));
+    let mut retry_used = false;
+    let mut literal_retry_used = false;
+
+    if needs_retry {
+        let retry_mode = stronger_decode_mode(decode_mode).unwrap_or(decode_mode);
+        let retry_overrides = if low_coherence {
+            literal_retry_used = true;
+            fw_literal_retry_overrides(retry_mode, terminology_hint.as_deref())
+        } else {
+            FasterWhisperRequestOverrides::default()
+        };
+        let retry = faster_whisper::transcribe_samples_with_overrides(
+            &conditioned_samples,
+            runtime_model,
+            retry_mode,
+            retry_overrides,
+            &cancel_token,
+        )
+        .await?;
+        if cancel_token.is_cancelled() {
+            return Err(InferenceError::Cancelled);
+        }
+        retry_used = true;
+        total_model_init_ms = total_model_init_ms.saturating_add(retry.model_init_ms);
+        total_decode_compute_ms = total_decode_compute_ms.saturating_add(retry.decode_compute_ms);
+        runtime_cache_hit &= retry.runtime_cache_hit;
+        if fw_retry_beats_primary(&primary, &retry, audio_duration_ms) {
+            final_decode = retry;
+        }
+    }
+
     Ok(WhisperDecodeOutput {
-        text: decode.text,
+        text: final_decode.text,
         telemetry: DecodeTelemetry {
-            model_init_ms: decode.model_init_ms,
+            model_init_ms: total_model_init_ms,
             audio_condition_ms,
-            decode_compute_ms: decode.decode_compute_ms,
-            runtime_cache_hit: decode.runtime_cache_hit,
+            decode_compute_ms: total_decode_compute_ms,
+            runtime_cache_hit,
             backend_requested: "cpu".to_string(),
             backend_used: "cpu".to_string(),
             backend_fallback: false,
+            fw_segment_count: Some(final_decode.segment_count),
+            fw_avg_logprob: Some(final_decode.avg_logprob),
+            fw_no_speech_prob: Some(final_decode.no_speech_prob),
+            fw_compression_ratio: Some(final_decode.compression_ratio),
+            fw_low_coherence: low_coherence,
+            fw_retry_used: retry_used,
+            fw_literal_retry_used: literal_retry_used,
         },
     })
+}
+
+fn stronger_decode_mode(mode: DecodeMode) -> Option<DecodeMode> {
+    match mode {
+        DecodeMode::Fast => Some(DecodeMode::Balanced),
+        DecodeMode::Balanced => Some(DecodeMode::Quality),
+        DecodeMode::Quality => None,
+    }
+}
+
+fn fw_decode_needs_retry(
+    decode: &faster_whisper::FasterWhisperDecodeOutput,
+    audio_duration_ms: u64,
+) -> bool {
+    let words = word_count(&decode.text);
+    if audio_duration_ms <= 1_600
+        && words >= 2
+        && decode.avg_logprob > -0.72
+        && decode.no_speech_prob < 0.45
+        && decode.compression_ratio < 2.0
+    {
+        return false;
+    }
+    if words == 0 {
+        return true;
+    }
+    if decode.no_speech_prob > 0.72 && words <= 8 {
+        return true;
+    }
+    if decode.avg_logprob < -1.15 {
+        return true;
+    }
+    if decode.compression_ratio > 2.3 {
+        return true;
+    }
+    if fw_decode_looks_common_substitution(decode, audio_duration_ms) {
+        return true;
+    }
+    if audio_duration_ms >= 1_800 && words <= 2 {
+        return true;
+    }
+    audio_duration_ms >= 4_200 && words <= 6
+}
+
+fn fw_decode_is_low_coherence(
+    decode: &faster_whisper::FasterWhisperDecodeOutput,
+    audio_duration_ms: u64,
+) -> bool {
+    let words = tokenized_words(&decode.text);
+    if words.is_empty() {
+        return true;
+    }
+    let diversity = lexical_diversity(&words);
+    let repeated_bigrams = repeated_bigram_ratio(&words);
+    let single_char_ratio = single_char_token_ratio(&words);
+
+    if words.len() >= 6
+        && diversity > 0.72
+        && repeated_bigrams < 0.16
+        && decode.avg_logprob > -0.8
+        && decode.no_speech_prob < 0.35
+    {
+        return false;
+    }
+
+    if decode.compression_ratio >= 2.7 || repeated_bigrams >= 0.4 {
+        return true;
+    }
+    if audio_duration_ms >= 2_400 && words.len() <= 3 && decode.avg_logprob < -0.9 {
+        return true;
+    }
+    decode.avg_logprob < -1.1
+        && decode.no_speech_prob > 0.5
+        && (diversity < 0.48 || single_char_ratio >= 0.45)
+}
+
+fn fw_retry_beats_primary(
+    primary: &faster_whisper::FasterWhisperDecodeOutput,
+    retry: &faster_whisper::FasterWhisperDecodeOutput,
+    audio_duration_ms: u64,
+) -> bool {
+    let primary_words = word_count(&primary.text);
+    let retry_words = word_count(&retry.text);
+    if primary_words == 0 {
+        return retry_words > 0;
+    }
+    if retry_words == 0 {
+        return false;
+    }
+
+    let primary_score = fw_confidence_score(primary);
+    let retry_score = fw_confidence_score(retry);
+    if retry_score > primary_score + 0.04 {
+        return true;
+    }
+
+    if audio_duration_ms >= 2_200
+        && retry_words >= primary_words.saturating_add(3)
+        && retry.no_speech_prob <= primary.no_speech_prob + 0.08
+    {
+        return true;
+    }
+
+    false
+}
+
+fn fw_confidence_score(decode: &faster_whisper::FasterWhisperDecodeOutput) -> f32 {
+    let words = word_count(&decode.text).min(24) as f32;
+    let compression_penalty = (decode.compression_ratio - 2.1).max(0.0) * 0.35;
+    decode.avg_logprob - (decode.no_speech_prob * 1.25) + (words * 0.025) - compression_penalty
+}
+
+fn word_count(text: &str) -> usize {
+    text.split_whitespace().filter(|token| !token.is_empty()).count()
+}
+
+fn tokenized_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|token| {
+            token
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '\'')
+                .collect::<String>()
+                .to_ascii_lowercase()
+        })
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn lexical_diversity(tokens: &[String]) -> f32 {
+    if tokens.is_empty() {
+        return 0.0;
+    }
+    let unique = tokens.iter().collect::<HashSet<_>>().len() as f32;
+    unique / tokens.len() as f32
+}
+
+fn repeated_bigram_ratio(tokens: &[String]) -> f32 {
+    if tokens.len() < 4 {
+        return 0.0;
+    }
+    let mut seen = HashSet::new();
+    let mut repeated = 0usize;
+    let mut total = 0usize;
+    for window in tokens.windows(2) {
+        let key = format!("{} {}", window[0], window[1]);
+        total += 1;
+        if !seen.insert(key) {
+            repeated += 1;
+        }
+    }
+    if total == 0 {
+        0.0
+    } else {
+        repeated as f32 / total as f32
+    }
+}
+
+fn single_char_token_ratio(tokens: &[String]) -> f32 {
+    if tokens.is_empty() {
+        return 0.0;
+    }
+    let single = tokens.iter().filter(|token| token.len() == 1).count();
+    single as f32 / tokens.len() as f32
+}
+
+fn fw_decode_looks_common_substitution(
+    decode: &faster_whisper::FasterWhisperDecodeOutput,
+    audio_duration_ms: u64,
+) -> bool {
+    let words = tokenized_words(&decode.text);
+    if words.is_empty() || words.len() > 4 || audio_duration_ms < 700 {
+        return false;
+    }
+    let common_words: HashSet<&'static str> = [
+        "a", "an", "and", "are", "as", "at", "be", "can", "do", "for", "from", "go", "hard",
+        "have", "in", "is", "it", "of", "on", "or", "our", "so", "that", "the", "this", "to",
+        "was", "we", "with", "word", "work", "you", "your",
+    ]
+    .into_iter()
+    .collect();
+    let common = words
+        .iter()
+        .filter(|token| common_words.contains(token.as_str()))
+        .count();
+    let common_ratio = common as f32 / words.len() as f32;
+    common_ratio >= 0.8 && decode.avg_logprob < -0.55
+}
+
+fn fw_primary_overrides(
+    decode_mode: DecodeMode,
+    terminology_hint: Option<&str>,
+) -> FasterWhisperRequestOverrides {
+    let mut prompt = String::from(
+        "Transcribe verbatim. Preserve technical terms and uncommon words exactly.",
+    );
+    if let Some(hint) = terminology_hint {
+        if !hint.trim().is_empty() {
+            prompt.push_str(" Technical terms: ");
+            prompt.push_str(hint.trim());
+        }
+    }
+    let prompt = if prompt.chars().count() > 360 {
+        prompt.chars().take(360).collect::<String>()
+    } else {
+        prompt
+    };
+    match decode_mode {
+        DecodeMode::Fast => FasterWhisperRequestOverrides {
+            initial_prompt: Some(prompt),
+            ..FasterWhisperRequestOverrides::default()
+        },
+        DecodeMode::Balanced | DecodeMode::Quality => FasterWhisperRequestOverrides {
+            initial_prompt: Some(prompt),
+            temperature: Some(0.0),
+            ..FasterWhisperRequestOverrides::default()
+        },
+    }
+}
+
+fn fw_literal_retry_overrides(
+    retry_mode: DecodeMode,
+    terminology_hint: Option<&str>,
+) -> FasterWhisperRequestOverrides {
+    let (beam_size, best_of) = match retry_mode {
+        DecodeMode::Fast => (2, 1),
+        DecodeMode::Balanced => (4, 2),
+        DecodeMode::Quality => (5, 3),
+    };
+    let mut prompt = String::from(
+        "Transcribe exactly what is spoken. Keep uncommon words, names, and spelled tokens. Do not paraphrase.",
+    );
+    if let Some(hint) = terminology_hint {
+        if !hint.trim().is_empty() {
+            prompt.push_str(" Prefer these technical terms when acoustically plausible: ");
+            prompt.push_str(hint.trim());
+        }
+    }
+    if prompt.chars().count() > 420 {
+        prompt = prompt.chars().take(420).collect();
+    }
+    FasterWhisperRequestOverrides {
+        beam_size: Some(beam_size),
+        best_of: Some(best_of),
+        vad_filter: Some(false),
+        condition_on_previous_text: Some(false),
+        initial_prompt: Some(prompt),
+        temperature: Some(0.0),
+        no_speech_threshold: Some(0.5),
+        log_prob_threshold: Some(-1.3),
+        compression_ratio_threshold: Some(2.1),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -692,6 +1034,13 @@ pub(crate) fn decode_with_context(
             backend_requested: backend_requested.as_str().to_string(),
             backend_used: backend_used.as_str().to_string(),
             backend_fallback,
+            fw_segment_count: None,
+            fw_avg_logprob: None,
+            fw_no_speech_prob: None,
+            fw_compression_ratio: None,
+            fw_low_coherence: false,
+            fw_retry_used: false,
+            fw_literal_retry_used: false,
         },
     })
 }
@@ -819,10 +1168,11 @@ fn condition_audio_for_decode(samples: &[f32]) -> Vec<f32> {
     const FRAME_SIZE: usize = 320;
     const MIN_EDGE_RMS: f32 = 0.002;
     const MAX_EDGE_RMS: f32 = 0.03;
-    const TARGET_RMS: f32 = 0.08;
+    const TARGET_RMS: f32 = 0.065;
     const MAX_PEAK: f32 = 0.95;
     const MIN_GAIN: f32 = 0.5;
-    const MAX_GAIN: f32 = 6.0;
+    const MAX_GAIN: f32 = 4.0;
+    const MIN_TRIMMED_RATIO: f32 = 0.35;
 
     if samples.is_empty() {
         return Vec::new();
@@ -834,12 +1184,18 @@ fn condition_audio_for_decode(samples: &[f32]) -> Vec<f32> {
     if trimmed.is_empty() {
         return Vec::new();
     }
+    let use_original_window = samples.len() >= FRAME_SIZE * 8
+        && (trimmed.len() as f32 / samples.len() as f32) < MIN_TRIMMED_RATIO;
+    let working = if use_original_window {
+        samples.to_vec()
+    } else {
+        trimmed
+    };
 
-    let mean = trimmed.iter().copied().sum::<f32>() / trimmed.len() as f32;
-    let mut centered = trimmed
-        .iter()
-        .map(|sample| sample - mean)
-        .collect::<Vec<f32>>();
+    let mean = working.iter().copied().sum::<f32>() / working.len() as f32;
+    let mut centered = working.iter().map(|sample| sample - mean).collect::<Vec<f32>>();
+    high_pass_filter_in_place(&mut centered, 90.0, 16_000.0);
+    attenuate_low_noise_frames(&mut centered);
 
     let current_rms = rms(&centered);
     let peak = centered
@@ -859,6 +1215,44 @@ fn condition_audio_for_decode(samples: &[f32]) -> Vec<f32> {
     }
 
     centered
+}
+
+fn high_pass_filter_in_place(samples: &mut [f32], cutoff_hz: f32, sample_rate_hz: f32) {
+    if samples.len() < 2 || cutoff_hz <= 0.0 || sample_rate_hz <= 0.0 {
+        return;
+    }
+    let dt = 1.0 / sample_rate_hz;
+    let rc = 1.0 / (2.0 * std::f32::consts::PI * cutoff_hz);
+    let alpha = rc / (rc + dt);
+    let mut prev_input = samples[0];
+    let mut prev_output = samples[0];
+    for sample in samples.iter_mut().skip(1) {
+        let input = *sample;
+        let output = alpha * (prev_output + input - prev_input);
+        *sample = output;
+        prev_input = input;
+        prev_output = output;
+    }
+}
+
+fn attenuate_low_noise_frames(samples: &mut [f32]) {
+    if samples.is_empty() {
+        return;
+    }
+    let mut abs_values = samples.iter().map(|sample| sample.abs()).collect::<Vec<f32>>();
+    abs_values.sort_by(|a, b| a.total_cmp(b));
+    let q1_idx = ((abs_values.len() - 1) as f32 * 0.25).round() as usize;
+    let noise_floor = abs_values[q1_idx];
+    if noise_floor < 0.0012 {
+        return;
+    }
+    let threshold = (noise_floor * 2.2).max(0.001);
+    let attenuation = 0.75_f32;
+    for sample in samples.iter_mut() {
+        if sample.abs() < threshold {
+            *sample *= attenuation;
+        }
+    }
 }
 
 fn trim_low_energy_edges(samples: &[f32], frame_size: usize, threshold: f32) -> Vec<f32> {
@@ -906,6 +1300,24 @@ fn rms(samples: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fw_decode(
+        text: &str,
+        avg_logprob: f32,
+        no_speech_prob: f32,
+        compression_ratio: f32,
+    ) -> faster_whisper::FasterWhisperDecodeOutput {
+        faster_whisper::FasterWhisperDecodeOutput {
+            text: text.to_string(),
+            model_init_ms: 0,
+            decode_compute_ms: 0,
+            runtime_cache_hit: true,
+            segment_count: 1,
+            avg_logprob,
+            no_speech_prob,
+            compression_ratio,
+        }
+    }
 
     fn profile_sweep(
         model_ids: &[&str],
@@ -992,6 +1404,13 @@ mod tests {
     }
 
     #[test]
+    fn high_pass_filter_reduces_dc_offset_component() {
+        let mut samples = vec![0.15_f32; 16_000];
+        high_pass_filter_in_place(&mut samples, 90.0, 16_000.0);
+        assert!(rms(&samples) < 0.02);
+    }
+
+    #[test]
     fn decode_profile_prefers_beam_for_larger_models() {
         assert!(matches!(
             decode_profile("small.en").strategy,
@@ -1030,4 +1449,73 @@ mod tests {
         assert!(small_fast.2.partial_delay_ms <= small_balanced.2.partial_delay_ms);
         assert!(small_balanced.2.thread_cap >= 10);
     }
+
+    #[test]
+    fn fw_retry_detects_low_confidence_decode() {
+        let weak = fw_decode("quick note", -1.35, 0.75, 2.5);
+        assert!(fw_decode_needs_retry(&weak, 1_600));
+    }
+
+    #[test]
+    fn fw_retry_skips_high_confidence_decode() {
+        let strong = fw_decode("voicewave dictation looks stable now", -0.42, 0.18, 1.2);
+        assert!(!fw_decode_needs_retry(&strong, 1_600));
+    }
+
+    #[test]
+    fn fw_retry_prefers_better_confidence_output() {
+        let primary = fw_decode("hey", -1.26, 0.74, 2.4);
+        let retry = fw_decode("hey team let's ship this fix", -0.62, 0.26, 1.3);
+        assert!(fw_retry_beats_primary(&primary, &retry, 2_500));
+    }
+
+    #[test]
+    fn fw_detects_low_coherence_with_repetition_pressure() {
+        let weak = fw_decode("this this this this this this", -0.96, 0.22, 2.6);
+        assert!(fw_decode_is_low_coherence(&weak, 1_900));
+    }
+
+    #[test]
+    fn fw_literal_retry_profile_is_prompted_and_context_free() {
+        let profile = fw_literal_retry_overrides(
+            DecodeMode::Balanced,
+            Some("Kubernetes protobuf gRPC"),
+        );
+        assert_eq!(profile.condition_on_previous_text, Some(false));
+        assert_eq!(profile.temperature, Some(0.0));
+        assert!(profile
+            .initial_prompt
+            .as_deref()
+            .is_some_and(|text| text.contains("Transcribe exactly")));
+        assert!(profile
+            .initial_prompt
+            .as_deref()
+            .is_some_and(|text| text.contains("Kubernetes protobuf gRPC")));
+    }
+
+    #[test]
+    fn fw_common_substitution_pattern_triggers_retry() {
+        let weak = fw_decode("hard work", -0.72, 0.14, 1.6);
+        assert!(fw_decode_looks_common_substitution(&weak, 900));
+    }
+
+    #[test]
+    fn fw_primary_profile_includes_technical_hint_prompt() {
+        let profile = fw_primary_overrides(DecodeMode::Balanced, Some("TypeScript ESLint Vite"));
+        assert!(profile
+            .initial_prompt
+            .as_deref()
+            .is_some_and(|text| text.contains("TypeScript ESLint Vite")));
+    }
+
+    #[test]
+    fn stronger_mode_escalates_until_quality() {
+        assert_eq!(stronger_decode_mode(DecodeMode::Fast), Some(DecodeMode::Balanced));
+        assert_eq!(
+            stronger_decode_mode(DecodeMode::Balanced),
+            Some(DecodeMode::Quality)
+        );
+        assert_eq!(stronger_decode_mode(DecodeMode::Quality), None);
+    }
+
 }

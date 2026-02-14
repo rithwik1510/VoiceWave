@@ -33,13 +33,22 @@ $p95 = [int64]$releaseToFinal[$idx95]
 $successCount = @($slice | Where-Object { $_.success -eq $true }).Count
 $successRate = if ($slice.Count -eq 0) { 0 } else { [math]::Round(($successCount * 100.0 / $slice.Count), 1) }
 
+$integrityRows = @($slice | Where-Object { $_.PSObject.Properties.Name -contains "asrIntegrityPercent" })
+$integrityAvg = $null
+if ($integrityRows.Count -gt 0) {
+  $integrityAvg = [math]::Round((($integrityRows | Measure-Object -Property asrIntegrityPercent -Average).Average), 1)
+}
+
 Write-Host ""
 Write-Host "Phase B Live FW Report"
 Write-Host "----------------------"
 Write-Host ("Records analyzed: {0}" -f $slice.Count)
 Write-Host ("fw-small.en live p50 release->final: {0} ms" -f $p50)
 Write-Host ("fw-small.en live p95 release->final: {0} ms" -f $p95)
-Write-Host ("fw-small.en live success rate: {0}%" -f $successRate)
+Write-Host ("fw-small.en live pipeline success rate (insertion/runtime): {0}%" -f $successRate)
+if ($integrityAvg -ne $null) {
+  Write-Host ("fw-small.en live ASR integrity (raw->final overlap): {0}%" -f $integrityAvg)
+}
 
 if (Test-Path $phaseAPath) {
   $phaseA = Get-Content $phaseAPath -Raw | ConvertFrom-Json

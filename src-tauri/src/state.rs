@@ -34,7 +34,7 @@ use crate::{
         normalize_hotkey_bindings, DecodeMode, SettingsError, SettingsStore, VoiceWaveSettings,
         LOCKED_PUSH_TO_TALK_HOTKEY, LOCKED_TOGGLE_HOTKEY,
     },
-    transcript::{finalize_user_transcript, merge_incremental_transcript, sanitize_user_transcript},
+    transcript::{merge_incremental_transcript, sanitize_user_transcript},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -109,6 +109,9 @@ struct LatencyBreakdownEvent {
     release_finalize_ms: u64,
     incremental_windows_decoded: u32,
     finalize_tail_audio_ms: u64,
+    asr_integrity_percent: f32,
+    asr_raw_word_count: u32,
+    asr_final_word_count: u32,
     decode_ms: u64,
     post_ms: u64,
     insert_ms: u64,
@@ -193,6 +196,159 @@ const INCREMENTAL_WINDOW_OVERLAP_MS: u64 = 280;
 const FINALIZE_LOOKBACK_MS: u64 = 1_200;
 const TRANSCRIPT_OVERLAP_TOKENS: usize = 8;
 const BENCHMARK_RELIABILITY_WINDOW: usize = 40;
+#[cfg(target_os = "windows")]
+const HOTKEY_CUE_PRESS_WAV: &[u8] = include_bytes!("../assets/audio/cue_press.wav");
+#[cfg(target_os = "windows")]
+const HOTKEY_CUE_RELEASE_WAV: &[u8] = include_bytes!("../assets/audio/cue_release.wav");
+
+fn decode_mode_rank(mode: DecodeMode) -> u8 {
+    match mode {
+        DecodeMode::Fast => 0,
+        DecodeMode::Balanced => 1,
+        DecodeMode::Quality => 2,
+    }
+}
+
+fn floor_decode_mode(mode: DecodeMode, floor: DecodeMode) -> DecodeMode {
+    if decode_mode_rank(mode) >= decode_mode_rank(floor) {
+        mode
+    } else {
+        floor
+    }
+}
+
+fn is_likely_low_quality_input_name(device_name: &str) -> bool {
+    let normalized = device_name.to_ascii_lowercase();
+    normalized.contains("hands-free")
+        || normalized.contains("hand free")
+        || normalized.contains("bluetooth headset")
+        || normalized.contains("headset")
+        || normalized.contains("hfp")
+        || normalized.contains("ag audio")
+        || normalized.contains("sco")
+}
+
+fn tokenize_transcript_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|token| {
+            token
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '\'')
+                .collect::<String>()
+                .to_ascii_lowercase()
+        })
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn asr_integrity_metrics(raw_transcript: &str, final_transcript: &str) -> (f32, u32, u32) {
+    let raw_tokens = tokenize_transcript_words(raw_transcript);
+    let final_tokens = tokenize_transcript_words(final_transcript);
+    let raw_count = raw_tokens.len() as u32;
+    let final_count = final_tokens.len() as u32;
+    if raw_count == 0 && final_count == 0 {
+        return (100.0, 0, 0);
+    }
+    if raw_count == 0 || final_count == 0 {
+        return (0.0, raw_count, final_count);
+    }
+
+    let mut raw_counts = HashMap::<String, u32>::new();
+    for token in raw_tokens {
+        *raw_counts.entry(token).or_default() += 1;
+    }
+    let mut overlap = 0u32;
+    for token in final_tokens {
+        if let Some(remaining) = raw_counts.get_mut(&token) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                overlap += 1;
+            }
+        }
+    }
+    let denominator = raw_count + final_count;
+    let integrity = if denominator == 0 {
+        0.0
+    } else {
+        ((2.0 * overlap as f32) / denominator as f32) * 100.0
+    };
+    (integrity.clamp(0.0, 100.0), raw_count, final_count)
+}
+
+fn build_terminology_hint_from_texts(terms: &[String], limit: usize) -> Option<String> {
+    if terms.is_empty() || limit == 0 {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    let mut chosen = Vec::new();
+    for term in terms.iter().rev() {
+        let normalized = term.trim();
+        if normalized.len() < 3 || normalized.len() > 40 {
+            continue;
+        }
+        let lowered = normalized.to_ascii_lowercase();
+        if !seen.insert(lowered) {
+            continue;
+        }
+        chosen.push(normalized.to_string());
+        if chosen.len() >= limit {
+            break;
+        }
+    }
+    if chosen.is_empty() {
+        None
+    } else {
+        Some(chosen.join(", "))
+    }
+}
+
+fn env_technical_terms() -> Vec<String> {
+    std::env::var("VOICEWAVE_TECH_TERMS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|term| !term.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn push_release_allowed(trigger: DictationStartTrigger, _session_age: Duration) -> bool {
+    trigger == DictationStartTrigger::PushToTalk
+}
+
+fn play_hotkey_phase_cue(action: &HotkeyAction, phase: &HotkeyPhase) {
+    let _ = (action, phase);
+    #[cfg(target_os = "windows")]
+    {
+        let cue = match (action, phase) {
+            (HotkeyAction::PushToTalk, HotkeyPhase::Pressed) => Some(HOTKEY_CUE_PRESS_WAV),
+            (HotkeyAction::PushToTalk, HotkeyPhase::Released) => Some(HOTKEY_CUE_RELEASE_WAV),
+            (HotkeyAction::ToggleDictation, HotkeyPhase::Triggered) => Some(HOTKEY_CUE_RELEASE_WAV),
+            _ => None,
+        };
+        if let Some(sound_bytes) = cue {
+            tauri::async_runtime::spawn(async move {
+                let _ = tokio::task::spawn_blocking(move || unsafe {
+                    use windows_sys::Win32::Media::Audio::{
+                        PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
+                    };
+
+                    // SAFETY: `sound_bytes` points to static WAV data for the process lifetime.
+                    PlaySoundA(
+                        sound_bytes.as_ptr(),
+                        std::ptr::null_mut(),
+                        SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+                    )
+                })
+                .await;
+            });
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct IncrementalAudioChunk {
@@ -267,9 +423,18 @@ enum DictationLifecycleState {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictationStartTrigger {
+    Manual,
+    ToggleHotkey,
+    PushToTalk,
+}
+
 #[derive(Debug, Clone)]
 struct DictationSession {
     session_id: u64,
+    trigger: DictationStartTrigger,
+    started_at: Instant,
     state: DictationLifecycleState,
     release_requested_at: Option<Instant>,
     release_requested_at_utc_ms: Option<u64>,
@@ -283,9 +448,9 @@ pub struct VoiceWaveController {
     hotkey_manager: Mutex<HotkeyManager>,
     permission_manager: Mutex<PermissionManager>,
     insertion_engine: Mutex<InsertionEngine>,
-    history_manager: Mutex<HistoryManager>,
+    history_manager: Arc<Mutex<HistoryManager>>,
     model_manager: Mutex<crate::model_manager::ModelManager>,
-    dictionary_manager: Mutex<DictionaryManager>,
+    dictionary_manager: Arc<Mutex<DictionaryManager>>,
     benchmark_results: Mutex<Option<BenchmarkRun>>,
     model_statuses: Mutex<HashMap<String, ModelStatus>>,
     model_download_cancels: Mutex<HashMap<String, CancellationToken>>,
@@ -377,9 +542,9 @@ impl VoiceWaveController {
             hotkey_manager: Mutex::new(hotkey_manager),
             permission_manager: Mutex::new(permission_manager),
             insertion_engine: Mutex::new(InsertionEngine::default()),
-            history_manager: Mutex::new(history_manager),
+            history_manager: Arc::new(Mutex::new(history_manager)),
             model_manager: Mutex::new(model_manager),
-            dictionary_manager: Mutex::new(dictionary_manager),
+            dictionary_manager: Arc::new(Mutex::new(dictionary_manager)),
             benchmark_results: Mutex::new(None),
             model_statuses: Mutex::new(HashMap::new()),
             model_download_cancels: Mutex::new(HashMap::new()),
@@ -448,23 +613,27 @@ impl VoiceWaveController {
         app: AppHandle,
         mode: DictationMode,
     ) -> Result<(), ControllerError> {
-        let session_id = self.session_counter.fetch_add(1, Ordering::Relaxed) + 1;
-        {
-            let mut active = self.active_session.lock().await;
-            *active = Some(DictationSession {
-                session_id,
-                state: DictationLifecycleState::Listening,
-                release_requested_at: None,
-                release_requested_at_utc_ms: None,
-            });
-        }
+        self.start_dictation_with_trigger(app, mode, DictationStartTrigger::Manual)
+            .await
+    }
 
+    async fn start_dictation_with_trigger(
+        &self,
+        app: AppHandle,
+        mode: DictationMode,
+        trigger: DictationStartTrigger,
+    ) -> Result<(), ControllerError> {
+        eprintln!(
+            "voicewave: start_dictation requested (trigger={:?}, mode={:?})",
+            trigger, mode
+        );
         let cancel_token = {
             let mut token_slot = self.cancel_token.lock().await;
             if token_slot
                 .as_ref()
                 .is_some_and(|token| !token.is_cancelled())
             {
+                eprintln!("voicewave: start_dictation rejected (already running)");
                 return Err(ControllerError::AlreadyRunning);
             }
             let token = CancellationToken::new();
@@ -472,18 +641,25 @@ impl VoiceWaveController {
             token
         };
 
+        let session_id = self.session_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut active = self.active_session.lock().await;
+            *active = Some(DictationSession {
+                session_id,
+                trigger,
+                started_at: Instant::now(),
+                state: DictationLifecycleState::Listening,
+                release_requested_at: None,
+                release_requested_at_utc_ms: None,
+            });
+        }
+
         let stop_flag = {
             let flag = Arc::new(AtomicBool::new(false));
             let mut slot = self.stop_flag.lock().await;
             *slot = Some(flag.clone());
             flag
         };
-
-        if mode == DictationMode::Microphone {
-            if let Err(err) = self.start_mic_level_monitor(app.clone()).await {
-                eprintln!("voicewave: mic level monitor start skipped: {err}");
-            }
-        }
 
         let run_result = self
             .run_dictation_flow(app.clone(), mode, session_id, cancel_token, stop_flag)
@@ -505,10 +681,6 @@ impl VoiceWaveController {
                 *active = None;
             }
         }
-        if mode == DictationMode::Microphone {
-            self.stop_mic_level_monitor().await;
-        }
-
         if let Err(err) = run_result {
             self.set_session_state(
                 session_id,
@@ -551,6 +723,14 @@ impl VoiceWaveController {
             stop_flag.store(true, Ordering::Relaxed);
         }
         self.stop_mic_level_monitor().await;
+        if let Some(session) = self.active_session.lock().await.clone() {
+            eprintln!(
+                "voicewave: stop_dictation requested (session={}, trigger={:?}, state={:?})",
+                session.session_id, session.trigger, session.state
+            );
+        } else {
+            eprintln!("voicewave: stop_dictation requested with no active session");
+        }
 
         let release_now = Instant::now();
         let release_now_utc_ms = now_utc_ms();
@@ -594,8 +774,12 @@ impl VoiceWaveController {
         let controller = self.clone();
         tauri::async_runtime::spawn(async move {
             eprintln!("voicewave: global hotkey runtime monitor started (Windows key-state polling)");
+            const PUSH_PRESS_CONFIRM_SAMPLES: u8 = 2;
+            const PUSH_RELEASE_CONFIRM_SAMPLES: u8 = 4;
             let mut toggle_was_down = false;
             let mut push_was_down = false;
+            let mut push_down_streak: u8 = 0;
+            let mut push_up_streak: u8 = 0;
             loop {
                 if stop_flag.load(Ordering::Relaxed) {
                     break;
@@ -623,7 +807,17 @@ impl VoiceWaveController {
                     });
                 }
 
-                if push_down && !push_was_down {
+                if push_down {
+                    if !push_was_down {
+                        push_down_streak = push_down_streak.saturating_add(1);
+                    }
+                } else if !push_was_down {
+                    push_down_streak = 0;
+                }
+
+                // Debounce modifier-only hotkey polling edges (Ctrl+Windows) to avoid
+                // transient press/release oscillation on Windows key state sampling.
+                if !push_was_down && push_down_streak >= PUSH_PRESS_CONFIRM_SAMPLES {
                     let controller_for_action = controller.clone();
                     let app_for_action = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -635,7 +829,18 @@ impl VoiceWaveController {
                             )
                             .await;
                     });
-                } else if !push_down && push_was_down {
+                    push_was_down = true;
+                    push_down_streak = 0;
+                    push_up_streak = 0;
+                } else if push_was_down {
+                    if push_down {
+                        push_up_streak = 0;
+                    } else {
+                        push_up_streak = push_up_streak.saturating_add(1);
+                    }
+                }
+
+                if push_was_down && push_up_streak >= PUSH_RELEASE_CONFIRM_SAMPLES {
                     let controller_for_action = controller.clone();
                     let app_for_action = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -647,10 +852,12 @@ impl VoiceWaveController {
                             )
                             .await;
                     });
+                    push_was_down = false;
+                    push_down_streak = 0;
+                    push_up_streak = 0;
                 }
 
                 toggle_was_down = toggle_down;
-                push_was_down = push_down;
                 sleep(Duration::from_millis(20)).await;
             }
         });
@@ -866,6 +1073,7 @@ impl VoiceWaveController {
             max_capture_duration: Duration::from_millis(max_capture_ms),
             silence_timeout: Duration::from_millis(silence_timeout_ms),
             release_tail: Duration::from_millis(0),
+            preserve_full_capture: false,
         };
 
         let captured = tokio::task::spawn_blocking(move || {
@@ -980,6 +1188,7 @@ impl VoiceWaveController {
         action: HotkeyAction,
         phase: HotkeyPhase,
     ) -> Result<(), ControllerError> {
+        play_hotkey_phase_cue(&action, &phase);
         let _ = app.emit(
             "voicewave://hotkey",
             HotkeyEvent {
@@ -994,7 +1203,12 @@ impl VoiceWaveController {
                     self.stop_dictation(app).await;
                     Ok(())
                 } else {
-                    self.start_dictation(app, DictationMode::Microphone).await
+                    self.start_dictation_with_trigger(
+                        app,
+                        DictationMode::Microphone,
+                        DictationStartTrigger::ToggleHotkey,
+                    )
+                    .await
                 }
             }
             (HotkeyAction::PushToTalk, HotkeyPhase::Pressed) => {
@@ -1008,11 +1222,30 @@ impl VoiceWaveController {
                 if self.is_dictation_active().await {
                     Ok(())
                 } else {
-                    self.start_dictation(app, DictationMode::Microphone).await
+                    self.start_dictation_with_trigger(
+                        app,
+                        DictationMode::Microphone,
+                        DictationStartTrigger::PushToTalk,
+                    )
+                    .await
                 }
             }
             (HotkeyAction::PushToTalk, HotkeyPhase::Released) => {
-                self.stop_dictation(app).await;
+                let still_pressed = {
+                    let manager = self.hotkey_manager.lock().await;
+                    manager.is_action_pressed(HotkeyAction::PushToTalk)
+                };
+                if still_pressed {
+                    eprintln!(
+                        "voicewave: ignored push-to-talk release (key still down)"
+                    );
+                    return Ok(());
+                }
+                if self.active_push_session_ready_for_release().await {
+                    self.stop_dictation(app).await;
+                } else {
+                    eprintln!("voicewave: ignored push-to-talk release (no eligible push session)");
+                }
                 Ok(())
             }
             _ => Ok(()),
@@ -1665,7 +1898,7 @@ impl VoiceWaveController {
 
         let settings = self.settings.lock().await.clone();
         let max_capture_ms = clamp_max_utterance_ms(settings.max_utterance_ms);
-        let release_tail_ms = effective_release_tail_ms(
+        let mut release_tail_ms = effective_release_tail_ms(
             clamp_release_tail_ms(settings.release_tail_ms),
             max_capture_ms,
         );
@@ -1713,7 +1946,15 @@ impl VoiceWaveController {
             DictationMode::Microphone => {
                 let audio = self.audio.clone();
                 let input_device = settings.input_device.clone();
-                let threshold = clamp_vad_threshold(settings.vad_threshold);
+                let mut threshold = clamp_vad_threshold(settings.vad_threshold);
+                if input_device
+                    .as_deref()
+                    .is_some_and(is_likely_low_quality_input_name)
+                {
+                    // Bluetooth/headset mics often lose weak consonants; lower VAD and keep a longer release tail.
+                    threshold = clamp_vad_threshold(threshold * 0.82);
+                    release_tail_ms = release_tail_ms.saturating_add(90).min(MAX_RELEASE_TAIL_MS);
+                }
                 let cancel_for_capture = cancel_token.clone();
                 let stop_for_capture = stop_flag.clone();
                 let capture_options = CaptureOptions {
@@ -1724,8 +1965,11 @@ impl VoiceWaveController {
                     max_capture_duration: Duration::from_millis(max_capture_ms),
                     silence_timeout: Duration::from_millis(silence_timeout_ms),
                     release_tail: Duration::from_millis(release_tail_ms),
+                    preserve_full_capture: use_faster_whisper,
                 };
                 let tx_for_capture = incremental_tx.clone();
+                let app_for_capture = app.clone();
+                let mut last_level_emit = Instant::now();
 
                 let captured = tokio::task::spawn_blocking(move || {
                     audio.capture_segments_from_microphone_with_signals_and_observer(
@@ -1740,6 +1984,20 @@ impl VoiceWaveController {
                                     voiced: voiced_chunk,
                                 });
                             }
+                            if last_level_emit.elapsed() >= Duration::from_millis(70) {
+                                let mut peak = 0.0_f32;
+                                for sample in normalized_chunk {
+                                    peak = peak.max(sample.abs());
+                                }
+                                let _ = app_for_capture.emit(
+                                    "voicewave://mic-level",
+                                    MicLevelEvent {
+                                        level: peak.clamp(0.0, 1.0),
+                                        error: None,
+                                    },
+                                );
+                                last_level_emit = Instant::now();
+                            }
                         },
                     )
                 })
@@ -1751,6 +2009,7 @@ impl VoiceWaveController {
                 match captured {
                     Ok(rows) => rows,
                     Err(AudioError::Cancelled) => {
+                        eprintln!("voicewave: capture cancelled (session={session_id})");
                         if let Some(task) = incremental_task.take() {
                             task.abort();
                         }
@@ -1765,6 +2024,7 @@ impl VoiceWaveController {
                         return Ok(());
                     }
                     Err(AudioError::NoSpeechDetected) => {
+                        eprintln!("voicewave: capture ended with no speech (session={session_id})");
                         if let Some(task) = incremental_task.take() {
                             task.abort();
                         }
@@ -1782,6 +2042,7 @@ impl VoiceWaveController {
                         return Ok(());
                     }
                     Err(err) => {
+                        eprintln!("voicewave: capture failed (session={session_id}): {err}");
                         if let Some(task) = incremental_task.take() {
                             task.abort();
                         }
@@ -1846,7 +2107,7 @@ impl VoiceWaveController {
             self.audio.target_sample_rate,
             clamp_vad_threshold(settings.vad_threshold),
         );
-        let _ = app.emit("voicewave://audio-quality", audio_quality);
+        let _ = app.emit("voicewave://audio-quality", audio_quality.clone());
 
         let total_captured_samples = segments.iter().map(|segment| segment.len()).sum::<usize>();
         let captured_audio_ms =
@@ -1860,15 +2121,20 @@ impl VoiceWaveController {
                 .await
                 .select_mode(captured_audio_ms),
         };
-        if use_faster_whisper {
-            effective_decode_mode = DecodeMode::Balanced;
-        }
-        if mode == DictationMode::Microphone
-            && settings.active_model == "small.en"
-            && captured_audio_ms <= 6_000
-            && preview.committed_draft.trim().is_empty()
-        {
-            effective_decode_mode = DecodeMode::Fast;
+        if use_faster_whisper && mode == DictationMode::Microphone {
+            let mut decode_floor = match audio_quality.quality {
+                AudioQualityBand::Good => DecodeMode::Fast,
+                AudioQualityBand::Fair => DecodeMode::Balanced,
+                AudioQualityBand::Poor => DecodeMode::Quality,
+            };
+            if settings
+                .input_device
+                .as_deref()
+                .is_some_and(is_likely_low_quality_input_name)
+            {
+                decode_floor = floor_decode_mode(decode_floor, DecodeMode::Balanced);
+            }
+            effective_decode_mode = floor_decode_mode(effective_decode_mode, decode_floor);
         }
         let final_worker = self
             .build_inference_worker(&settings.active_model, mode, effective_decode_mode)
@@ -1918,7 +2184,6 @@ impl VoiceWaveController {
         }
 
         let decode_started = Instant::now();
-        let post_started = Instant::now();
         let source_samples = merged_samples.clone();
         let lookback_samples = ms_to_sample_count(FINALIZE_LOOKBACK_MS, self.audio.target_sample_rate);
         let has_committed_draft = !use_faster_whisper && !preview.committed_draft.trim().is_empty();
@@ -1979,10 +2244,8 @@ impl VoiceWaveController {
         let release_finalize_ms = finalize_started.elapsed().as_millis() as u64;
         let decode_ms = decode_started.elapsed().as_millis() as u64;
         let decode_telemetry = finalize_output.telemetry;
-        let finalize_text = finalize_output
-            .transcript
-            .map(|text| sanitize_user_transcript(&text))
-            .unwrap_or_default();
+        let raw_decode_transcript = finalize_output.transcript.unwrap_or_default();
+        let finalize_text = sanitize_user_transcript(&raw_decode_transcript);
         let merged_transcript = if has_committed_draft {
             let merged = merge_incremental_transcript(
                 &preview.committed_draft,
@@ -1995,9 +2258,11 @@ impl VoiceWaveController {
                 merged
             }
         } else {
-            finalize_text
+            finalize_text.clone()
         };
-        let final_transcript = finalize_user_transcript(&merged_transcript);
+        let final_transcript = sanitize_user_transcript(&merged_transcript);
+        let (asr_integrity_percent, asr_raw_word_count, asr_final_word_count) =
+            asr_integrity_metrics(&finalize_text, &final_transcript);
 
         if final_transcript.trim().is_empty() {
             if cancel_token.is_cancelled() {
@@ -2022,6 +2287,7 @@ impl VoiceWaveController {
             ));
         }
 
+        let post_started = Instant::now();
         let _ = app.emit(
             "voicewave://transcript",
             TranscriptEvent {
@@ -2058,22 +2324,6 @@ impl VoiceWaveController {
         }
         let insert_ms = insert_started.elapsed().as_millis() as u64;
 
-        if let Err(err) = self
-            .history_manager
-            .lock()
-            .await
-            .record_transcript(&final_transcript)
-        {
-            eprintln!("history record failed: {err}");
-        }
-        if let Err(err) = self
-            .dictionary_manager
-            .lock()
-            .await
-            .ingest_transcript(&final_transcript)
-        {
-            eprintln!("dictionary ingest failed: {err}");
-        }
         self.set_session_state(session_id, DictationLifecycleState::Inserted, None, None)
             .await;
 
@@ -2116,6 +2366,9 @@ impl VoiceWaveController {
                 release_finalize_ms,
                 incremental_windows_decoded: preview.incremental_windows_decoded,
                 finalize_tail_audio_ms,
+                asr_integrity_percent,
+                asr_raw_word_count,
+                asr_final_word_count,
                 decode_ms,
                 post_ms,
                 insert_ms,
@@ -2146,6 +2399,9 @@ impl VoiceWaveController {
                 release_finalize_ms,
                 incremental_windows_decoded: preview.incremental_windows_decoded,
                 finalize_tail_audio_ms,
+                asr_integrity_percent,
+                asr_raw_word_count,
+                asr_final_word_count,
                 decode_ms,
                 post_ms,
                 insert_ms,
@@ -2157,6 +2413,28 @@ impl VoiceWaveController {
             });
         }
 
+        // Keep non-critical persistence off the hot path so release->final latency stays low.
+        let history_manager = Arc::clone(&self.history_manager);
+        let dictionary_manager = Arc::clone(&self.dictionary_manager);
+        let transcript_for_history = final_transcript.clone();
+        let transcript_for_dictionary = final_transcript;
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = history_manager
+                .lock()
+                .await
+                .record_transcript(&transcript_for_history)
+            {
+                eprintln!("history record failed: {err}");
+            }
+            if let Err(err) = dictionary_manager
+                .lock()
+                .await
+                .ingest_transcript(&transcript_for_dictionary)
+            {
+                eprintln!("dictionary ingest failed: {err}");
+            }
+        });
+
         Ok(())
     }
 
@@ -2165,6 +2443,13 @@ impl VoiceWaveController {
             self.snapshot.lock().await.state,
             VoiceWaveHudState::Listening | VoiceWaveHudState::Transcribing
         )
+    }
+
+    async fn active_push_session_ready_for_release(&self) -> bool {
+        let active = self.active_session.lock().await;
+        active.as_ref().is_some_and(|session| {
+            push_release_allowed(session.trigger, session.started_at.elapsed())
+        })
     }
 
     async fn set_session_state(
@@ -2277,9 +2562,21 @@ impl VoiceWaveController {
                             "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1."
                         ))
                     })?;
-                    Ok(InferenceWorker::new_faster_whisper_with_mode(
+                    let hint = {
+                        let manager = self.dictionary_manager.lock().await;
+                        let mut terms = manager
+                            .get_terms(None)
+                            .into_iter()
+                            .map(|row| row.term)
+                            .collect::<Vec<_>>();
+                        terms.extend(manager.get_queue(Some(12)).into_iter().map(|row| row.term));
+                        terms.extend(env_technical_terms());
+                        build_terminology_hint_from_texts(&terms, 10)
+                    };
+                    Ok(InferenceWorker::new_faster_whisper_with_mode_and_hint(
                         model_id.to_string(),
                         decode_mode,
+                        hint,
                     ))
                 } else {
                     let model_path = self.resolve_active_model_path(model_id).await?;
@@ -2520,9 +2817,12 @@ fn percentile_index(len: usize, percentile: f32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_vad_threshold, now_utc_ms, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD,
-        RECOMMENDED_VAD_THRESHOLD,
+        asr_integrity_metrics, build_terminology_hint_from_texts, clamp_vad_threshold,
+        floor_decode_mode, is_likely_low_quality_input_name, now_utc_ms, push_release_allowed,
+        DictationStartTrigger, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD, RECOMMENDED_VAD_THRESHOLD,
     };
+    use crate::settings::DecodeMode;
+    use std::time::Duration;
 
     #[test]
     fn vad_threshold_is_clamped_to_safe_range() {
@@ -2539,5 +2839,60 @@ mod tests {
         let a = now_utc_ms();
         let b = now_utc_ms();
         assert!(b >= a);
+    }
+
+    #[test]
+    fn push_release_requires_push_trigger() {
+        assert!(!push_release_allowed(
+            DictationStartTrigger::Manual,
+            Duration::from_millis(1)
+        ));
+        assert!(!push_release_allowed(
+            DictationStartTrigger::ToggleHotkey,
+            Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn push_release_allows_immediate_push_to_talk_release() {
+        assert!(push_release_allowed(
+            DictationStartTrigger::PushToTalk,
+            Duration::from_millis(0)
+        ));
+    }
+
+    #[test]
+    fn decode_mode_floor_never_drops_below_requested_floor() {
+        assert_eq!(floor_decode_mode(DecodeMode::Fast, DecodeMode::Balanced), DecodeMode::Balanced);
+        assert_eq!(floor_decode_mode(DecodeMode::Balanced, DecodeMode::Quality), DecodeMode::Quality);
+        assert_eq!(floor_decode_mode(DecodeMode::Quality, DecodeMode::Balanced), DecodeMode::Quality);
+    }
+
+    #[test]
+    fn low_quality_input_detection_flags_hands_free_patterns() {
+        assert!(is_likely_low_quality_input_name("Headset (WH-1000XM4)"));
+        assert!(is_likely_low_quality_input_name("Bluetooth headset AG Audio"));
+        assert!(!is_likely_low_quality_input_name("USB Microphone Array"));
+    }
+
+    #[test]
+    fn asr_integrity_tracks_raw_to_final_word_overlap() {
+        let (integrity, raw_words, final_words) =
+            asr_integrity_metrics("hello team alpha bravo", "hello team bravo");
+        assert_eq!(raw_words, 4);
+        assert_eq!(final_words, 3);
+        assert!(integrity > 80.0);
+    }
+
+    #[test]
+    fn terminology_hint_prefers_recent_unique_terms() {
+        let terms = vec![
+            "Kubernetes".to_string(),
+            "gRPC".to_string(),
+            "kubernetes".to_string(),
+        ];
+        let hint = build_terminology_hint_from_texts(&terms, 4).expect("hint should exist");
+        assert!(hint.contains("gRPC"));
+        assert!(hint.to_ascii_lowercase().contains("kubernetes"));
     }
 }
