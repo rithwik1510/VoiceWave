@@ -41,8 +41,8 @@ impl Default for VoiceWaveSettings {
             release_tail_ms: 350,
             decode_mode: DecodeMode::Balanced,
             diagnostics_opt_in: false,
-            toggle_hotkey: "Ctrl+Shift+Space".to_string(),
-            push_to_talk_hotkey: "Ctrl+Alt+Space".to_string(),
+            toggle_hotkey: LOCKED_TOGGLE_HOTKEY.to_string(),
+            push_to_talk_hotkey: LOCKED_PUSH_TO_TALK_HOTKEY.to_string(),
             prefer_clipboard_fallback: false,
         }
     }
@@ -88,7 +88,11 @@ impl SettingsStore {
         if normalized.is_empty() {
             return Ok(VoiceWaveSettings::default());
         }
-        serde_json::from_str(normalized).map_err(SettingsError::Parse)
+        let mut settings: VoiceWaveSettings =
+            serde_json::from_str(normalized).map_err(SettingsError::Parse)?;
+        settings.active_model = normalize_active_model_id(&settings.active_model);
+        normalize_hotkey_bindings(&mut settings);
+        Ok(settings)
     }
 
     pub fn save(&self, settings: &VoiceWaveSettings) -> Result<(), SettingsError> {
@@ -99,6 +103,22 @@ impl SettingsStore {
         fs::write(&self.path, raw).map_err(SettingsError::Write)?;
         Ok(())
     }
+}
+
+fn normalize_active_model_id(active_model: &str) -> String {
+    match active_model.trim() {
+        "fw-small.en" | "fw-large-v3" => active_model.trim().to_string(),
+        "tiny.en" | "base.en" | "small.en" | "medium.en" => "fw-small.en".to_string(),
+        _ => "fw-small.en".to_string(),
+    }
+}
+
+pub const LOCKED_TOGGLE_HOTKEY: &str = "Ctrl+Alt+X";
+pub const LOCKED_PUSH_TO_TALK_HOTKEY: &str = "Ctrl+Windows";
+
+pub fn normalize_hotkey_bindings(settings: &mut VoiceWaveSettings) {
+    settings.toggle_hotkey = LOCKED_TOGGLE_HOTKEY.to_string();
+    settings.push_to_talk_hotkey = LOCKED_PUSH_TO_TALK_HOTKEY.to_string();
 }
 
 #[cfg(test)]
@@ -127,14 +147,14 @@ mod tests {
         let path = temp_settings_path();
         let store = SettingsStore::from_path(path.clone());
         let settings = VoiceWaveSettings {
-            active_model: "medium.en".to_string(),
+            active_model: "fw-large-v3".to_string(),
             vad_threshold: 0.025,
             max_utterance_ms: 22_000,
             release_tail_ms: 300,
             decode_mode: DecodeMode::Fast,
             diagnostics_opt_in: true,
-            toggle_hotkey: "Ctrl+Shift+Space".to_string(),
-            push_to_talk_hotkey: "Ctrl+Alt+Space".to_string(),
+            toggle_hotkey: "Ctrl+Alt+X".to_string(),
+            push_to_talk_hotkey: "Ctrl+Windows".to_string(),
             prefer_clipboard_fallback: true,
             ..VoiceWaveSettings::default()
         };
@@ -142,13 +162,27 @@ mod tests {
         store.save(&settings).expect("save should succeed");
         let loaded = store.load().expect("load should succeed");
 
-        assert_eq!(loaded.active_model, "medium.en");
+        assert_eq!(loaded.active_model, "fw-large-v3");
         assert!((loaded.vad_threshold - 0.025).abs() < 1e-6);
         assert_eq!(loaded.max_utterance_ms, 22_000);
         assert_eq!(loaded.release_tail_ms, 300);
         assert_eq!(loaded.decode_mode, DecodeMode::Fast);
         assert!(loaded.diagnostics_opt_in);
         assert!(loaded.prefer_clipboard_fallback);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_enforces_locked_hotkey_pair() {
+        let path = temp_settings_path();
+        let store = SettingsStore::from_path(path.clone());
+        let raw = r#"{"toggleHotkey":"Ctrl+Shift+Space","pushToTalkHotkey":"Ctrl+Alt+Space"}"#;
+        std::fs::write(&path, raw).expect("write should succeed");
+
+        let loaded = store.load().expect("load should succeed");
+        assert_eq!(loaded.toggle_hotkey, LOCKED_TOGGLE_HOTKEY);
+        assert_eq!(loaded.push_to_talk_hotkey, LOCKED_PUSH_TO_TALK_HOTKEY);
+
         let _ = std::fs::remove_file(path);
     }
 
@@ -160,7 +194,7 @@ mod tests {
         std::fs::write(&path, raw).expect("write should succeed");
 
         let loaded = store.load().expect("load should succeed");
-        assert_eq!(loaded.active_model, "tiny.en");
+        assert_eq!(loaded.active_model, "fw-small.en");
 
         let _ = std::fs::remove_file(path);
     }

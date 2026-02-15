@@ -31,6 +31,7 @@
     "phaseB:fw:generate": "powershell -ExecutionPolicy Bypass -File ./scripts/phaseB/run-phaseB-fw-latency.ps1 -Generate",
     "phaseB:fw:live": "powershell -ExecutionPolicy Bypass -File ./scripts/phaseB/run-phaseB-live-fw-report.ps1",
     "faster-whisper:setup:cpu": "powershell -ExecutionPolicy Bypass -File ./scripts/faster_whisper/setup-faster-whisper-cpu.ps1",
+    "faster-whisper:reset": "powershell -ExecutionPolicy Bypass -File ./scripts/faster_whisper/reset-faster-whisper-runtime.ps1",
     "tauri:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/tauri/run-tauri-dev-windows.ps1",
     "tauri:build": "powershell -ExecutionPolicy Bypass -File ./scripts/tauri/run-tauri-build-windows.ps1"
   },

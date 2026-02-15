@@ -11,8 +11,8 @@ pub struct HotkeyConfig {
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
-            toggle: "Ctrl+Shift+Space".to_string(),
-            push_to_talk: "Ctrl+Alt+Space".to_string(),
+            toggle: "Ctrl+Alt+X".to_string(),
+            push_to_talk: "Ctrl+Windows".to_string(),
         }
     }
 }
@@ -59,6 +59,7 @@ struct ParsedHotkey {
     shift: bool,
     alt: bool,
     super_key: bool,
+    modifier_only: bool,
     main_vk: u16,
 }
 
@@ -190,6 +191,18 @@ fn normalize_combo(field: &'static str, combo: &str) -> Result<String, HotkeyErr
         return Err(HotkeyError::InvalidToken { field, token });
     }
 
+    if main_keys.is_empty() {
+        if field == "pushToTalk"
+            && modifiers.contains("CTRL")
+            && modifiers.contains("SUPER")
+            && modifiers.len() == 2
+        {
+            let mut ordered_modifiers = modifiers.into_iter().collect::<Vec<_>>();
+            ordered_modifiers.sort_unstable();
+            return Ok(ordered_modifiers.join("+"));
+        }
+        return Err(HotkeyError::MissingMainKey { field });
+    }
     if main_keys.len() != 1 {
         return Err(HotkeyError::MissingMainKey { field });
     }
@@ -206,7 +219,7 @@ fn parse_combo(field: &'static str, combo: &str) -> Result<ParsedHotkey, HotkeyE
     let mut shift = false;
     let mut alt = false;
     let mut super_key = false;
-    let mut main_vk = None;
+    let mut main_vk: Option<u16> = None;
 
     for token in normalized.split('+') {
         match token {
@@ -243,12 +256,18 @@ fn parse_combo(field: &'static str, combo: &str) -> Result<ParsedHotkey, HotkeyE
         }
     }
 
-    let main_vk = main_vk.ok_or(HotkeyError::MissingMainKey { field })?;
+    let modifier_only = main_vk.is_none();
+    let main_vk = if modifier_only {
+        0
+    } else {
+        main_vk.ok_or(HotkeyError::MissingMainKey { field })?
+    };
     Ok(ParsedHotkey {
         ctrl,
         shift,
         alt,
         super_key,
+        modifier_only,
         main_vk,
     })
 }
@@ -272,12 +291,25 @@ fn is_parsed_pressed(parsed: &ParsedHotkey) -> bool {
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-            GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+            GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+            VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
         };
 
-        let ctrl_down = key_down(VK_CONTROL as u16);
-        let shift_down = key_down(VK_SHIFT as u16);
-        let alt_down = key_down(VK_MENU as u16);
+        let ctrl_down = key_down_any(&[
+            VK_CONTROL as u16,
+            VK_LCONTROL as u16,
+            VK_RCONTROL as u16,
+        ]);
+        let shift_down = key_down_any(&[
+            VK_SHIFT as u16,
+            VK_LSHIFT as u16,
+            VK_RSHIFT as u16,
+        ]);
+        let alt_down = key_down_any(&[
+            VK_MENU as u16,
+            VK_LMENU as u16,
+            VK_RMENU as u16,
+        ]);
         let super_down = key_down(VK_LWIN as u16) || key_down(VK_RWIN as u16);
 
         if parsed.ctrl != ctrl_down
@@ -286,6 +318,9 @@ fn is_parsed_pressed(parsed: &ParsedHotkey) -> bool {
             || parsed.super_key != super_down
         {
             return false;
+        }
+        if parsed.modifier_only {
+            return true;
         }
 
         // SAFETY: GetAsyncKeyState is thread-safe for querying current key state.
@@ -306,6 +341,11 @@ fn key_down(vk: u16) -> bool {
     // SAFETY: GetAsyncKeyState is thread-safe for querying current key state.
     let state = unsafe { GetAsyncKeyState(vk as i32) };
     (state as u16 & 0x8000) != 0
+}
+
+#[cfg(target_os = "windows")]
+fn key_down_any(vks: &[u16]) -> bool {
+    vks.iter().copied().any(key_down)
 }
 
 fn vk_space() -> u16 {
@@ -351,8 +391,8 @@ mod tests {
     #[test]
     fn duplicate_hotkeys_are_rejected() {
         let result = HotkeyManager::new(HotkeyConfig {
-            toggle: "Ctrl+Shift+Space".to_string(),
-            push_to_talk: "Ctrl+Shift+Space".to_string(),
+            toggle: "Ctrl+Alt+X".to_string(),
+            push_to_talk: "Ctrl+Alt+X".to_string(),
         });
         assert!(matches!(result, Err(HotkeyError::Conflict)));
     }
@@ -361,9 +401,17 @@ mod tests {
     fn invalid_token_is_rejected() {
         let result = HotkeyManager::new(HotkeyConfig {
             toggle: "Ctrl+Banana".to_string(),
-            push_to_talk: "Ctrl+Alt+Space".to_string(),
+            push_to_talk: "Ctrl+Windows".to_string(),
         });
         assert!(matches!(result, Err(HotkeyError::InvalidToken { .. })));
+    }
+
+    #[test]
+    fn push_to_talk_supports_modifier_only_ctrl_windows_combo() {
+        let parsed = parse_combo("pushToTalk", "Ctrl+Windows").expect("combo should parse");
+        assert!(parsed.ctrl);
+        assert!(parsed.super_key);
+        assert!(parsed.modifier_only);
     }
 
     #[test]

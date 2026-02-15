@@ -791,19 +791,52 @@ impl ModelManager {
             return Ok(());
         }
         let raw = fs::read_to_string(&self.installed_index_path).map_err(ModelError::Read)?;
-        let decoded: InstalledModelStore = serde_json::from_str(&raw).map_err(ModelError::Parse)?;
-        self.installed = decoded
-            .installed
-            .into_iter()
-            .map(|row| (row.model_id.clone(), row))
-            .collect();
+        let normalized = raw.trim_start_matches('\u{feff}').trim();
+        if normalized.is_empty() {
+            self.installed.clear();
+            self.persist_installed()?;
+            return Ok(());
+        }
+        let decoded = serde_json::from_str::<InstalledModelStore>(normalized).or_else(|_| {
+            serde_json::from_str::<Vec<InstalledModel>>(normalized)
+                .map(|installed| InstalledModelStore { installed })
+        });
+        match decoded {
+            Ok(decoded) => {
+                self.installed = decoded
+                    .installed
+                    .into_iter()
+                    .map(|row| (row.model_id.clone(), row))
+                    .collect();
+            }
+            Err(err) => {
+                eprintln!(
+                    "voicewave: corrupt installed model index recovered at '{}': {}",
+                    self.installed_index_path.display(),
+                    err
+                );
+                let _ = quarantine_metadata_file(&self.installed_index_path, "installed-corrupt");
+                self.installed.clear();
+                self.persist_installed()?;
+            }
+        }
         Ok(())
     }
 
     fn reconcile_installed(&mut self) -> Result<(), ModelError> {
         let mut changed = false;
         let mut to_remove = Vec::new();
+        let supported_ids = self
+            .catalog
+            .iter()
+            .map(|manifest| manifest.model_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
         for (model_id, model) in &self.installed {
+            if !supported_ids.contains(model_id.as_str()) {
+                to_remove.push(model_id.clone());
+                changed = true;
+                continue;
+            }
             if is_virtual_model_format(&model.format) {
                 if !Path::new(&model.file_path).exists() {
                     to_remove.push(model_id.clone());
@@ -862,12 +895,35 @@ impl ModelManager {
             return Ok(());
         }
         let raw = fs::read_to_string(&self.download_state_path).map_err(ModelError::Read)?;
-        let decoded: DownloadCheckpointStore = serde_json::from_str(&raw).map_err(ModelError::Parse)?;
-        self.downloads = decoded
-            .downloads
-            .into_iter()
-            .map(|row| (row.model_id.clone(), row))
-            .collect();
+        let normalized = raw.trim_start_matches('\u{feff}').trim();
+        if normalized.is_empty() {
+            self.downloads.clear();
+            self.persist_downloads()?;
+            return Ok(());
+        }
+        let decoded = serde_json::from_str::<DownloadCheckpointStore>(normalized).or_else(|_| {
+            serde_json::from_str::<Vec<DownloadCheckpoint>>(normalized)
+                .map(|downloads| DownloadCheckpointStore { downloads })
+        });
+        match decoded {
+            Ok(decoded) => {
+                self.downloads = decoded
+                    .downloads
+                    .into_iter()
+                    .map(|row| (row.model_id.clone(), row))
+                    .collect();
+            }
+            Err(err) => {
+                eprintln!(
+                    "voicewave: corrupt model download checkpoint recovered at '{}': {}",
+                    self.download_state_path.display(),
+                    err
+                );
+                let _ = quarantine_metadata_file(&self.download_state_path, "downloads-corrupt");
+                self.downloads.clear();
+                self.persist_downloads()?;
+            }
+        }
         Ok(())
     }
 
@@ -1122,6 +1178,24 @@ fn now_utc_ms() -> u64 {
         .unwrap_or_default()
 }
 
+fn quarantine_metadata_file(path: &Path, reason: &str) -> io::Result<PathBuf> {
+    if !path.exists() {
+        return Ok(path.to_path_buf());
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("metadata");
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("json");
+    let backup_name = format!("{stem}.{reason}.{}.{}", now_utc_ms(), ext);
+    let backup_path = path.with_file_name(backup_name);
+    fs::rename(path, &backup_path)?;
+    Ok(backup_path)
+}
+
 fn directory_size_bytes(path: &Path) -> Option<u64> {
     let mut total = 0_u64;
     let entries = fs::read_dir(path).ok()?;
@@ -1249,14 +1323,7 @@ fn build_catalog() -> Vec<SignedModelManifest> {
 
 fn build_synthetic_catalog() -> Vec<SignedModelManifest> {
     let version = "phase3-local-synthetic-1";
-    [
-        "fw-small.en",
-        "fw-large-v3",
-        "tiny.en",
-        "base.en",
-        "small.en",
-        "medium.en",
-    ]
+    ["fw-small.en", "fw-large-v3"]
         .iter()
         .map(|model_id| {
             let is_fw = model_id.starts_with("fw-");
@@ -1281,14 +1348,10 @@ fn build_synthetic_catalog() -> Vec<SignedModelManifest> {
                 } else {
                     "MIT-Local-Eval".to_string()
                 },
-                download_url: if is_fw {
-                    if *model_id == "fw-small.en" {
-                        "faster-whisper://small.en".to_string()
-                    } else {
-                        "faster-whisper://large-v3".to_string()
-                    }
+                download_url: if *model_id == "fw-small.en" {
+                    "faster-whisper://small.en".to_string()
                 } else {
-                    format!("local://model-artifacts/{model_id}/{version}")
+                    "faster-whisper://large-v3".to_string()
                 },
                 signature: String::new(),
             };
@@ -1299,54 +1362,7 @@ fn build_synthetic_catalog() -> Vec<SignedModelManifest> {
 }
 
 fn build_whispercpp_catalog() -> Vec<SignedModelManifest> {
-    struct WhisperCatalogRow {
-        model_id: &'static str,
-        size: u64,
-        sha256: &'static str,
-    }
-
-    let version = "whispercpp-ggml-main";
-    let base_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
-    let rows = [
-        WhisperCatalogRow {
-            model_id: "tiny.en",
-            size: 77_704_715,
-            sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
-        },
-        WhisperCatalogRow {
-            model_id: "base.en",
-            size: 147_964_211,
-            sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
-        },
-        WhisperCatalogRow {
-            model_id: "small.en",
-            size: 487_614_201,
-            sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
-        },
-        WhisperCatalogRow {
-            model_id: "medium.en",
-            size: 1_533_774_781,
-            sha256: "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
-        },
-    ];
-
-    let mut manifests = rows
-        .iter()
-        .map(|row| {
-            let mut manifest = SignedModelManifest {
-                model_id: row.model_id.to_string(),
-                version: version.to_string(),
-                format: default_model_format(),
-                size: row.size,
-                sha256: row.sha256.to_string(),
-                license: "MIT (whisper.cpp)".to_string(),
-                download_url: format!("{base_url}/ggml-{}.bin", row.model_id),
-                signature: String::new(),
-            };
-            manifest.signature = sign_manifest(&manifest);
-            manifest
-        })
-        .collect::<Vec<_>>();
+    let mut manifests = Vec::new();
 
     let faster_rows = [
         ("fw-small.en", "small.en", 487_614_201_u64),
@@ -1375,10 +1391,6 @@ fn model_artifact_size_for(model_id: &str) -> u64 {
     match model_id {
         "fw-small.en" => 1024 * 1024,
         "fw-large-v3" => 2 * 1024 * 1024,
-        "tiny.en" => 256 * 1024,
-        "base.en" => 512 * 1024,
-        "small.en" => 1024 * 1024,
-        "medium.en" => 1536 * 1024,
         _ => 384 * 1024,
     }
 }
@@ -1596,5 +1608,39 @@ mod tests {
             .install_model_resumable("base.en", || false, || false, |_| {})
             .expect("should recover from corrupt partial");
         assert_eq!(installed.state, ModelStatusState::Installed);
+    }
+
+    #[test]
+    fn load_installed_recovers_from_blank_file() {
+        let root = test_root("blank-installed-index");
+        let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        fs::write(&manager.installed_index_path, "\u{feff}   \n  ").expect("seed blank metadata");
+
+        manager.load_installed().expect("blank installed metadata should recover");
+        assert!(manager.installed.is_empty());
+
+        let rewritten = fs::read_to_string(&manager.installed_index_path).expect("rewritten metadata");
+        assert!(
+            rewritten.contains("\"installed\""),
+            "installed metadata should be rewritten with default structure"
+        );
+    }
+
+    #[test]
+    fn load_downloads_recovers_from_corrupt_json_file() {
+        let root = test_root("corrupt-download-index");
+        let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        fs::write(&manager.download_state_path, "{not-valid-json").expect("seed corrupt metadata");
+
+        manager
+            .load_downloads()
+            .expect("corrupt download metadata should recover");
+        assert!(manager.downloads.is_empty());
+
+        let rewritten = fs::read_to_string(&manager.download_state_path).expect("rewritten downloads metadata");
+        assert!(
+            rewritten.contains("\"downloads\""),
+            "download metadata should be rewritten with default structure"
+        );
     }
 }
