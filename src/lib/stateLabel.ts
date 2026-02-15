@@ -20,15 +20,15 @@ export function stateLabel(state: VoiceWaveHudState): string {
 export function stateClassName(state: VoiceWaveHudState): string {
   switch (state) {
     case "idle":
-      return "bg-white text-pine-700";
+      return "bg-white text-[#09090B] border border-[#E4E4E7]";
     case "listening":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-[#18181B] text-white";
     case "transcribing":
-      return "bg-amber-100 text-amber-800";
+      return "bg-[#3F3F46] text-white";
     case "inserted":
-      return "bg-sky-100 text-sky-800";
+      return "bg-[#27272A] text-white";
     case "error":
-      return "bg-rose-100 text-rose-700";
+      return "bg-red-100 text-red-700";
     default:
       return "bg-slate-100 text-slate-700";
   }

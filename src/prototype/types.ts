@@ -22,6 +22,11 @@ export interface ThemeConfig {
     recording: string;
     navActiveBg: string;
     navActiveFg: string;
+    shellBg: string;
+    canvasBg: string;
+    canvasBorder: string;
+    surfaceBorder: string;
+    divider: string;
     accentBlue: string;
     accentLime: string;
     accentGradient: string;

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import App from "./App";
 import * as hookModule from "./hooks/useVoiceWave";
@@ -24,7 +24,7 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     exportDiagnosticsBundle: vi.fn(),
     historyPolicy: "days30",
     hotkeys: {
-      config: { toggle: "Ctrl+Shift+Space", pushToTalk: "Ctrl+Alt+Space" },
+      config: { toggle: "Ctrl+Alt+X", pushToTalk: "Ctrl+Windows" },
       conflicts: [],
       registrationSupported: true,
       registrationError: null
@@ -69,15 +69,15 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     resetVadThreshold: vi.fn(),
     settings: {
       inputDevice: null,
-      activeModel: "small.en",
+      activeModel: "fw-small.en",
       showFloatingHud: false,
       vadThreshold: 0.014,
       maxUtteranceMs: 30000,
       releaseTailMs: 350,
       decodeMode: "balanced",
       diagnosticsOptIn: false,
-      toggleHotkey: "Ctrl+Shift+Space",
-      pushToTalkHotkey: "Ctrl+Alt+Space",
+      toggleHotkey: "Ctrl+Alt+X",
+      pushToTalkHotkey: "Ctrl+Windows",
       preferClipboardFallback: false
     },
     switchToRecommendedInput: vi.fn(),
@@ -86,7 +86,7 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
       state: "idle",
       lastPartial: null,
       lastFinal: null,
-      activeModel: "small.en"
+      activeModel: "fw-small.en"
     },
     stopDictation: vi.fn(),
     tauriAvailable: false,
@@ -101,8 +101,8 @@ describe("App navigation and phase three panels", () => {
   it("switches between home, models, sessions, and dictionary tabs", async () => {
     render(<App />);
 
-    expect(screen.getByText("Good morning, Alex.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Run 10s Check" })).toBeInTheDocument();
+    expect(screen.getByText("Good morning, Rishi.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run 10s Check" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Models" }));
     expect(screen.getByText("Model Manager")).toBeInTheDocument();
@@ -135,13 +135,13 @@ describe("App navigation and phase three panels", () => {
             state: "inserted",
             lastPartial: null,
             lastFinal: longFinalTranscript,
-            activeModel: "small.en"
+            activeModel: "fw-small.en"
           }
         }) as any
       );
 
     render(<App />);
-    expect(screen.getByText(longFinalTranscript)).toBeInTheDocument();
+    expect(screen.getAllByText(longFinalTranscript).length).toBeGreaterThan(0);
 
     useVoiceWaveSpy.mockRestore();
   });
@@ -169,21 +169,44 @@ describe("App navigation and phase three panels", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(screen.getByText("Diagnostics Export")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Enable diagnostics" }));
+    const settingsDialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(settingsDialog).getByText("Diagnostics")).toBeInTheDocument();
+    fireEvent.click(within(settingsDialog).getByRole("checkbox", { name: "Enable diagnostics" }));
     expect(setDiagnosticsOptIn).toHaveBeenCalledWith(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "Export Diagnostics Bundle" }));
+    fireEvent.click(within(settingsDialog).getByRole("button", { name: "Export Diagnostics Bundle" }));
     expect(exportDiagnosticsBundle).toHaveBeenCalledTimes(1);
 
     useVoiceWaveSpy.mockRestore();
   });
 
-  it("shows auto-managed performance mode and hides manual decode selector", async () => {
+  it("keeps advanced settings collapsed until explicitly expanded", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(screen.getByText("Performance mode is managed automatically.")).toBeInTheDocument();
-    expect(screen.queryByDisplayValue("balanced")).not.toBeInTheDocument();
+    const settingsDialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(settingsDialog).getByText("Advanced")).toBeInTheDocument();
+    expect(within(settingsDialog).queryByText("Release Tail (ms)")).not.toBeInTheDocument();
+
+    fireEvent.click(within(settingsDialog).getByRole("button", { name: /advanced/i }));
+    expect(within(settingsDialog).getByText("Release Tail (ms)")).toBeInTheDocument();
+  });
+
+  it("opens style and help as separate popups", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Style" }));
+    expect(screen.getByRole("dialog", { name: "Style" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Style" }));
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    expect(screen.getByRole("dialog", { name: "Help" })).toBeInTheDocument();
+  });
+
+  it("collapses and expands the sidebar shell", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeInTheDocument();
   });
 });

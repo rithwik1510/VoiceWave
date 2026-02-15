@@ -8,6 +8,7 @@ interface LayoutProps {
   theme: ThemeConfig;
   children: React.ReactNode;
   activeNav: string;
+  activePopupNav?: string | null;
   setActiveNav: (id: string) => void;
   isRecording: boolean;
 }
@@ -16,6 +17,7 @@ export const Layout: React.FC<LayoutProps> = ({
   theme,
   children,
   activeNav,
+  activePopupNav = null,
   setActiveNav,
   isRecording
 }) => {
@@ -23,8 +25,8 @@ export const Layout: React.FC<LayoutProps> = ({
   const LogoComponent = theme.logo;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  const NavButton = ({ item }: { item: (typeof NAV_ITEMS_TOP)[number] }) => {
-    const isActive = activeNav === item.id;
+  const NavButton = ({ item }: { item: { id: string; label: string; icon: React.ComponentType<any> } }) => {
+    const isActive = activeNav === item.id || activePopupNav === item.id;
     const Icon = item.icon;
     const activate = () => setActiveNav(item.id);
     return (
@@ -41,7 +43,7 @@ export const Layout: React.FC<LayoutProps> = ({
           ${shapes.navItemShape}
           ${
             isActive
-              ? `${colors.navActiveBg} ${colors.navActiveFg} font-bold shadow-sm`
+              ? `${colors.navActiveBg} ${colors.navActiveFg} font-bold shadow-sm border border-[#2F2F2F]/28`
               : `${colors.textSecondary} hover:bg-white/40 hover:${colors.textPrimary}`
           }
         `}
@@ -62,12 +64,12 @@ export const Layout: React.FC<LayoutProps> = ({
   };
 
   return (
-    <div className={`relative isolate flex h-screen w-full overflow-hidden ${colors.sidebarBg} ${colors.textPrimary} ${typography.fontBody}`}>
+    <div className={`relative isolate flex h-screen w-full overflow-hidden ${colors.shellBg} ${colors.textPrimary} ${typography.fontBody}`}>
       <aside
         data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
-        className={`relative z-40 ${sidebarCollapsed ? "w-20" : "w-72"} flex-shrink-0 flex flex-col ${colors.sidebarBg} transition-all duration-300`}
+        className={`relative z-40 ${sidebarCollapsed ? "w-20" : "w-52"} flex-shrink-0 flex flex-col ${colors.shellBg} transition-all duration-300`}
       >
-        <div className={`${sidebarCollapsed ? "px-3 pt-4 pb-4 flex-col gap-2" : "p-8 pb-4 gap-4"} flex items-center flex-shrink-0`}>
+        <div className={`${sidebarCollapsed ? "px-3 pt-4 pb-4 flex-col gap-2" : "p-6 pb-4 gap-3"} flex items-center flex-shrink-0`}>
           {sidebarCollapsed ? (
             <>
               <button
@@ -81,9 +83,8 @@ export const Layout: React.FC<LayoutProps> = ({
               </button>
               <div
                 className={`
-                  w-10 h-10 flex items-center justify-center
+                  w-10 h-10 aspect-square shrink-0 flex items-center justify-center rounded-full
                   ${colors.accent} ${colors.accentFg}
-                  ${shapes.radius}
                   transition-all duration-300 shadow-lg shadow-black/5
                 `}
               >
@@ -94,9 +95,8 @@ export const Layout: React.FC<LayoutProps> = ({
             <>
               <div
                 className={`
-                  w-10 h-10 flex items-center justify-center
+                  w-10 h-10 aspect-square shrink-0 flex items-center justify-center rounded-full
                   ${colors.accent} ${colors.accentFg}
-                  ${shapes.radius}
                   transition-all duration-300 shadow-lg shadow-black/5
                 `}
               >
@@ -132,11 +132,11 @@ export const Layout: React.FC<LayoutProps> = ({
         <div className="flex-1" />
 
         {!sidebarCollapsed && (
-          <div className="px-6 pb-4">
+          <div className="px-5 pb-4">
             <div
               className={`
                 p-5 relative overflow-hidden group
-                ${colors.bg} shadow-sm border border-black/5
+                ${colors.surface} shadow-sm border ${colors.surfaceBorder}
                 ${shapes.radius}
               `}
             >
@@ -184,7 +184,7 @@ export const Layout: React.FC<LayoutProps> = ({
 
         {!sidebarCollapsed && (
           <div className="px-6 pb-3">
-            <div className="h-px mx-1 bg-[#D4D4D8]/80" />
+            <div className={`h-px mx-1 border-t ${colors.divider}`} />
           </div>
         )}
 
@@ -196,7 +196,7 @@ export const Layout: React.FC<LayoutProps> = ({
       </aside>
 
       <main className="relative z-10 flex-1 flex flex-col min-w-0">
-        <header className={`h-20 flex items-center justify-between px-10 flex-shrink-0 z-20 ${colors.sidebarBg}`}>
+        <header className={`h-14 flex items-center justify-between px-6 flex-shrink-0 z-20 ${colors.shellBg}`}>
           <div className="flex items-center gap-3 text-sm">
             {isRecording && (
               <div className={`px-3 py-1 flex items-center gap-2 ${colors.recording} text-white rounded-full text-xs font-medium`}>
@@ -221,9 +221,11 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden relative pl-0 pb-0 pr-0">
-          <div className={`w-full h-full overflow-y-auto relative scroll-smooth ${colors.bg} rounded-tl-[2.5rem] shadow-[-2px_-2px_10px_rgba(0,0,0,0.02)]`}>
-            <div className="px-10 py-10 min-h-full">{children}</div>
+        <div className="flex-1 overflow-hidden relative pr-2 pb-2">
+          <div
+            className={`w-full h-full overflow-y-auto relative scroll-smooth ${colors.canvasBg} rounded-[2rem] border border-[#DEE0E7] shadow-[0_8px_20px_rgba(9,9,11,0.05),0_1px_4px_rgba(9,9,11,0.03)]`}
+          >
+            <div className="px-6 py-6 min-h-full">{children}</div>
           </div>
         </div>
       </main>

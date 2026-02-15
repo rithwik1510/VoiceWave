@@ -56,12 +56,12 @@ describe("useVoiceWave web fallback", () => {
     render(<HookProbe />);
 
     await act(async () => {
-      fireEvent.keyDown(window, { key: " ", code: "Space", ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(window, { key: "x", code: "KeyX", ctrlKey: true, altKey: true });
     });
     expect(screen.getByTestId("state").textContent).toBe("listening");
 
     await act(async () => {
-      fireEvent.keyDown(window, { key: " ", code: "Space", ctrlKey: true, shiftKey: true });
+      fireEvent.keyDown(window, { key: "x", code: "KeyX", ctrlKey: true, altKey: true });
     });
     expect(screen.getByTestId("state").textContent).toBe("idle");
   });
@@ -71,12 +71,12 @@ describe("useVoiceWave web fallback", () => {
     render(<HookProbe />);
 
     await act(async () => {
-      fireEvent.keyDown(window, { key: " ", code: "Space", ctrlKey: true, altKey: true });
+      fireEvent.keyDown(window, { key: "Meta", code: "MetaLeft", ctrlKey: true, metaKey: true });
     });
     expect(screen.getByTestId("state").textContent).toBe("listening");
 
     await act(async () => {
-      fireEvent.keyUp(window, { key: " ", code: "Space", ctrlKey: true, altKey: true });
+      fireEvent.keyUp(window, { key: "Meta", code: "MetaLeft", ctrlKey: true, metaKey: false });
       vi.runAllTimers();
     });
     expect(screen.getByTestId("state").textContent).toBe("idle");

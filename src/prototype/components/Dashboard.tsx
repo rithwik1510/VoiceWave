@@ -53,14 +53,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
   ];
 
   return (
-    <div className="max-w-6xl mx-auto space-y-10 pb-20">
+    <div className="max-w-6xl mx-auto space-y-8 pb-16">
       <section className="flex flex-col md:flex-row md:items-start justify-between gap-6">
         <div className="pt-2">
-          <h1 className={`${typography.fontDisplay} text-5xl mb-2 ${colors.textPrimary} tracking-tight`}>Good morning, Alex.</h1>
+          <h1 className={`${typography.fontDisplay} text-5xl mb-2 ${colors.textPrimary} tracking-tight`}>Good morning, Rishi.</h1>
           <p className={`${colors.textSecondary} text-lg font-light opacity-80`}>System is local and secure. Ready to transcribe.</p>
         </div>
 
-        <div className="flex items-center justify-end gap-6 px-6 py-3 mt-2 bg-white/50 backdrop-blur-sm border border-black/5 rounded-full shadow-sm">
+        <div className={`flex items-center justify-end gap-6 px-6 py-3 mt-1 ${colors.surface} border ${colors.surfaceBorder} rounded-full shadow-sm`}>
           <div className="flex flex-col items-end">
             <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">Streak</span>
             <span className={`text-lg font-bold ${colors.textPrimary} leading-none`}>
@@ -93,7 +93,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div
               className={`
                 p-8 flex flex-col md:flex-row md:items-center md:justify-between gap-5
-                ${colors.surface} ${colors.border} ${shapes.borderWidth} ${shapes.radius} ${effects.shadow}
+                ${colors.surface} border-2 border-[#E4E4E7] ${shapes.radius} ${effects.shadow}
               `}
             >
               <div>
@@ -107,13 +107,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <button
                 onPointerDown={(event) => {
                   event.preventDefault();
+                  if (event.currentTarget.setPointerCapture) {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }
                   onPressStart();
                 }}
                 onPointerUp={(event) => {
                   event.preventDefault();
+                  if (
+                    event.currentTarget.hasPointerCapture &&
+                    event.currentTarget.hasPointerCapture(event.pointerId)
+                  ) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
                   onPressEnd();
                 }}
-                onPointerLeave={() => onPressEnd()}
                 onPointerCancel={() => onPressEnd()}
                 onKeyDown={(event) => {
                   if (event.key === " " || event.key === "Enter") {
@@ -146,7 +154,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
 
             <div className="space-y-3">
-              <div className="rounded-3xl border border-black/5 bg-white px-4 py-3 shadow-sm">
+              <div className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm`}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <div
@@ -169,7 +177,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-black/5 bg-white px-4 py-3 shadow-sm">
+              <div className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm`}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <div
@@ -196,7 +204,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div
             className={`
               w-full min-h-24 relative overflow-hidden transition-colors duration-200
-              ${isRecording ? "bg-black shadow-xl" : "bg-white border border-black/5 shadow-sm"}
+              ${isRecording ? "bg-black shadow-xl" : `${colors.surface} border ${colors.surfaceBorder} shadow-sm`}
               ${shapes.radius} flex items-center px-8 py-6
             `}
           >
@@ -225,16 +233,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </section>
       </div>
 
-      <section className="pt-4">
+      <section className="pt-3">
         <p className="mb-3 text-xs font-semibold tracking-[0.18em] text-[#71717A]">TODAY</p>
-        <div className="overflow-hidden rounded-2xl border border-[#E4E4E7] bg-white">
+        <div className={`overflow-hidden rounded-2xl border ${colors.surfaceBorder} ${colors.surface}`}>
           {transcriptRows.map((row, index) => (
             <div
               key={row.id}
-              className={`grid grid-cols-[110px_1fr] gap-0 ${index !== transcriptRows.length - 1 ? "border-b border-[#E4E4E7]" : ""}`}
+              className={`grid grid-cols-[110px_1fr] gap-0 ${index !== transcriptRows.length - 1 ? `border-b ${colors.surfaceBorder}` : ""}`}
             >
-              <div className="px-6 py-5 text-sm text-[#71717A]">{row.time}</div>
-              <div className={`px-6 py-5 text-base leading-relaxed ${row.latest ? "text-[#09090B] font-medium" : "text-[#27272A]"}`}>
+              <div className="px-6 py-4 text-sm text-[#71717A]">{row.time}</div>
+              <div className={`px-6 py-4 text-base leading-relaxed ${row.latest ? "text-[#09090B] font-medium" : "text-[#27272A]"}`}>
                 {row.text}
               </div>
             </div>
