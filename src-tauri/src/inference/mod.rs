@@ -568,11 +568,18 @@ async fn transcribe_with_faster_whisper(
             reason: "unsupported faster-whisper model id".to_string(),
         }
     })?;
+    let audio_duration_ms =
+        ((conditioned_samples.len() as f64 / 16_000.0) * 1000.0).round() as u64;
+    let primary_mode = if should_use_fast_first_primary(decode_mode, audio_duration_ms) {
+        DecodeMode::Fast
+    } else {
+        decode_mode
+    };
     let primary = faster_whisper::transcribe_samples_with_overrides(
         &conditioned_samples,
         runtime_model,
-        decode_mode,
-        fw_primary_overrides(decode_mode, terminology_hint.as_deref()),
+        primary_mode,
+        fw_primary_overrides(primary_mode, terminology_hint.as_deref(), audio_duration_ms),
         &cancel_token,
     )
     .await?;
@@ -580,7 +587,6 @@ async fn transcribe_with_faster_whisper(
         return Err(InferenceError::Cancelled);
     }
 
-    let audio_duration_ms = ((conditioned_samples.len() as f64 / 16_000.0) * 1000.0).round() as u64;
     let mut final_decode = primary.clone();
     let mut total_model_init_ms = primary.model_init_ms;
     let mut total_decode_compute_ms = primary.decode_compute_ms;
@@ -594,7 +600,11 @@ async fn transcribe_with_faster_whisper(
     let mut literal_retry_used = false;
 
     if needs_retry {
-        let retry_mode = stronger_decode_mode(decode_mode).unwrap_or(decode_mode);
+        let retry_mode = if primary_mode != decode_mode {
+            decode_mode
+        } else {
+            stronger_decode_mode(decode_mode).unwrap_or(decode_mode)
+        };
         let retry_overrides = if low_coherence {
             literal_retry_used = true;
             fw_literal_retry_overrides(retry_mode, terminology_hint.as_deref())
@@ -621,6 +631,13 @@ async fn transcribe_with_faster_whisper(
         }
     }
 
+    if final_decode.backend_fallback
+        && final_decode.backend_requested.eq_ignore_ascii_case("cuda")
+        && final_decode.backend_used.eq_ignore_ascii_case("cpu")
+    {
+        let _ = note_gpu_runtime_failure();
+    }
+
     Ok(WhisperDecodeOutput {
         text: final_decode.text,
         telemetry: DecodeTelemetry {
@@ -628,9 +645,17 @@ async fn transcribe_with_faster_whisper(
             audio_condition_ms,
             decode_compute_ms: total_decode_compute_ms,
             runtime_cache_hit,
-            backend_requested: "cpu".to_string(),
-            backend_used: "cpu".to_string(),
-            backend_fallback: false,
+            backend_requested: if final_decode.backend_requested.trim().is_empty() {
+                "cpu".to_string()
+            } else {
+                final_decode.backend_requested
+            },
+            backend_used: if final_decode.backend_used.trim().is_empty() {
+                "cpu".to_string()
+            } else {
+                final_decode.backend_used
+            },
+            backend_fallback: final_decode.backend_fallback,
             fw_segment_count: Some(final_decode.segment_count),
             fw_avg_logprob: Some(final_decode.avg_logprob),
             fw_no_speech_prob: Some(final_decode.no_speech_prob),
@@ -650,38 +675,61 @@ fn stronger_decode_mode(mode: DecodeMode) -> Option<DecodeMode> {
     }
 }
 
+fn fast_first_enabled() -> bool {
+    std::env::var("VOICEWAVE_FW_FAST_FIRST_ENABLED")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !(normalized == "0" || normalized == "false" || normalized == "off")
+        })
+        .unwrap_or(true)
+}
+
+fn should_use_fast_first_primary(decode_mode: DecodeMode, audio_duration_ms: u64) -> bool {
+    fast_first_enabled()
+        && decode_mode == DecodeMode::Balanced
+        && audio_duration_ms <= 3_800
+}
+
 fn fw_decode_needs_retry(
     decode: &faster_whisper::FasterWhisperDecodeOutput,
     audio_duration_ms: u64,
 ) -> bool {
     let words = word_count(&decode.text);
-    if audio_duration_ms <= 1_600
-        && words >= 2
-        && decode.avg_logprob > -0.72
-        && decode.no_speech_prob < 0.45
-        && decode.compression_ratio < 2.0
-    {
-        return false;
-    }
     if words == 0 {
         return true;
     }
-    if decode.no_speech_prob > 0.72 && words <= 8 {
+    if fw_accept_short_high_confidence(decode, audio_duration_ms) {
+        return false;
+    }
+    if decode.no_speech_prob > 0.76 && words <= 8 {
         return true;
     }
-    if decode.avg_logprob < -1.15 {
+    if decode.avg_logprob < -1.2 {
         return true;
     }
-    if decode.compression_ratio > 2.3 {
+    if decode.compression_ratio > 2.35 {
         return true;
     }
     if fw_decode_looks_common_substitution(decode, audio_duration_ms) {
         return true;
     }
-    if audio_duration_ms >= 1_800 && words <= 2 {
+    if audio_duration_ms >= 2_600 && words <= 2 && decode.avg_logprob < -0.72 {
         return true;
     }
-    audio_duration_ms >= 4_200 && words <= 6
+    audio_duration_ms >= 5_000 && words <= 6
+}
+
+fn fw_accept_short_high_confidence(
+    decode: &faster_whisper::FasterWhisperDecodeOutput,
+    audio_duration_ms: u64,
+) -> bool {
+    let words = word_count(&decode.text);
+    audio_duration_ms <= 3_200
+        && words >= 1
+        && decode.avg_logprob > -0.84
+        && decode.no_speech_prob < 0.62
+        && decode.compression_ratio < 2.4
+        && !fw_decode_looks_common_substitution(decode, audio_duration_ms)
 }
 
 fn fw_decode_is_low_coherence(
@@ -832,7 +880,17 @@ fn fw_decode_looks_common_substitution(
 fn fw_primary_overrides(
     decode_mode: DecodeMode,
     terminology_hint: Option<&str>,
+    audio_duration_ms: u64,
 ) -> FasterWhisperRequestOverrides {
+    let without_timestamps =
+        fw_without_timestamps_enabled() && decode_mode != DecodeMode::Quality;
+    if decode_mode == DecodeMode::Fast && audio_duration_ms <= 3_200 {
+        // For short utterances, skip prompt tokens on the fast-primary pass.
+        return FasterWhisperRequestOverrides {
+            without_timestamps: Some(without_timestamps),
+            ..FasterWhisperRequestOverrides::default()
+        };
+    }
     let mut prompt = String::from(
         "Transcribe verbatim. Preserve technical terms and uncommon words exactly.",
     );
@@ -850,11 +908,13 @@ fn fw_primary_overrides(
     match decode_mode {
         DecodeMode::Fast => FasterWhisperRequestOverrides {
             initial_prompt: Some(prompt),
+            without_timestamps: Some(without_timestamps),
             ..FasterWhisperRequestOverrides::default()
         },
         DecodeMode::Balanced | DecodeMode::Quality => FasterWhisperRequestOverrides {
             initial_prompt: Some(prompt),
             temperature: Some(0.0),
+            without_timestamps: Some(without_timestamps),
             ..FasterWhisperRequestOverrides::default()
         },
     }
@@ -881,17 +941,29 @@ fn fw_literal_retry_overrides(
     if prompt.chars().count() > 420 {
         prompt = prompt.chars().take(420).collect();
     }
+    let without_timestamps =
+        fw_without_timestamps_enabled() && retry_mode != DecodeMode::Quality;
     FasterWhisperRequestOverrides {
         beam_size: Some(beam_size),
         best_of: Some(best_of),
         vad_filter: Some(false),
         condition_on_previous_text: Some(false),
+        without_timestamps: Some(without_timestamps),
         initial_prompt: Some(prompt),
         temperature: Some(0.0),
         no_speech_threshold: Some(0.5),
         log_prob_threshold: Some(-1.3),
         compression_ratio_threshold: Some(2.1),
     }
+}
+
+fn fw_without_timestamps_enabled() -> bool {
+    std::env::var("VOICEWAVE_FW_WITHOUT_TIMESTAMPS")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !(normalized == "0" || normalized == "false" || normalized == "off")
+        })
+        .unwrap_or(true)
 }
 
 #[derive(Debug, Clone)]
@@ -1316,6 +1388,9 @@ mod tests {
             avg_logprob,
             no_speech_prob,
             compression_ratio,
+            backend_requested: "cpu".to_string(),
+            backend_used: "cpu".to_string(),
+            backend_fallback: false,
         }
     }
 
@@ -1501,11 +1576,21 @@ mod tests {
 
     #[test]
     fn fw_primary_profile_includes_technical_hint_prompt() {
-        let profile = fw_primary_overrides(DecodeMode::Balanced, Some("TypeScript ESLint Vite"));
+        let profile = fw_primary_overrides(
+            DecodeMode::Balanced,
+            Some("TypeScript ESLint Vite"),
+            4_000,
+        );
         assert!(profile
             .initial_prompt
             .as_deref()
             .is_some_and(|text| text.contains("TypeScript ESLint Vite")));
+    }
+
+    #[test]
+    fn fw_fast_short_primary_skips_prompt_for_latency() {
+        let profile = fw_primary_overrides(DecodeMode::Fast, Some("Rust"), 2_200);
+        assert!(profile.initial_prompt.is_none());
     }
 
     #[test]
@@ -1516,6 +1601,19 @@ mod tests {
             Some(DecodeMode::Quality)
         );
         assert_eq!(stronger_decode_mode(DecodeMode::Quality), None);
+    }
+
+    #[test]
+    fn fw_fast_first_applies_to_balanced_short_utterances() {
+        assert!(should_use_fast_first_primary(DecodeMode::Balanced, 2_200));
+        assert!(should_use_fast_first_primary(DecodeMode::Balanced, 3_800));
+        assert!(!should_use_fast_first_primary(DecodeMode::Balanced, 3_900));
+    }
+
+    #[test]
+    fn fw_fast_first_never_applies_to_explicit_quality_modes() {
+        assert!(!should_use_fast_first_primary(DecodeMode::Fast, 2_000));
+        assert!(!should_use_fast_first_primary(DecodeMode::Quality, 2_000));
     }
 
 }

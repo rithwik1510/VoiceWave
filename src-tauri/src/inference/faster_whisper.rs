@@ -1,8 +1,10 @@
-use super::InferenceError;
+use super::{backend::gpu_session_cpu_locked, InferenceError};
 use crate::settings::DecodeMode;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::collections::HashSet;
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -20,6 +22,9 @@ pub struct FasterWhisperDecodeOutput {
     pub avg_logprob: f32,
     pub no_speech_prob: f32,
     pub compression_ratio: f32,
+    pub backend_requested: String,
+    pub backend_used: String,
+    pub backend_fallback: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +39,7 @@ pub struct FasterWhisperRequestOverrides {
     pub best_of: Option<u32>,
     pub vad_filter: Option<bool>,
     pub condition_on_previous_text: Option<bool>,
+    pub without_timestamps: Option<bool>,
     pub initial_prompt: Option<String>,
     pub temperature: Option<f32>,
     pub no_speech_threshold: Option<f32>,
@@ -48,12 +54,17 @@ struct WorkerRequest {
     command: String,
     model_id: String,
     compute_type: String,
+    backend_preference: String,
+    allow_backend_fallback: bool,
     audio_path: String,
+    audio_pcm16_b64: Option<String>,
+    sample_rate_hz: u32,
     beam_size: u32,
     best_of: u32,
     language: String,
     vad_filter: bool,
     condition_on_previous_text: bool,
+    without_timestamps: bool,
     initial_prompt: Option<String>,
     temperature: Option<f32>,
     no_speech_threshold: Option<f32>,
@@ -82,6 +93,12 @@ struct WorkerResponse {
     no_speech_prob: f32,
     #[serde(default)]
     compression_ratio: f32,
+    #[serde(default)]
+    backend_requested: String,
+    #[serde(default)]
+    backend_used: String,
+    #[serde(default)]
+    backend_fallback: bool,
 }
 
 struct WorkerProcess {
@@ -92,6 +109,7 @@ struct WorkerProcess {
 }
 
 static WORKER: OnceLock<Mutex<Option<WorkerProcess>>> = OnceLock::new();
+const FW_GPU_DISABLED_MARKER: &str = "fw-gpu-disabled.marker";
 
 pub async fn ensure_faster_whisper_ready() -> Result<(), InferenceError> {
     tokio::task::spawn_blocking(ensure_worker_ready_blocking)
@@ -102,17 +120,24 @@ pub async fn ensure_faster_whisper_ready() -> Result<(), InferenceError> {
 }
 
 pub async fn prefetch_model(model_id: &str) -> Result<FasterWhisperPrefetchOutput, InferenceError> {
+    let backend_preference = worker_backend_preference_for_model(model_id);
+    let compute_type = worker_compute_type_for_backend(&backend_preference);
     let request = WorkerRequest {
         id: next_request_id(),
         command: "prefetch".to_string(),
         model_id: model_id.to_string(),
-        compute_type: "int8".to_string(),
+        compute_type: compute_type.clone(),
+        backend_preference: backend_preference.clone(),
+        allow_backend_fallback: true,
         audio_path: String::new(),
+        audio_pcm16_b64: None,
+        sample_rate_hz: 16_000,
         beam_size: 2,
         best_of: 1,
         language: "en".to_string(),
         vad_filter: false,
         condition_on_previous_text: false,
+        without_timestamps: false,
         initial_prompt: None,
         temperature: None,
         no_speech_threshold: None,
@@ -142,19 +167,26 @@ pub async fn transcribe_samples_with_overrides(
         return Err(InferenceError::Cancelled);
     }
 
-    let audio_path = write_temp_wav(samples)?;
-    let request = worker_request_for(&audio_path, model_id, decode_mode, overrides);
+    let audio_pcm16_b64 = encode_pcm16_base64(samples);
+    let request = worker_request_for(model_id, decode_mode, overrides, audio_pcm16_b64);
     let result = tokio::task::spawn_blocking(move || send_worker_request_blocking(request))
         .await
         .map_err(|err| {
             InferenceError::RuntimeJoin(format!("faster-whisper worker join failure: {err}"))
         })?;
 
-    let _ = fs::remove_file(&audio_path);
     if cancel_token.is_cancelled() {
         return Err(InferenceError::Cancelled);
     }
     let response = result?;
+    if response.backend_fallback
+        && response.backend_requested.eq_ignore_ascii_case("cuda")
+        && response.backend_used.eq_ignore_ascii_case("cpu")
+    {
+        set_fw_gpu_persistently_disabled(true);
+    } else if response.backend_used.eq_ignore_ascii_case("cuda") {
+        set_fw_gpu_persistently_disabled(false);
+    }
     Ok(FasterWhisperDecodeOutput {
         text: response.text.unwrap_or_default(),
         model_init_ms: response.model_init_ms,
@@ -164,6 +196,9 @@ pub async fn transcribe_samples_with_overrides(
         avg_logprob: response.avg_log_prob,
         no_speech_prob: response.no_speech_prob,
         compression_ratio: response.compression_ratio,
+        backend_requested: response.backend_requested,
+        backend_used: response.backend_used,
+        backend_fallback: response.backend_fallback,
     })
 }
 
@@ -267,13 +302,11 @@ fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
         InferenceError::RuntimeJoin(format!("failed to create faster-whisper cache directories: {err}"))
     })?;
 
-    let thread_cap = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(4)
-        .clamp(2, 8)
+    let thread_cap = preferred_worker_thread_cap()
         .to_string();
 
-    let mut child = Command::new(&python)
+    let mut command = Command::new(&python);
+    command
         .arg(worker_path.as_os_str())
         .env("HF_HOME", &hf_home)
         .env("HUGGINGFACE_HUB_CACHE", &hub_cache)
@@ -282,13 +315,26 @@ fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
         .env("CT2_NUM_THREADS", &thread_cap)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| {
-            InferenceError::RuntimeJoin(format!(
-                "failed to spawn faster-whisper worker using '{python}': {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1 first."
-            ))
-        })?;
+        .stderr(Stdio::piped());
+    let cuda_bins = resolve_cuda_bin_paths(&python);
+    if !cuda_bins.is_empty() {
+        let prepend = cuda_bins
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join(";");
+        if let Ok(existing_path) = std::env::var("PATH") {
+            let combined = format!("{prepend};{existing_path}");
+            command.env("PATH", combined);
+        } else {
+            command.env("PATH", prepend);
+        }
+    }
+    let mut child = command.spawn().map_err(|err| {
+        InferenceError::RuntimeJoin(format!(
+            "failed to spawn faster-whisper worker using '{python}': {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1 first."
+        ))
+    })?;
 
     let stdin = child
         .stdin
@@ -376,12 +422,99 @@ fn resolve_python_path() -> String {
     "python".to_string()
 }
 
+fn resolve_cuda_bin_path() -> Option<PathBuf> {
+    if let Ok(cuda_root) = std::env::var("CUDA_PATH") {
+        let root = PathBuf::from(cuda_root.trim());
+        let bin = root.join("bin");
+        if bin.exists() {
+            return Some(bin);
+        }
+    }
+
+    let default_root = Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA");
+    if !default_root.exists() {
+        return None;
+    }
+    let mut versions = fs::read_dir(default_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry.file_type().ok().and_then(|ft| {
+                if ft.is_dir() {
+                    Some(entry.path())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    versions.sort_by(|a, b| b.cmp(a));
+    versions
+        .into_iter()
+        .map(|path| path.join("bin"))
+        .find(|bin| bin.exists())
+}
+
+fn resolve_cuda_bin_paths(python_path: &str) -> Vec<PathBuf> {
+    let mut paths = resolve_python_cuda_bin_paths(python_path);
+    if let Some(cuda_bin) = resolve_cuda_bin_path() {
+        paths.push(cuda_bin);
+    }
+
+    let mut dedup = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| path.exists())
+        .filter(|path| dedup.insert(path.clone()))
+        .collect()
+}
+
+fn resolve_python_cuda_bin_paths(python_path: &str) -> Vec<PathBuf> {
+    let python = PathBuf::from(python_path.trim());
+    let scripts_dir = match python.parent() {
+        Some(value) => value,
+        None => return Vec::new(),
+    };
+    let venv_root = match scripts_dir.parent() {
+        Some(value) => value,
+        None => return Vec::new(),
+    };
+
+    let nvidia_root = venv_root.join("Lib").join("site-packages").join("nvidia");
+    if !nvidia_root.exists() {
+        return Vec::new();
+    }
+
+    fs::read_dir(&nvidia_root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry.file_type().ok().and_then(|ft| {
+                if ft.is_dir() {
+                    let bin = entry.path().join("bin");
+                    if bin.exists() {
+                        Some(bin)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
+}
+
 fn worker_request_for(
-    audio_path: &Path,
     model_id: &str,
     decode_mode: DecodeMode,
     overrides: FasterWhisperRequestOverrides,
+    audio_pcm16_b64: String,
 ) -> WorkerRequest {
+    let backend_preference = worker_backend_preference_for_model(model_id);
+    let compute_type = worker_compute_type_for_backend(&backend_preference);
     let (beam_size, best_of) = decode_hyperparams_for(model_id, decode_mode);
     let initial_prompt = overrides
         .initial_prompt
@@ -393,20 +526,162 @@ fn worker_request_for(
         id: next_request_id(),
         command: "transcribe".to_string(),
         model_id: model_id.to_string(),
-        compute_type: "int8".to_string(),
-        audio_path: audio_path.to_string_lossy().to_string(),
+        compute_type,
+        backend_preference,
+        allow_backend_fallback: true,
+        audio_path: String::new(),
+        audio_pcm16_b64: Some(audio_pcm16_b64),
+        sample_rate_hz: 16_000,
         beam_size: overrides.beam_size.unwrap_or(beam_size),
         best_of: overrides.best_of.unwrap_or(best_of),
         language: "en".to_string(),
         // Push-to-talk path already endpoints speech; avoid double-VAD trimming.
         vad_filter: overrides.vad_filter.unwrap_or(false),
         condition_on_previous_text: overrides.condition_on_previous_text.unwrap_or(false),
+        without_timestamps: overrides
+            .without_timestamps
+            .unwrap_or_else(fw_without_timestamps_enabled),
         initial_prompt,
         temperature: overrides.temperature,
         no_speech_threshold: overrides.no_speech_threshold,
         log_prob_threshold: overrides.log_prob_threshold,
         compression_ratio_threshold: overrides.compression_ratio_threshold,
     }
+}
+
+fn worker_backend_preference_for_model(model_id: &str) -> String {
+    select_worker_backend_preference(
+        model_id,
+        env_flag("VOICEWAVE_FORCE_CPU", false),
+        env_flag("VOICEWAVE_FORCE_GPU", false),
+        gpu_session_cpu_locked(),
+        fw_gpu_persistently_disabled(),
+        env_flag("VOICEWAVE_AUTO_GPU", true),
+    )
+    .to_string()
+}
+
+fn select_worker_backend_preference(
+    model_id: &str,
+    force_cpu: bool,
+    force_gpu: bool,
+    session_cpu_locked: bool,
+    persistently_disabled: bool,
+    auto_gpu_enabled: bool,
+) -> &'static str {
+    if force_cpu {
+        return "cpu";
+    }
+    if force_gpu {
+        return "cuda";
+    }
+    if session_cpu_locked || persistently_disabled || !auto_gpu_enabled {
+        return "cpu";
+    }
+    if is_gpu_preferred_model(model_id) {
+        return "auto";
+    }
+    "cpu"
+}
+
+fn worker_compute_type_for_backend(backend_preference: &str) -> String {
+    if backend_preference.eq_ignore_ascii_case("cpu") {
+        std::env::var("VOICEWAVE_FW_CPU_COMPUTE_TYPE")
+            .map(|value| value.trim().to_string())
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "int8".to_string())
+    } else {
+        std::env::var("VOICEWAVE_FW_GPU_COMPUTE_TYPE")
+            .map(|value| value.trim().to_string())
+            .ok()
+            .filter(|value| !value.is_empty())
+            // Prefer stability-first default on mixed Windows CUDA setups.
+            .unwrap_or_else(|| "int8".to_string())
+    }
+}
+
+fn is_gpu_preferred_model(model_id: &str) -> bool {
+    let normalized = model_id.trim().to_ascii_lowercase();
+    !(normalized.starts_with("tiny") || normalized.starts_with("base"))
+}
+
+fn env_flag(key: &str, default_value: bool) -> bool {
+    match std::env::var(key) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default_value,
+        },
+        Err(_) => default_value,
+    }
+}
+
+fn fw_gpu_persistently_disabled() -> bool {
+    fw_gpu_disable_marker_path()
+        .as_ref()
+        .is_some_and(|path| path.exists())
+}
+
+fn set_fw_gpu_persistently_disabled(disabled: bool) {
+    let Some(path) = fw_gpu_disable_marker_path() else {
+        return;
+    };
+    if disabled {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(path, now_utc_ms().to_string());
+    } else if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn fw_gpu_disable_marker_path() -> Option<PathBuf> {
+    ProjectDirs::from("com", "voicewave", "localcore")
+        .map(|dirs| dirs.config_dir().join(FW_GPU_DISABLED_MARKER))
+}
+
+fn preferred_worker_thread_cap() -> usize {
+    if let Ok(value) = std::env::var("VOICEWAVE_FW_THREADS") {
+        if let Ok(parsed) = value.trim().parse::<usize>() {
+            if parsed > 0 {
+                return parsed.clamp(2, 16);
+            }
+        }
+    }
+
+    let available = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4);
+    if available >= 14 {
+        12
+    } else if available >= 10 {
+        10
+    } else if available >= 8 {
+        8
+    } else {
+        available.clamp(2, 6)
+    }
+}
+
+fn fw_without_timestamps_enabled() -> bool {
+    std::env::var("VOICEWAVE_FW_WITHOUT_TIMESTAMPS")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !(normalized == "0" || normalized == "false" || normalized == "off")
+        })
+        .unwrap_or(true)
+}
+
+fn encode_pcm16_base64(samples: &[f32]) -> String {
+    let mut bytes = Vec::with_capacity(samples.len().saturating_mul(2));
+    for sample in samples {
+        let clamped = sample.clamp(-1.0, 1.0);
+        let pcm = (clamped * i16::MAX as f32) as i16;
+        bytes.extend_from_slice(&pcm.to_le_bytes());
+    }
+    BASE64_STANDARD.encode(bytes)
 }
 
 fn decode_hyperparams_for(model_id: &str, decode_mode: DecodeMode) -> (u32, u32) {
@@ -425,9 +700,11 @@ fn decode_hyperparams_for(model_id: &str, decode_mode: DecodeMode) -> (u32, u32)
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_hyperparams_for, worker_request_for, FasterWhisperRequestOverrides};
+    use super::{
+        decode_hyperparams_for, encode_pcm16_base64, select_worker_backend_preference, worker_request_for,
+        FasterWhisperRequestOverrides,
+    };
     use crate::settings::DecodeMode;
-    use std::path::Path;
 
     #[test]
     fn fw_balanced_profile_has_quality_floor_for_small() {
@@ -446,31 +723,44 @@ mod tests {
     #[test]
     fn fw_balanced_request_uses_plain_decode_without_prompt_or_context() {
         let request = worker_request_for(
-            Path::new("C:\\tmp\\sample.wav"),
             "small.en",
             DecodeMode::Balanced,
             FasterWhisperRequestOverrides::default(),
+            "AQID".to_string(),
         );
         assert!(!request.condition_on_previous_text);
         assert!(request.initial_prompt.is_none());
+        assert!(request.audio_pcm16_b64.is_some());
+        assert_eq!(request.sample_rate_hz, 16_000);
+        assert!(request.allow_backend_fallback);
+        assert!(!request.backend_preference.is_empty());
+        assert_eq!(
+            request.without_timestamps,
+            super::fw_without_timestamps_enabled()
+        );
     }
 
     #[test]
     fn fw_fast_request_disables_prompt_for_speed() {
         let request = worker_request_for(
-            Path::new("C:\\tmp\\sample.wav"),
             "small.en",
             DecodeMode::Fast,
             FasterWhisperRequestOverrides::default(),
+            "AQID".to_string(),
         );
         assert!(!request.condition_on_previous_text);
         assert!(request.initial_prompt.is_none());
+        assert!(request.allow_backend_fallback);
+        assert!(!request.backend_preference.is_empty());
+        assert_eq!(
+            request.without_timestamps,
+            super::fw_without_timestamps_enabled()
+        );
     }
 
     #[test]
     fn fw_overrides_replace_request_defaults() {
         let request = worker_request_for(
-            Path::new("C:\\tmp\\sample.wav"),
             "small.en",
             DecodeMode::Balanced,
             FasterWhisperRequestOverrides {
@@ -479,11 +769,13 @@ mod tests {
                 initial_prompt: Some(" spell uncommon words literally ".to_string()),
                 condition_on_previous_text: Some(true),
                 vad_filter: Some(true),
+                without_timestamps: Some(false),
                 temperature: Some(0.0),
                 no_speech_threshold: Some(0.5),
                 log_prob_threshold: Some(-1.2),
                 compression_ratio_threshold: Some(2.1),
             },
+            "AQID".to_string(),
         );
         assert_eq!(request.beam_size, 5);
         assert_eq!(request.best_of, 3);
@@ -493,10 +785,53 @@ mod tests {
         );
         assert!(request.condition_on_previous_text);
         assert!(request.vad_filter);
+        assert!(!request.without_timestamps);
         assert_eq!(request.temperature, Some(0.0));
         assert_eq!(request.no_speech_threshold, Some(0.5));
         assert_eq!(request.log_prob_threshold, Some(-1.2));
         assert_eq!(request.compression_ratio_threshold, Some(2.1));
+    }
+
+    #[test]
+    fn pcm_encoding_produces_non_empty_base64_payload() {
+        let encoded = encode_pcm16_base64(&[0.0_f32, 0.25_f32, -0.25_f32]);
+        assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn backend_policy_prefers_auto_for_small_model_when_gpu_is_allowed() {
+        let backend = select_worker_backend_preference("small.en", false, false, false, false, true);
+        assert_eq!(backend, "auto");
+    }
+
+    #[test]
+    fn backend_policy_keeps_tiny_and_base_on_cpu_by_default() {
+        let tiny = select_worker_backend_preference("tiny.en", false, false, false, false, true);
+        let base = select_worker_backend_preference("base.en", false, false, false, false, true);
+        assert_eq!(tiny, "cpu");
+        assert_eq!(base, "cpu");
+    }
+
+    #[test]
+    fn backend_policy_honors_force_flags_in_safe_order() {
+        let force_gpu = select_worker_backend_preference("small.en", false, true, true, true, false);
+        assert_eq!(force_gpu, "cuda");
+
+        let force_cpu = select_worker_backend_preference("small.en", true, true, false, false, true);
+        assert_eq!(force_cpu, "cpu");
+    }
+
+    #[test]
+    fn backend_policy_falls_back_to_cpu_when_gpu_session_is_blocked() {
+        let session_locked =
+            select_worker_backend_preference("small.en", false, false, true, false, true);
+        let persistent_lock =
+            select_worker_backend_preference("small.en", false, false, false, true, true);
+        let auto_disabled =
+            select_worker_backend_preference("small.en", false, false, false, false, false);
+        assert_eq!(session_locked, "cpu");
+        assert_eq!(persistent_lock, "cpu");
+        assert_eq!(auto_disabled, "cpu");
     }
 }
 
@@ -510,51 +845,6 @@ fn next_request_id() -> u64 {
         }
     }
     now_utc_ms()
-}
-
-fn write_temp_wav(samples: &[f32]) -> Result<PathBuf, InferenceError> {
-    let base = std::env::temp_dir();
-    let path = base.join(format!("voicewave-fw-{}.wav", now_utc_ms()));
-    let mut file = File::create(&path).map_err(|err| {
-        InferenceError::RuntimeJoin(format!("failed creating temp wav for faster-whisper: {err}"))
-    })?;
-
-    let sample_rate = 16_000u32;
-    let channels = 1u16;
-    let bits_per_sample = 16u16;
-    let block_align = channels * (bits_per_sample / 8);
-    let byte_rate = sample_rate * block_align as u32;
-    let data_len = (samples.len() * 2) as u32;
-    let riff_len = 36u32.saturating_add(data_len);
-
-    file.write_all(b"RIFF")
-        .and_then(|_| file.write_all(&riff_len.to_le_bytes()))
-        .and_then(|_| file.write_all(b"WAVE"))
-        .and_then(|_| file.write_all(b"fmt "))
-        .and_then(|_| file.write_all(&16u32.to_le_bytes()))
-        .and_then(|_| file.write_all(&1u16.to_le_bytes()))
-        .and_then(|_| file.write_all(&channels.to_le_bytes()))
-        .and_then(|_| file.write_all(&sample_rate.to_le_bytes()))
-        .and_then(|_| file.write_all(&byte_rate.to_le_bytes()))
-        .and_then(|_| file.write_all(&block_align.to_le_bytes()))
-        .and_then(|_| file.write_all(&bits_per_sample.to_le_bytes()))
-        .and_then(|_| file.write_all(b"data"))
-        .and_then(|_| file.write_all(&data_len.to_le_bytes()))
-        .map_err(|err| {
-            InferenceError::RuntimeJoin(format!("failed writing wav header: {err}"))
-        })?;
-
-    for sample in samples {
-        let clamped = sample.clamp(-1.0, 1.0);
-        let pcm = (clamped * i16::MAX as f32) as i16;
-        file.write_all(&pcm.to_le_bytes()).map_err(|err| {
-            InferenceError::RuntimeJoin(format!("failed writing wav sample data: {err}"))
-        })?;
-    }
-    file.flush()
-        .map_err(|err| InferenceError::RuntimeJoin(format!("failed flushing wav file: {err}")))?;
-
-    Ok(path)
 }
 
 fn hf_home_dir() -> PathBuf {

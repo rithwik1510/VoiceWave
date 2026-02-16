@@ -79,6 +79,64 @@ function Resolve-CudaLibPath([string]$cudaRoot) {
   return $null
 }
 
+function Resolve-CudaBinPath([string]$cudaRoot) {
+  if (-not $cudaRoot) {
+    return $null
+  }
+  $binPath = Join-Path $cudaRoot "bin"
+  if (Test-Path $binPath) {
+    return $binPath
+  }
+  return $null
+}
+
+function Resolve-RepoRoot {
+  $candidate = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+  return $candidate.Path
+}
+
+function Resolve-FasterWhisperPython {
+  if ($env:VOICEWAVE_FASTER_WHISPER_PYTHON -and (Test-Path $env:VOICEWAVE_FASTER_WHISPER_PYTHON)) {
+    return $env:VOICEWAVE_FASTER_WHISPER_PYTHON
+  }
+
+  $repoRoot = Resolve-RepoRoot
+  $venvPython = Join-Path $repoRoot ".venv-faster-whisper\Scripts\python.exe"
+  if (Test-Path $venvPython) {
+    return $venvPython
+  }
+  return $null
+}
+
+function Resolve-VenvCudaBinPaths([string]$pythonPath) {
+  if (-not $pythonPath) {
+    return @()
+  }
+
+  $scriptsDir = Split-Path -Parent $pythonPath
+  if (-not $scriptsDir) {
+    return @()
+  }
+  $venvRoot = Split-Path -Parent $scriptsDir
+  if (-not $venvRoot) {
+    return @()
+  }
+
+  $nvidiaRoot = Join-Path $venvRoot "Lib\site-packages\nvidia"
+  if (-not (Test-Path $nvidiaRoot)) {
+    return @()
+  }
+
+  $bins = @()
+  Get-ChildItem -Path $nvidiaRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    $bin = Join-Path $_.FullName "bin"
+    if (Test-Path $bin) {
+      $bins += $bin
+    }
+  }
+  return $bins
+}
+
 function Test-CudaRuntimeLibs([string]$cudaLibPath) {
   if (-not $cudaLibPath) {
     return $false
@@ -90,6 +148,20 @@ function Test-CudaRuntimeLibs([string]$cudaLibPath) {
     }
   }
   return $true
+}
+
+function Resolve-CTranslate2RuntimeDll([string[]]$candidateBinPaths) {
+  $required = "cublas64_12.dll"
+  foreach ($binPath in $candidateBinPaths) {
+    if (-not $binPath) {
+      continue
+    }
+    $candidate = Join-Path $binPath $required
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+  return $null
 }
 
 $nvidiaSmiPath = Get-NvidiaSmiPath
@@ -134,6 +206,30 @@ if ($cudaLibsReady) {
   $cudaLibsDetail = "cudart/cublas/cublasLt present"
 }
 Add-CheckResult "Required CUDA link libs available" $cudaLibsReady $cudaLibsDetail
+
+$cudaBinPath = Resolve-CudaBinPath $cudaRoot
+$cudaBinPathDetail = "missing <CUDA_ROOT>\\bin"
+if ($cudaBinPath) {
+  $cudaBinPathDetail = $cudaBinPath
+}
+Add-CheckResult "CUDA bin path available" ($null -ne $cudaBinPath) $cudaBinPathDetail
+
+$fwPython = Resolve-FasterWhisperPython
+$venvCudaBins = Resolve-VenvCudaBinPaths $fwPython
+$candidateBinPaths = @()
+if ($cudaBinPath) {
+  $candidateBinPaths += $cudaBinPath
+}
+if ($venvCudaBins) {
+  $candidateBinPaths += $venvCudaBins
+}
+$ct2RuntimePath = Resolve-CTranslate2RuntimeDll -candidateBinPaths $candidateBinPaths
+$ct2RuntimeReady = ($null -ne $ct2RuntimePath)
+$ct2RuntimeDetail = "missing cublas64_12.dll (checked CUDA bin + Faster-Whisper venv NVIDIA bins)"
+if ($ct2RuntimeReady) {
+  $ct2RuntimeDetail = "cublas64_12.dll present at $ct2RuntimePath"
+}
+Add-CheckResult "CTranslate2 CUDA runtime DLL available" $ct2RuntimeReady $ct2RuntimeDetail
 
 Write-Host ""
 Write-Host "Phase B GPU Readiness Report"
