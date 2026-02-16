@@ -18,6 +18,8 @@ pub struct LatencyMetricRecord {
     pub post_ms: u64,
     pub insert_ms: u64,
     pub total_ms: u64,
+    #[serde(default)]
+    pub release_to_inserted_ms: u64,
     pub audio_duration_ms: u64,
     pub model_id: String,
     pub decode_mode: DecodeMode,
@@ -37,11 +39,25 @@ pub struct LatencyMetricRecord {
     pub incremental_windows_decoded: u32,
     pub finalize_tail_audio_ms: u64,
     #[serde(default)]
+    pub decode_policy_mode_selected: Option<DecodeMode>,
+    #[serde(default)]
+    pub decode_policy_reason: Option<String>,
+    #[serde(default)]
     pub asr_integrity_percent: f32,
     #[serde(default)]
     pub asr_raw_word_count: u32,
     #[serde(default)]
     pub asr_final_word_count: u32,
+    #[serde(default)]
+    pub fw_low_coherence: bool,
+    #[serde(default)]
+    pub fw_retry_used: bool,
+    #[serde(default)]
+    pub fw_literal_retry_used: bool,
+    #[serde(default)]
+    pub insertion_method: Option<String>,
+    #[serde(default)]
+    pub insertion_target_class: Option<String>,
     pub success: bool,
 }
 
@@ -374,6 +390,7 @@ mod tests {
                 post_ms: 10,
                 insert_ms: 5,
                 total_ms: 55,
+                release_to_inserted_ms: 55,
                 audio_duration_ms: 400,
                 model_id: "tiny.en".to_string(),
                 decode_mode: DecodeMode::Balanced,
@@ -392,9 +409,16 @@ mod tests {
                 release_finalize_ms: 30,
                 incremental_windows_decoded: 0,
                 finalize_tail_audio_ms: 400,
+                decode_policy_mode_selected: Some(DecodeMode::Balanced),
+                decode_policy_reason: Some("runtime-policy:balanced".to_string()),
                 asr_integrity_percent: 100.0,
                 asr_raw_word_count: 8,
                 asr_final_word_count: 8,
+                fw_low_coherence: false,
+                fw_retry_used: false,
+                fw_literal_retry_used: false,
+                insertion_method: Some("direct".to_string()),
+                insertion_target_class: Some("editor".to_string()),
                 success: true,
             },
             LatencyMetricRecord {
@@ -406,6 +430,7 @@ mod tests {
                 post_ms: 12,
                 insert_ms: 6,
                 total_ms: 83,
+                release_to_inserted_ms: 83,
                 audio_duration_ms: 620,
                 model_id: "small.en".to_string(),
                 decode_mode: DecodeMode::Fast,
@@ -424,9 +449,16 @@ mod tests {
                 release_finalize_ms: 900,
                 incremental_windows_decoded: 2,
                 finalize_tail_audio_ms: 620,
+                decode_policy_mode_selected: Some(DecodeMode::Fast),
+                decode_policy_reason: Some("runtime-policy:fast".to_string()),
                 asr_integrity_percent: 95.0,
                 asr_raw_word_count: 11,
                 asr_final_word_count: 12,
+                fw_low_coherence: false,
+                fw_retry_used: true,
+                fw_literal_retry_used: false,
+                insertion_method: Some("clipboardPaste".to_string()),
+                insertion_target_class: Some("browser".to_string()),
                 success: true,
             },
         ];
@@ -468,6 +500,7 @@ mod tests {
                 post_ms: 10,
                 insert_ms: 4,
                 total_ms: 134,
+                release_to_inserted_ms: 134,
                 audio_duration_ms: 800,
                 model_id: "small.en".to_string(),
                 decode_mode: DecodeMode::Balanced,
@@ -486,9 +519,16 @@ mod tests {
                 release_finalize_ms: 0,
                 incremental_windows_decoded: 0,
                 finalize_tail_audio_ms: 0,
+                decode_policy_mode_selected: Some(DecodeMode::Balanced),
+                decode_policy_reason: Some("runtime-policy:balanced".to_string()),
                 asr_integrity_percent: 72.0,
                 asr_raw_word_count: 4,
                 asr_final_word_count: 7,
+                fw_low_coherence: true,
+                fw_retry_used: true,
+                fw_literal_retry_used: false,
+                insertion_method: Some("historyFallback".to_string()),
+                insertion_target_class: Some("unknown".to_string()),
                 success: false,
             },
             LatencyMetricRecord {
@@ -500,6 +540,7 @@ mod tests {
                 post_ms: 10,
                 insert_ms: 4,
                 total_ms: 109,
+                release_to_inserted_ms: 109,
                 audio_duration_ms: 700,
                 model_id: "small.en".to_string(),
                 decode_mode: DecodeMode::Balanced,
@@ -518,9 +559,16 @@ mod tests {
                 release_finalize_ms: 0,
                 incremental_windows_decoded: 0,
                 finalize_tail_audio_ms: 0,
+                decode_policy_mode_selected: Some(DecodeMode::Balanced),
+                decode_policy_reason: Some("runtime-policy:balanced".to_string()),
                 asr_integrity_percent: 100.0,
                 asr_raw_word_count: 8,
                 asr_final_word_count: 8,
+                fw_low_coherence: false,
+                fw_retry_used: false,
+                fw_literal_retry_used: false,
+                insertion_method: Some("direct".to_string()),
+                insertion_target_class: Some("editor".to_string()),
                 success: true,
             },
         ];

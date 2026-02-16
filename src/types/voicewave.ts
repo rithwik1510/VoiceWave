@@ -66,9 +66,17 @@ export interface LatencyBreakdownEvent {
   postMs: number;
   insertMs: number;
   totalMs: number;
+  releaseToInsertedMs: number;
   audioDurationMs: number;
   modelId: string;
   decodeMode: DecodeMode;
+  decodePolicyModeSelected: DecodeMode;
+  decodePolicyReason: string;
+  fwLowCoherence: boolean;
+  fwRetryUsed: boolean;
+  fwLiteralRetryUsed: boolean;
+  insertionMethod: InsertionMethod | string;
+  insertionTargetClass: string;
 }
 
 export interface DiagnosticsStatus {
