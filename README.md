@@ -30,6 +30,11 @@ The core speech-to-text engine for v1 is **whisper.cpp** (local, on-device, no c
 10. Remaining pre-release items:
    - Full manual acceptance checklist rows for Notepad + VS Code + browser dictation workflow still need to be completed on target hardware.
    - 30-minute sustained battery gate is deferred to Phase VI pre-GA by documented marker (`docs/phase4/evidence/battery-deferment.md`).
+11. Pro monetization rollout is now implemented for Windows baseline:
+   - Encrypted local entitlement store with owner-device override.
+   - Pro nav and pricing UI (`~$4/mo~` and `$1.50/mo` launch offer).
+   - Real Pro-gated controls: format profiles, domain packs, code mode, app-aware profile target, advanced history search/tag/star/export.
+   - Free dictation path remains unchanged (local-only, no daily cap).
 
 ## Stack
 
@@ -73,6 +78,7 @@ The core speech-to-text engine for v1 is **whisper.cpp** (local, on-device, no c
    - `docs/PHASE3_REMAINING.md`
    - `docs/PHASE4_READINESS.md`
    - `docs/PHASE5_READINESS.md`
+9. Monetization + entitlement behavior: `docs/monetization.md`
 
 ## CI
 
@@ -93,17 +99,17 @@ Workflow: `.github/workflows/ci.yml`
 & "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -File .\scripts\ci\check-phase0-artifacts.ps1
 ```
 
-## Latest Validation Evidence (2026-02-11)
+## Latest Validation Evidence (2026-02-17)
 
 1. `npm run test -- --run`
-   - Result: `3 passed` test files, `7 passed` tests.
-   - Output excerpt: `Test Files  3 passed (3)` / `Tests  7 passed (7)` / `Duration 2.67s`
+   - Result: `3 passed` test files, `12 passed` tests.
+   - Output excerpt: `Test Files  3 passed (3)` / `Tests  12 passed (12)` / `Duration 2.73s`
 2. `npm run build`
    - Result: Vite production build succeeded (`built`).
-   - Output excerpt: `built in 2.87s`
+   - Output excerpt: `built in 3.00s`
 3. `npm run phase3:validate`
    - Result: script completed successfully, including no-space Windows strategy and Rust desktop compile path.
-   - Rust result: `Finished test profile` with desktop test executables produced, including `tests\\transcript_sanitization.rs`.
+   - Rust result: desktop compile and quality-guard test paths completed (with documented desktop-runtime fallback warnings in this environment).
 4. Hardware-tier recommendation evidence
    - `docs/testing/hardware-tier-recommendation-windows.json`
 5. Local-state rescue utility
