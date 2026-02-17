@@ -10,7 +10,9 @@ use std::{
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 const FRAME_SIZE: usize = 320;
-const STOP_SIGNAL_DEBOUNCE_MS: u64 = 200;
+const STOP_SIGNAL_DEBOUNCE_MS: u64 = 160;
+const RELEASE_TAIL_MIN_WAIT_MS: u64 = 70;
+const RELEASE_TAIL_SILENCE_CONFIRM_MS: u64 = 60;
 
 #[derive(Debug, Clone)]
 pub struct AudioFrame {
@@ -316,6 +318,7 @@ impl AudioCaptureService {
         let mut capture_accum = Vec::new();
         let mut last_voice_at: Option<Instant> = None;
         let mut stop_requested_at: Option<Instant> = None;
+        let mut post_release_last_voiced_at: Option<Instant> = None;
         let mut heard_speech = false;
 
         while started.elapsed() <= options.max_capture_duration {
@@ -332,8 +335,20 @@ impl AudioCaptureService {
                     break;
                 }
             }
-            if stop_requested_at.is_some_and(|released_at| released_at.elapsed() >= options.release_tail) {
-                break;
+            if let Some(released_at) = stop_requested_at {
+                let elapsed = released_at.elapsed();
+                if elapsed >= options.release_tail {
+                    break;
+                }
+                let min_wait_ms = RELEASE_TAIL_MIN_WAIT_MS.min(options.release_tail.as_millis() as u64);
+                let min_wait = Duration::from_millis(min_wait_ms);
+                if elapsed >= min_wait {
+                    let recent_post_release_voice = post_release_last_voiced_at
+                        .is_some_and(|at| at.elapsed() <= Duration::from_millis(RELEASE_TAIL_SILENCE_CONFIRM_MS));
+                    if !recent_post_release_voice {
+                        break;
+                    }
+                }
             }
 
             if let Ok(stream_err) = error_rx.try_recv() {
@@ -348,6 +363,9 @@ impl AudioCaptureService {
                         samples: raw_chunk,
                     });
                     let chunk_is_voiced = rms(&normalized) >= options.vad_config.threshold;
+                    if stop_requested_at.is_some() && chunk_is_voiced {
+                        post_release_last_voiced_at = Some(Instant::now());
+                    }
                     on_normalized_chunk(&normalized, chunk_is_voiced);
                     capture_accum.extend_from_slice(&normalized);
                     normalized_pending.extend(normalized);

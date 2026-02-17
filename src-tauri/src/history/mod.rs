@@ -1,9 +1,9 @@
+use crate::insertion::{InsertResult, InsertionMethod};
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
 use base64::Engine;
-use crate::insertion::{InsertResult, InsertionMethod};
 use directories::ProjectDirs;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,10 @@ pub struct SessionHistoryRecord {
     pub success: bool,
     pub source: String,
     pub message: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub starred: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -45,6 +49,9 @@ pub struct SessionHistoryRecord {
 pub struct SessionHistoryQuery {
     pub limit: Option<usize>,
     pub include_failed: Option<bool>,
+    pub search_query: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub starred: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +61,22 @@ pub struct HistoryEvent {
     pub policy: RetentionPolicy,
     pub retained_records: usize,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryExportPreset {
+    Plain,
+    MarkdownNotes,
+    StudySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryExportResult {
+    pub preset: HistoryExportPreset,
+    pub record_count: usize,
+    pub content: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +95,8 @@ pub enum HistoryError {
     KeyDecode(String),
     #[error("cannot resolve app data directory")]
     AppData,
+    #[error("history record not found: {0}")]
+    RecordNotFound(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -131,12 +156,55 @@ impl HistoryManager {
     pub fn get_records(&self, query: SessionHistoryQuery) -> Vec<SessionHistoryRecord> {
         let include_failed = query.include_failed.unwrap_or(true);
         let limit = query.limit.unwrap_or(50).max(1);
+        let search = query.search_query.unwrap_or_default().to_ascii_lowercase();
+        let required_tags = query
+            .tags
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tag| tag.trim().to_ascii_lowercase())
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+        let starred_filter = query.starred;
 
         self.store
             .records
             .iter()
             .rev()
             .filter(|row| include_failed || row.success)
+            .filter(|row| {
+                if let Some(required_starred) = starred_filter {
+                    row.starred == required_starred
+                } else {
+                    true
+                }
+            })
+            .filter(|row| {
+                if search.is_empty() {
+                    true
+                } else {
+                    row.preview.to_ascii_lowercase().contains(&search)
+                        || row.source.to_ascii_lowercase().contains(&search)
+                        || row
+                            .message
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase()
+                            .contains(&search)
+                }
+            })
+            .filter(|row| {
+                if required_tags.is_empty() {
+                    return true;
+                }
+                let lower_tags = row
+                    .tags
+                    .iter()
+                    .map(|tag| tag.to_ascii_lowercase())
+                    .collect::<Vec<_>>();
+                required_tags
+                    .iter()
+                    .all(|required| lower_tags.iter().any(|existing| existing == required))
+            })
             .take(limit)
             .cloned()
             .collect()
@@ -159,6 +227,8 @@ impl HistoryManager {
             success: result.success,
             source: "insertion".to_string(),
             message: result.message.clone(),
+            tags: Vec::new(),
+            starred: false,
         };
         self.store.records.push(record);
         self.prune_expired()?;
@@ -178,10 +248,119 @@ impl HistoryManager {
             success: true,
             source: "dictation".to_string(),
             message: None,
+            tags: Vec::new(),
+            starred: false,
         };
         self.store.records.push(record);
         self.prune_expired()?;
         self.persist()
+    }
+
+    pub fn tag_record(
+        &mut self,
+        record_id: &str,
+        tag: &str,
+    ) -> Result<SessionHistoryRecord, HistoryError> {
+        let normalized_tag = tag.trim();
+        if normalized_tag.is_empty() {
+            return self
+                .store
+                .records
+                .iter()
+                .find(|row| row.record_id == record_id)
+                .cloned()
+                .ok_or_else(|| HistoryError::RecordNotFound(record_id.to_string()));
+        }
+
+        let row = self
+            .store
+            .records
+            .iter_mut()
+            .find(|row| row.record_id == record_id)
+            .ok_or_else(|| HistoryError::RecordNotFound(record_id.to_string()))?;
+
+        if !row
+            .tags
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(normalized_tag))
+        {
+            row.tags.push(normalized_tag.to_string());
+        }
+        let updated = row.clone();
+        self.persist()?;
+        Ok(updated)
+    }
+
+    pub fn toggle_star_record(
+        &mut self,
+        record_id: &str,
+        starred: bool,
+    ) -> Result<SessionHistoryRecord, HistoryError> {
+        let row = self
+            .store
+            .records
+            .iter_mut()
+            .find(|row| row.record_id == record_id)
+            .ok_or_else(|| HistoryError::RecordNotFound(record_id.to_string()))?;
+        row.starred = starred;
+        let updated = row.clone();
+        self.persist()?;
+        Ok(updated)
+    }
+
+    pub fn export_preset(
+        &self,
+        preset: HistoryExportPreset,
+        query: SessionHistoryQuery,
+    ) -> HistoryExportResult {
+        let records = self.get_records(query);
+        let content = match preset {
+            HistoryExportPreset::Plain => records
+                .iter()
+                .map(|row| {
+                    format!(
+                        "[{}] {}{}",
+                        row.timestamp_utc_ms,
+                        row.preview,
+                        if row.starred { " ?" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            HistoryExportPreset::MarkdownNotes => records
+                .iter()
+                .map(|row| {
+                    let tags = if row.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" _(#{})_", row.tags.join(" #"))
+                    };
+                    format!("- **{}**: {}{}", row.source, row.preview, tags)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            HistoryExportPreset::StudySummary => {
+                let total = records.len();
+                let starred = records.iter().filter(|row| row.starred).count();
+                let top_sources = ["dictation", "insertion"]
+                    .iter()
+                    .map(|source| {
+                        let count = records.iter().filter(|row| row.source == *source).count();
+                        format!("- {}: {}", source, count)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "Study Summary\nTotal Records: {total}\nStarred: {starred}\nSource Mix:\n{top_sources}"
+                )
+            }
+        };
+
+        HistoryExportResult {
+            preset,
+            record_count: records.len(),
+            content,
+        }
     }
 
     pub fn set_retention_policy(
@@ -386,6 +565,8 @@ mod tests {
             success: true,
             source: "dictation".to_string(),
             message: None,
+            tags: vec![],
+            starred: false,
         });
 
         let _ = manager.set_retention_policy(RetentionPolicy::Off);

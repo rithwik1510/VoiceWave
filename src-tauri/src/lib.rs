@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod benchmark;
+pub mod billing;
 pub mod diagnostics;
 pub mod dictionary;
 pub mod history;
@@ -20,11 +21,16 @@ use audio::AudioQualityReport;
 #[cfg(feature = "desktop")]
 use benchmark::{BenchmarkRequest, BenchmarkRun, ModelRecommendation, RecommendationConstraints};
 #[cfg(feature = "desktop")]
+use billing::{CheckoutLaunchResult, EntitlementSnapshot, PortalLaunchResult};
+#[cfg(feature = "desktop")]
 use diagnostics::{DiagnosticsExportResult, DiagnosticsStatus};
 #[cfg(feature = "desktop")]
 use dictionary::{DictionaryQueueItem, DictionaryTerm};
 #[cfg(feature = "desktop")]
-use history::{RetentionPolicy, SessionHistoryQuery, SessionHistoryRecord};
+use history::{
+    HistoryExportPreset, HistoryExportResult, RetentionPolicy, SessionHistoryQuery,
+    SessionHistoryRecord,
+};
 #[cfg(feature = "desktop")]
 use hotkey::{HotkeyAction, HotkeyConfig, HotkeyPhase, HotkeySnapshot};
 #[cfg(feature = "desktop")]
@@ -34,7 +40,9 @@ use model_manager::{InstalledModel, ModelCatalogItem, ModelDownloadRequest, Mode
 #[cfg(feature = "desktop")]
 use permissions::PermissionSnapshot;
 #[cfg(feature = "desktop")]
-use settings::VoiceWaveSettings;
+use settings::{
+    AppProfileOverrides, CodeModeSettings, DomainPackId, FormatProfile, VoiceWaveSettings,
+};
 #[cfg(feature = "desktop")]
 use state::{DictationMode, VoiceWaveController, VoiceWaveSnapshot};
 #[cfg(feature = "desktop")]
@@ -175,6 +183,80 @@ async fn load_settings(runtime: State<'_, RuntimeContext>) -> Result<VoiceWaveSe
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn get_entitlement_snapshot(
+    runtime: State<'_, RuntimeContext>,
+) -> Result<EntitlementSnapshot, String> {
+    runtime
+        .controller
+        .get_entitlement_snapshot()
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn start_pro_checkout(
+    runtime: State<'_, RuntimeContext>,
+) -> Result<CheckoutLaunchResult, String> {
+    runtime
+        .controller
+        .start_pro_checkout()
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn refresh_entitlement(
+    runtime: State<'_, RuntimeContext>,
+) -> Result<EntitlementSnapshot, String> {
+    runtime
+        .controller
+        .refresh_entitlement()
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn restore_purchase(
+    runtime: State<'_, RuntimeContext>,
+) -> Result<EntitlementSnapshot, String> {
+    runtime
+        .controller
+        .restore_purchase()
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn open_billing_portal(
+    runtime: State<'_, RuntimeContext>,
+) -> Result<PortalLaunchResult, String> {
+    runtime
+        .controller
+        .open_billing_portal()
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn set_owner_device_override(
+    runtime: State<'_, RuntimeContext>,
+    enabled: bool,
+    passphrase: String,
+) -> Result<EntitlementSnapshot, String> {
+    runtime
+        .controller
+        .set_owner_device_override(enabled, passphrase)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn update_settings(
     app: tauri::AppHandle,
     runtime: State<'_, RuntimeContext>,
@@ -187,6 +269,71 @@ async fn update_settings(
         .map_err(|err| AppError::Controller(err).to_string())?;
     sync_pill_visibility(&app, updated.show_floating_hud)?;
     Ok(updated)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn set_format_profile(
+    runtime: State<'_, RuntimeContext>,
+    profile: FormatProfile,
+) -> Result<VoiceWaveSettings, String> {
+    runtime
+        .controller
+        .set_format_profile(profile)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn set_active_domain_packs(
+    runtime: State<'_, RuntimeContext>,
+    packs: Vec<DomainPackId>,
+) -> Result<VoiceWaveSettings, String> {
+    runtime
+        .controller
+        .set_active_domain_packs(packs)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn set_app_profile_overrides(
+    runtime: State<'_, RuntimeContext>,
+    overrides: AppProfileOverrides,
+) -> Result<VoiceWaveSettings, String> {
+    runtime
+        .controller
+        .set_app_profile_overrides(overrides)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn set_code_mode_settings(
+    runtime: State<'_, RuntimeContext>,
+    settings: CodeModeSettings,
+) -> Result<VoiceWaveSettings, String> {
+    runtime
+        .controller
+        .set_code_mode_settings(settings)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn set_pro_post_processing_enabled(
+    runtime: State<'_, RuntimeContext>,
+    enabled: bool,
+) -> Result<VoiceWaveSettings, String> {
+    runtime
+        .controller
+        .set_pro_post_processing_enabled(enabled)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
 }
 
 #[cfg(feature = "desktop")]
@@ -553,6 +700,62 @@ async fn get_session_history(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn search_session_history(
+    runtime: State<'_, RuntimeContext>,
+    query: String,
+    tags: Option<Vec<String>>,
+    starred: Option<bool>,
+) -> Result<Vec<SessionHistoryRecord>, String> {
+    runtime
+        .controller
+        .search_session_history(query, tags, starred)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn tag_session(
+    runtime: State<'_, RuntimeContext>,
+    record_id: String,
+    tag: String,
+) -> Result<SessionHistoryRecord, String> {
+    runtime
+        .controller
+        .tag_session(record_id, tag)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn toggle_star_session(
+    runtime: State<'_, RuntimeContext>,
+    record_id: String,
+    starred: bool,
+) -> Result<SessionHistoryRecord, String> {
+    runtime
+        .controller
+        .toggle_star_session(record_id, starred)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn export_session_history_preset(
+    runtime: State<'_, RuntimeContext>,
+    preset: HistoryExportPreset,
+) -> Result<HistoryExportResult, String> {
+    runtime
+        .controller
+        .export_session_history_preset(preset)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn set_history_retention(
     app: tauri::AppHandle,
     runtime: State<'_, RuntimeContext>,
@@ -685,7 +888,18 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_voicewave_snapshot,
             load_settings,
+            get_entitlement_snapshot,
+            start_pro_checkout,
+            refresh_entitlement,
+            restore_purchase,
+            open_billing_portal,
+            set_owner_device_override,
             update_settings,
+            set_format_profile,
+            set_active_domain_packs,
+            set_app_profile_overrides,
+            set_code_mode_settings,
+            set_pro_post_processing_enabled,
             show_main_window,
             get_diagnostics_status,
             set_diagnostics_opt_in,
@@ -717,6 +931,10 @@ pub fn run() {
             get_benchmark_results,
             recommend_model,
             get_session_history,
+            search_session_history,
+            tag_session,
+            toggle_star_session,
+            export_session_history_preset,
             set_history_retention,
             prune_history_now,
             clear_history,

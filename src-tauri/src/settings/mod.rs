@@ -14,6 +14,117 @@ pub enum DecodeMode {
     Quality,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FormatProfile {
+    #[default]
+    Default,
+    Academic,
+    Technical,
+    Concise,
+    CodeDoc,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum DomainPackId {
+    Coding,
+    Student,
+    Productivity,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AppTargetClass {
+    #[default]
+    Editor,
+    Browser,
+    Collab,
+    Desktop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppProfileBehavior {
+    pub punctuation_aggressiveness: u8,
+    pub sentence_compactness: u8,
+    pub auto_list_formatting: bool,
+}
+
+impl Default for AppProfileBehavior {
+    fn default() -> Self {
+        Self {
+            punctuation_aggressiveness: 1,
+            sentence_compactness: 1,
+            auto_list_formatting: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppProfileOverrides {
+    pub active_target: AppTargetClass,
+    pub editor: AppProfileBehavior,
+    pub browser: AppProfileBehavior,
+    pub collab: AppProfileBehavior,
+    pub desktop: AppProfileBehavior,
+}
+
+impl Default for AppProfileOverrides {
+    fn default() -> Self {
+        Self {
+            active_target: AppTargetClass::Editor,
+            editor: AppProfileBehavior {
+                punctuation_aggressiveness: 2,
+                sentence_compactness: 1,
+                auto_list_formatting: true,
+            },
+            browser: AppProfileBehavior {
+                punctuation_aggressiveness: 1,
+                sentence_compactness: 1,
+                auto_list_formatting: false,
+            },
+            collab: AppProfileBehavior {
+                punctuation_aggressiveness: 1,
+                sentence_compactness: 2,
+                auto_list_formatting: true,
+            },
+            desktop: AppProfileBehavior::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum CodeCasingStyle {
+    #[default]
+    Preserve,
+    CamelCase,
+    SnakeCase,
+    PascalCase,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CodeModeSettings {
+    pub enabled: bool,
+    pub spoken_symbols: bool,
+    pub preferred_casing: CodeCasingStyle,
+    pub wrap_in_fenced_block: bool,
+}
+
+impl Default for CodeModeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            spoken_symbols: true,
+            preferred_casing: CodeCasingStyle::Preserve,
+            wrap_in_fenced_block: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct VoiceWaveSettings {
@@ -28,6 +139,11 @@ pub struct VoiceWaveSettings {
     pub toggle_hotkey: String,
     pub push_to_talk_hotkey: String,
     pub prefer_clipboard_fallback: bool,
+    pub format_profile: FormatProfile,
+    pub active_domain_packs: Vec<DomainPackId>,
+    pub app_profile_overrides: AppProfileOverrides,
+    pub code_mode: CodeModeSettings,
+    pub pro_post_processing_enabled: bool,
 }
 
 impl Default for VoiceWaveSettings {
@@ -44,6 +160,11 @@ impl Default for VoiceWaveSettings {
             toggle_hotkey: LOCKED_TOGGLE_HOTKEY.to_string(),
             push_to_talk_hotkey: LOCKED_PUSH_TO_TALK_HOTKEY.to_string(),
             prefer_clipboard_fallback: false,
+            format_profile: FormatProfile::Default,
+            active_domain_packs: Vec::new(),
+            app_profile_overrides: AppProfileOverrides::default(),
+            code_mode: CodeModeSettings::default(),
+            pro_post_processing_enabled: false,
         }
     }
 }
@@ -92,6 +213,7 @@ impl SettingsStore {
             serde_json::from_str(normalized).map_err(SettingsError::Parse)?;
         settings.active_model = normalize_active_model_id(&settings.active_model);
         normalize_hotkey_bindings(&mut settings);
+        normalize_pro_settings(&mut settings);
         Ok(settings)
     }
 
@@ -111,6 +233,21 @@ fn normalize_active_model_id(active_model: &str) -> String {
         "tiny.en" | "base.en" | "small.en" | "medium.en" => "fw-small.en".to_string(),
         _ => "fw-small.en".to_string(),
     }
+}
+
+fn normalize_behavior(behavior: &mut AppProfileBehavior) {
+    behavior.punctuation_aggressiveness = behavior.punctuation_aggressiveness.min(2);
+    behavior.sentence_compactness = behavior.sentence_compactness.min(2);
+}
+
+pub fn normalize_pro_settings(settings: &mut VoiceWaveSettings) {
+    normalize_behavior(&mut settings.app_profile_overrides.editor);
+    normalize_behavior(&mut settings.app_profile_overrides.browser);
+    normalize_behavior(&mut settings.app_profile_overrides.collab);
+    normalize_behavior(&mut settings.app_profile_overrides.desktop);
+
+    let mut seen = std::collections::HashSet::new();
+    settings.active_domain_packs.retain(|pack| seen.insert(*pack));
 }
 
 pub const LOCKED_TOGGLE_HOTKEY: &str = "Ctrl+Alt+X";
@@ -156,6 +293,15 @@ mod tests {
             toggle_hotkey: "Ctrl+Alt+X".to_string(),
             push_to_talk_hotkey: "Ctrl+Windows".to_string(),
             prefer_clipboard_fallback: true,
+            format_profile: FormatProfile::Technical,
+            active_domain_packs: vec![DomainPackId::Coding, DomainPackId::Student],
+            code_mode: CodeModeSettings {
+                enabled: true,
+                spoken_symbols: true,
+                preferred_casing: CodeCasingStyle::SnakeCase,
+                wrap_in_fenced_block: false,
+            },
+            pro_post_processing_enabled: true,
             ..VoiceWaveSettings::default()
         };
 
@@ -169,6 +315,8 @@ mod tests {
         assert_eq!(loaded.decode_mode, DecodeMode::Fast);
         assert!(loaded.diagnostics_opt_in);
         assert!(loaded.prefer_clipboard_fallback);
+        assert_eq!(loaded.format_profile, FormatProfile::Technical);
+        assert!(loaded.pro_post_processing_enabled);
         let _ = std::fs::remove_file(path);
     }
 

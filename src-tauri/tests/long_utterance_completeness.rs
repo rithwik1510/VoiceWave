@@ -108,6 +108,9 @@ fn assert_paths_receive_full_transcript(transcript: &str, suffix_terms: &[&str])
     let records = history.get_records(SessionHistoryQuery {
         limit: Some(1),
         include_failed: Some(true),
+        search_query: None,
+        tags: None,
+        starred: None,
     });
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].source, "dictation");

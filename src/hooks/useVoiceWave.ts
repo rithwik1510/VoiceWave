@@ -1,24 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   approveDictionaryEntry,
-  stopDictation as stopDictationCommand,
   cancelModelDownload,
   canUseTauri,
   clearHistory,
   downloadModel,
+  exportDiagnosticsBundle as exportDiagnosticsBundleCommand,
+  exportSessionHistoryPreset,
   getBenchmarkResults,
   getDiagnosticsStatus,
   getDictionaryQueue,
   getDictionaryTerms,
+  getEntitlementSnapshot,
   getPermissionSnapshot,
   getRecentInsertions,
   getSessionHistory,
   insertText,
-  listenVoicewaveHotkey,
-  listenVoicewaveLatency,
   listenVoicewaveAudioQuality,
+  listenVoicewaveHotkey,
   listenVoicewaveInsertion,
+  listenVoicewaveLatency,
   listenVoicewaveMicLevel,
+  listenVoicewaveModel,
   listenVoicewavePermission,
   listenVoicewaveState,
   listenVoicewaveTranscript,
@@ -26,31 +29,47 @@ import {
   listInputDevices,
   listModelCatalog,
   loadHotkeyConfig,
-  loadSettings,
-  listenVoicewaveModel,
   loadSnapshot,
+  loadSettings,
+  openBillingPortal,
   pauseModelDownload,
   pruneHistoryNow,
+  refreshEntitlement as refreshEntitlementCommand,
   recommendModel,
   rejectDictionaryEntry,
   removeDictionaryTerm,
   requestMicrophoneAccess,
+  restorePurchase as restorePurchaseCommand,
   resumeModelDownload,
+  searchSessionHistory as searchSessionHistoryCommand,
+  setActiveDomainPacks as setActiveDomainPacksCommand,
   setDiagnosticsOptIn as setDiagnosticsOptInCommand,
+  setAppProfileOverrides as setAppProfileOverridesCommand,
+  setCodeModeSettings as setCodeModeSettingsCommand,
+  setFormatProfile as setFormatProfileCommand,
+  setProPostProcessingEnabled as setProPostProcessingEnabledCommand,
   runAudioQualityDiagnostic as runAudioQualityDiagnosticCommand,
   runModelBenchmark,
   setActiveModel,
   setHistoryRetention,
+  setOwnerDeviceOverride as setOwnerDeviceOverrideCommand,
   startMicLevelMonitor,
+  startProCheckout as startProCheckoutCommand,
   stopMicLevelMonitor,
+  stopDictation as stopDictationCommand,
   startDictation,
+  tagSession as tagSessionCommand,
+  toggleStarSession as toggleStarSessionCommand,
   triggerHotkeyAction,
   undoLastInsertion,
-  exportDiagnosticsBundle as exportDiagnosticsBundleCommand,
   updateHotkeyConfig,
   updateSettings
 } from "../lib/tauri";
 import type {
+  AppProfileOverrides,
+  CodeModeSettings,
+  DomainPackId,
+  EntitlementSnapshot,
   AudioQualityReport,
   BenchmarkRun,
   DecodeMode,
@@ -70,8 +89,12 @@ import type {
   ModelStatus,
   MicLevelEvent,
   PermissionSnapshot,
+  ProFeatureId,
   RecentInsertion,
   RetentionPolicy,
+  FormatProfile,
+  HistoryExportPreset,
+  HistoryExportResult,
   SessionHistoryRecord,
   LatencyBreakdownEvent,
   VoiceWaveHudState,
@@ -104,7 +127,23 @@ const fallbackSettings: VoiceWaveSettings = {
   diagnosticsOptIn: false,
   toggleHotkey: "Ctrl+Alt+X",
   pushToTalkHotkey: "Ctrl+Windows",
-  preferClipboardFallback: false
+  preferClipboardFallback: false,
+  formatProfile: "default",
+  activeDomainPacks: [],
+  appProfileOverrides: {
+    activeTarget: "editor",
+    editor: { punctuationAggressiveness: 2, sentenceCompactness: 1, autoListFormatting: true },
+    browser: { punctuationAggressiveness: 1, sentenceCompactness: 1, autoListFormatting: false },
+    collab: { punctuationAggressiveness: 1, sentenceCompactness: 2, autoListFormatting: true },
+    desktop: { punctuationAggressiveness: 1, sentenceCompactness: 1, autoListFormatting: false }
+  },
+  codeMode: {
+    enabled: false,
+    spokenSymbols: true,
+    preferredCasing: "preserve",
+    wrapInFencedBlock: false
+  },
+  proPostProcessingEnabled: false
 };
 
 const fallbackSnapshot: VoiceWaveSnapshot = {
@@ -136,6 +175,25 @@ const fallbackDiagnosticsStatus: DiagnosticsStatus = {
   lastExportPath: null,
   lastExportedAtUtcMs: null,
   watchdogRecoveryCount: 0
+};
+
+const fallbackEntitlement: EntitlementSnapshot = {
+  tier: "free",
+  status: "free",
+  isPro: false,
+  isOwnerOverride: false,
+  expiresAtUtcMs: null,
+  graceUntilUtcMs: null,
+  lastRefreshedAtUtcMs: 0,
+  plan: {
+    basePriceUsdMonthly: 4,
+    launchPriceUsdMonthly: 1.5,
+    launchMonths: 3,
+    displayBasePrice: "$4/mo",
+    displayLaunchPrice: "$1.50/mo",
+    offerCopy: "Launch offer: first 3 months at $1.50, then $4/month"
+  },
+  message: null
 };
 
 const fallbackModelCatalog: ModelCatalogItem[] = [
@@ -311,6 +369,11 @@ function normalizeSettings(settings: VoiceWaveSettings): VoiceWaveSettings {
     releaseTailMs: clampReleaseTailMs(settings.releaseTailMs ?? DEFAULT_RELEASE_TAIL_MS),
     decodeMode: settings.decodeMode ?? DEFAULT_DECODE_MODE,
     diagnosticsOptIn: settings.diagnosticsOptIn ?? false,
+    formatProfile: settings.formatProfile ?? "default",
+    activeDomainPacks: settings.activeDomainPacks ?? [],
+    appProfileOverrides: settings.appProfileOverrides ?? fallbackSettings.appProfileOverrides,
+    codeMode: settings.codeMode ?? fallbackSettings.codeMode,
+    proPostProcessingEnabled: settings.proPostProcessingEnabled ?? false,
     toggleHotkey: LOCKED_TOGGLE_HOTKEY,
     pushToTalkHotkey: LOCKED_PUSH_TO_TALK_HOTKEY
   };
@@ -374,6 +437,25 @@ function deriveModelStatuses(
   return next;
 }
 
+function parseProRequiredFeature(error: unknown): ProFeatureId | null {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const marker = "PRO_REQUIRED:";
+  const idx = message.indexOf(marker);
+  if (idx < 0) {
+    return null;
+  }
+  const feature = message.slice(idx + marker.length).trim();
+  const allowed: ProFeatureId[] = [
+    "format_profile",
+    "domain_packs",
+    "app_profiles",
+    "code_mode",
+    "post_processing",
+    "advanced_history"
+  ];
+  return allowed.includes(feature as ProFeatureId) ? (feature as ProFeatureId) : null;
+}
+
 export function useVoiceWave() {
   const [snapshot, setSnapshot] = useState<VoiceWaveSnapshot>(fallbackSnapshot);
   const [settings, setSettings] = useState<VoiceWaveSettings>(fallbackSettings);
@@ -388,6 +470,8 @@ export function useVoiceWave() {
     useState<DiagnosticsStatus>(fallbackDiagnosticsStatus);
   const [lastDiagnosticsExport, setLastDiagnosticsExport] =
     useState<DiagnosticsExportResult | null>(null);
+  const [entitlement, setEntitlement] = useState<EntitlementSnapshot>(fallbackEntitlement);
+  const [lastHistoryExport, setLastHistoryExport] = useState<HistoryExportResult | null>(null);
   const [recentInsertions, setRecentInsertions] = useState<RecentInsertion[]>([]);
   const [lastInsertion, setLastInsertion] = useState<InsertResult | null>(null);
   const [lastHotkeyEvent, setLastHotkeyEvent] = useState<HotkeyEvent | null>(null);
@@ -453,6 +537,92 @@ export function useVoiceWave() {
       setError(deviceErr instanceof Error ? deviceErr.message : "Failed to list input devices");
     }
   }, [tauriAvailable]);
+
+  const refreshEntitlement = useCallback(async () => {
+    if (!tauriAvailable) {
+      setEntitlement(fallbackEntitlement);
+      return fallbackEntitlement;
+    }
+    try {
+      const snapshot = await refreshEntitlementCommand();
+      setEntitlement(snapshot);
+      return snapshot;
+    } catch (entitlementErr) {
+      setError(entitlementErr instanceof Error ? entitlementErr.message : "Failed to refresh entitlement.");
+      return entitlement;
+    }
+  }, [entitlement, tauriAvailable]);
+
+  const canUseFeature = useCallback(
+    (_featureId: ProFeatureId): boolean => {
+      return entitlement.isPro;
+    },
+    [entitlement.isPro]
+  );
+
+  const startProCheckoutAction = useCallback(async () => {
+    try {
+      const launch = tauriAvailable
+        ? await startProCheckoutCommand()
+        : { url: "", launched: false, message: "Checkout is disabled in web fallback mode." };
+      await refreshEntitlement();
+      return launch;
+    } catch (checkoutErr) {
+      setError(checkoutErr instanceof Error ? checkoutErr.message : "Failed to start checkout.");
+      throw checkoutErr;
+    }
+  }, [refreshEntitlement, tauriAvailable]);
+
+  const restoreProPurchase = useCallback(async () => {
+    if (!tauriAvailable) {
+      return fallbackEntitlement;
+    }
+    try {
+      const snapshot = await restorePurchaseCommand();
+      setEntitlement(snapshot);
+      return snapshot;
+    } catch (restoreErr) {
+      setError(restoreErr instanceof Error ? restoreErr.message : "Failed to restore purchase.");
+      throw restoreErr;
+    }
+  }, [tauriAvailable]);
+
+  const openProBillingPortal = useCallback(async () => {
+    try {
+      const launch = tauriAvailable
+        ? await openBillingPortal()
+        : { url: "", launched: false, message: "Billing portal is disabled in web fallback mode." };
+      return launch;
+    } catch (portalErr) {
+      setError(portalErr instanceof Error ? portalErr.message : "Failed to open billing portal.");
+      throw portalErr;
+    }
+  }, [tauriAvailable]);
+
+  const setOwnerOverride = useCallback(
+    async (enabled: boolean, passphrase: string) => {
+      if (!tauriAvailable) {
+        const next: EntitlementSnapshot = {
+          ...fallbackEntitlement,
+          isPro: true,
+          isOwnerOverride: true,
+          tier: "pro",
+          status: "owner_override"
+        };
+        setEntitlement(next);
+        return next;
+      }
+      try {
+        const snapshot = await setOwnerDeviceOverrideCommand(enabled, passphrase);
+        setEntitlement(snapshot);
+        return snapshot;
+      } catch (ownerErr) {
+        setError(ownerErr instanceof Error ? ownerErr.message : "Owner override failed.");
+        throw ownerErr;
+      }
+    },
+    [tauriAvailable]
+  );
 
   const refreshPhase3Data = useCallback(async (activeModelOverride?: string) => {
     if (!tauriAvailable) {
@@ -736,6 +906,103 @@ export function useVoiceWave() {
       }
     },
     [settings, tauriAvailable]
+  );
+
+  const setFormatProfile = useCallback(
+    async (profile: FormatProfile) => {
+      setSettings((prev) => ({ ...prev, formatProfile: profile }));
+      if (!tauriAvailable) {
+        return;
+      }
+      try {
+        setSettings(normalizeSettings(await setFormatProfileCommand(profile)));
+      } catch (persistErr) {
+        if (parseProRequiredFeature(persistErr)) {
+          setError("PRO_REQUIRED:format_profile");
+          return;
+        }
+        setError(persistErr instanceof Error ? persistErr.message : "Failed to save format profile.");
+      }
+    },
+    [tauriAvailable]
+  );
+
+  const setDomainPacks = useCallback(
+    async (packs: DomainPackId[]) => {
+      setSettings((prev) => ({ ...prev, activeDomainPacks: packs }));
+      if (!tauriAvailable) {
+        return;
+      }
+      try {
+        setSettings(normalizeSettings(await setActiveDomainPacksCommand(packs)));
+      } catch (persistErr) {
+        if (parseProRequiredFeature(persistErr)) {
+          setError("PRO_REQUIRED:domain_packs");
+          return;
+        }
+        setError(persistErr instanceof Error ? persistErr.message : "Failed to save domain packs.");
+      }
+    },
+    [tauriAvailable]
+  );
+
+  const setAppProfiles = useCallback(
+    async (overrides: AppProfileOverrides) => {
+      setSettings((prev) => ({ ...prev, appProfileOverrides: overrides }));
+      if (!tauriAvailable) {
+        return;
+      }
+      try {
+        setSettings(normalizeSettings(await setAppProfileOverridesCommand(overrides)));
+      } catch (persistErr) {
+        if (parseProRequiredFeature(persistErr)) {
+          setError("PRO_REQUIRED:app_profiles");
+          return;
+        }
+        setError(persistErr instanceof Error ? persistErr.message : "Failed to save app profiles.");
+      }
+    },
+    [tauriAvailable]
+  );
+
+  const setCodeModeSettings = useCallback(
+    async (codeMode: CodeModeSettings) => {
+      setSettings((prev) => ({ ...prev, codeMode }));
+      if (!tauriAvailable) {
+        return;
+      }
+      try {
+        setSettings(normalizeSettings(await setCodeModeSettingsCommand(codeMode)));
+      } catch (persistErr) {
+        if (parseProRequiredFeature(persistErr)) {
+          setError("PRO_REQUIRED:code_mode");
+          return;
+        }
+        setError(persistErr instanceof Error ? persistErr.message : "Failed to save code mode.");
+      }
+    },
+    [tauriAvailable]
+  );
+
+  const setProPostProcessingEnabled = useCallback(
+    async (enabled: boolean) => {
+      setSettings((prev) => ({ ...prev, proPostProcessingEnabled: enabled }));
+      if (!tauriAvailable) {
+        return;
+      }
+      try {
+        setSettings(normalizeSettings(await setProPostProcessingEnabledCommand(enabled)));
+      } catch (persistErr) {
+        if (parseProRequiredFeature(persistErr)) {
+          setError("PRO_REQUIRED:post_processing");
+          return;
+        }
+        setError(
+          persistErr instanceof Error ? persistErr.message : "Failed to save post-processing setting."
+        );
+      }
+    },
+    [tauriAvailable]
   );
 
   const setInputDevice = useCallback(
@@ -1147,6 +1414,116 @@ export function useVoiceWave() {
     }
   }, [refreshPhase3Data, tauriAvailable]);
 
+  const searchHistory = useCallback(
+    async (query: string, tags?: string[] | null, starred?: boolean | null) => {
+      if (!tauriAvailable) {
+        const localQuery = query.trim().toLowerCase();
+        const filtered = sessionHistory.filter((row) => {
+          const textMatch =
+            localQuery.length === 0 ||
+            row.preview.toLowerCase().includes(localQuery) ||
+            row.source.toLowerCase().includes(localQuery);
+          const tagMatch =
+            !tags || tags.length === 0
+              ? true
+              : tags.every((tag) => row.tags.some((existing) => existing.toLowerCase() === tag.toLowerCase()));
+          const starMatch = starred == null ? true : row.starred === starred;
+          return textMatch && tagMatch && starMatch;
+        });
+        setSessionHistory(filtered);
+        return filtered;
+      }
+      try {
+        const rows = await searchSessionHistoryCommand(query, tags, starred);
+        setSessionHistory(rows);
+        return rows;
+      } catch (historyErr) {
+        if (parseProRequiredFeature(historyErr)) {
+          setError("PRO_REQUIRED:advanced_history");
+          return [];
+        }
+        setError(historyErr instanceof Error ? historyErr.message : "Failed to search history.");
+        return [];
+      }
+    },
+    [sessionHistory, tauriAvailable]
+  );
+
+  const addSessionTag = useCallback(
+    async (recordId: string, tag: string) => {
+      if (!tauriAvailable) {
+        setSessionHistory((prev) =>
+          prev.map((row) =>
+            row.recordId === recordId && !row.tags.includes(tag)
+              ? { ...row, tags: [...row.tags, tag] }
+              : row
+          )
+        );
+        return;
+      }
+      try {
+        const updated = await tagSessionCommand(recordId, tag);
+        setSessionHistory((prev) => prev.map((row) => (row.recordId === recordId ? updated : row)));
+      } catch (historyErr) {
+        if (parseProRequiredFeature(historyErr)) {
+          setError("PRO_REQUIRED:advanced_history");
+          return;
+        }
+        setError(historyErr instanceof Error ? historyErr.message : "Failed to tag session.");
+      }
+    },
+    [tauriAvailable]
+  );
+
+  const setSessionStarred = useCallback(
+    async (recordId: string, starred: boolean) => {
+      if (!tauriAvailable) {
+        setSessionHistory((prev) =>
+          prev.map((row) => (row.recordId === recordId ? { ...row, starred } : row))
+        );
+        return;
+      }
+      try {
+        const updated = await toggleStarSessionCommand(recordId, starred);
+        setSessionHistory((prev) => prev.map((row) => (row.recordId === recordId ? updated : row)));
+      } catch (historyErr) {
+        if (parseProRequiredFeature(historyErr)) {
+          setError("PRO_REQUIRED:advanced_history");
+          return;
+        }
+        setError(historyErr instanceof Error ? historyErr.message : "Failed to star session.");
+      }
+    },
+    [tauriAvailable]
+  );
+
+  const exportHistoryPreset = useCallback(
+    async (preset: HistoryExportPreset) => {
+      if (!tauriAvailable) {
+        const fallback: HistoryExportResult = {
+          preset,
+          recordCount: sessionHistory.length,
+          content: sessionHistory.map((row) => row.preview).join("\n")
+        };
+        setLastHistoryExport(fallback);
+        return fallback;
+      }
+      try {
+        const result = await exportSessionHistoryPreset(preset);
+        setLastHistoryExport(result);
+        return result;
+      } catch (historyErr) {
+        if (parseProRequiredFeature(historyErr)) {
+          setError("PRO_REQUIRED:advanced_history");
+          return null;
+        }
+        setError(historyErr instanceof Error ? historyErr.message : "Failed to export history.");
+        return null;
+      }
+    },
+    [sessionHistory, tauriAvailable]
+  );
+
   const approveDictionaryQueueEntry = useCallback(async (entryId: string, normalizedText?: string) => {
     if (!tauriAvailable) {
       const item = dictionaryQueue.find((entry) => entry.entryId === entryId);
@@ -1201,9 +1578,12 @@ export function useVoiceWave() {
           method: "clipboardOnly",
           success: true,
           source: "insertion",
-          message: "Web-mode simulation"
+          message: "Web-mode simulation",
+          tags: [],
+          starred: false
         }
       ]);
+      setEntitlement(fallbackEntitlement);
       setDictionaryQueue([{ entryId: "dq-web-1", term: "VoiceWave", sourcePreview: "Prototype note", createdAtUtcMs: Date.now() - 5000 }]);
       setDictionaryTerms([{ termId: "dt-web-1", term: "whisper.cpp", source: "seed", createdAtUtcMs: Date.now() - 20000 }]);
       return;
@@ -1228,7 +1608,8 @@ export function useVoiceWave() {
           permissionSnapshot,
           insertionRows,
           devices,
-          diagnostics
+          diagnostics,
+          entitlementSnapshot
         ] = await Promise.all([
           loadSnapshot(),
           loadSettings(),
@@ -1236,7 +1617,8 @@ export function useVoiceWave() {
           getPermissionSnapshot(),
           getRecentInsertions(8),
           listInputDevices(),
-          getDiagnosticsStatus()
+          getDiagnosticsStatus(),
+          getEntitlementSnapshot()
         ]);
         const safeLoadedSettings = normalizeSettings({
           ...loadedSettings,
@@ -1249,6 +1631,7 @@ export function useVoiceWave() {
         setPermissions(permissionSnapshot);
         setRecentInsertions(insertionRows);
         setInputDevices(devices);
+        setEntitlement(entitlementSnapshot);
         await refreshPhase3Data(safeLoadedSettings.activeModel);
       } catch (loadErr) {
         setError(loadErr instanceof Error ? loadErr.message : "Failed to initialize VoiceWave runtime.");
@@ -1561,6 +1944,12 @@ export function useVoiceWave() {
   ]);
 
   const activeState: VoiceWaveHudState = useMemo(() => snapshot.state, [snapshot.state]);
+  const isPro = useMemo(() => entitlement.isPro, [entitlement.isPro]);
+  const isOwnerOverride = useMemo(
+    () => entitlement.isOwnerOverride,
+    [entitlement.isOwnerOverride]
+  );
+  const proRequiredFeature = useMemo(() => parseProRequiredFeature(error), [error]);
   const micQualityWarning = useMemo<MicQualityWarning | null>(() => {
     const selectedInput = settings.inputDevice;
     if (!selectedInput || !isLikelyLowQualityMic(selectedInput)) {
@@ -1594,6 +1983,11 @@ export function useVoiceWave() {
     lastLatency,
     diagnosticsStatus,
     lastDiagnosticsExport,
+    entitlement,
+    isPro,
+    isOwnerOverride,
+    proRequiredFeature,
+    lastHistoryExport,
     recentInsertions,
     lastInsertion,
     lastHotkeyEvent,
@@ -1621,6 +2015,11 @@ export function useVoiceWave() {
     setMaxUtteranceMs,
     setReleaseTailMs,
     setDecodeMode,
+    setFormatProfile,
+    setDomainPacks,
+    setAppProfiles,
+    setCodeModeSettings,
+    setProPostProcessingEnabled,
     setDiagnosticsOptIn,
     exportDiagnosticsBundle,
     recommendedVadThreshold: RECOMMENDED_VAD_THRESHOLD,
@@ -1637,11 +2036,21 @@ export function useVoiceWave() {
     makeModelActive,
     runBenchmarkAndRecommend,
     updateRetentionPolicy,
+    searchHistory,
+    addSessionTag,
+    setSessionStarred,
+    exportHistoryPreset,
     pruneHistory,
     clearSessionHistory,
     approveDictionaryQueueEntry,
     rejectDictionaryQueueEntry,
     deleteDictionaryTerm,
+    canUseFeature,
+    startProCheckout: startProCheckoutAction,
+    refreshEntitlement,
+    restorePurchase: restoreProPurchase,
+    openBillingPortal: openProBillingPortal,
+    setOwnerOverride,
     refreshPhase3Data,
     refreshInputDevices
   };

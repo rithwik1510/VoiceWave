@@ -3,11 +3,17 @@ import type {
   AudioQualityReport,
   BenchmarkRequest,
   BenchmarkRun,
+  CheckoutLaunchResult,
+  CodeModeSettings,
+  DomainPackId,
   DiagnosticsExportResult,
   DiagnosticsStatus,
   DictionaryQueueItem,
   DictionaryTerm,
   DictationMode,
+  AppProfileOverrides,
+  EntitlementSnapshot,
+  FormatProfile,
   HotkeyAction,
   HotkeyConfig,
   HotkeyEvent,
@@ -27,6 +33,8 @@ import type {
   RecentInsertion,
   RecommendationConstraints,
   RetentionPolicy,
+  HistoryExportPreset,
+  HistoryExportResult,
   SessionHistoryQuery,
   SessionHistoryRecord,
   TranscriptEvent,
@@ -161,8 +169,64 @@ export async function loadSettings(): Promise<VoiceWaveSettings> {
   return invokeVoicewave<VoiceWaveSettings>("load_settings");
 }
 
+export async function getEntitlementSnapshot(): Promise<EntitlementSnapshot> {
+  return invokeVoicewave<EntitlementSnapshot>("get_entitlement_snapshot");
+}
+
+export async function startProCheckout(): Promise<CheckoutLaunchResult> {
+  return invokeVoicewave<CheckoutLaunchResult>("start_pro_checkout");
+}
+
+export async function refreshEntitlement(): Promise<EntitlementSnapshot> {
+  return invokeVoicewave<EntitlementSnapshot>("refresh_entitlement");
+}
+
+export async function restorePurchase(): Promise<EntitlementSnapshot> {
+  return invokeVoicewave<EntitlementSnapshot>("restore_purchase");
+}
+
+export async function openBillingPortal(): Promise<CheckoutLaunchResult> {
+  return invokeVoicewave<CheckoutLaunchResult>("open_billing_portal");
+}
+
+export async function setOwnerDeviceOverride(
+  enabled: boolean,
+  passphrase: string
+): Promise<EntitlementSnapshot> {
+  return invokeVoicewave<EntitlementSnapshot>("set_owner_device_override", {
+    enabled,
+    passphrase
+  });
+}
+
 export async function updateSettings(settings: VoiceWaveSettings): Promise<VoiceWaveSettings> {
   return invokeVoicewave<VoiceWaveSettings>("update_settings", { settings });
+}
+
+export async function setFormatProfile(profile: FormatProfile): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("set_format_profile", { profile });
+}
+
+export async function setActiveDomainPacks(packs: DomainPackId[]): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("set_active_domain_packs", { packs });
+}
+
+export async function setAppProfileOverrides(
+  overrides: AppProfileOverrides
+): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("set_app_profile_overrides", { overrides });
+}
+
+export async function setCodeModeSettings(
+  settings: CodeModeSettings
+): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("set_code_mode_settings", { settings });
+}
+
+export async function setProPostProcessingEnabled(
+  enabled: boolean
+): Promise<VoiceWaveSettings> {
+  return invokeVoicewave<VoiceWaveSettings>("set_pro_post_processing_enabled", { enabled });
 }
 
 export async function getDiagnosticsStatus(): Promise<DiagnosticsStatus> {
@@ -291,6 +355,35 @@ export async function recommendModel(
 
 export async function getSessionHistory(query?: SessionHistoryQuery): Promise<SessionHistoryRecord[]> {
   return invokeVoicewave<SessionHistoryRecord[]>("get_session_history", { query: query ?? null });
+}
+
+export async function searchSessionHistory(
+  query: string,
+  tags?: string[] | null,
+  starred?: boolean | null
+): Promise<SessionHistoryRecord[]> {
+  return invokeVoicewave<SessionHistoryRecord[]>("search_session_history", {
+    query,
+    tags: tags ?? null,
+    starred: starred ?? null
+  });
+}
+
+export async function tagSession(recordId: string, tag: string): Promise<SessionHistoryRecord> {
+  return invokeVoicewave<SessionHistoryRecord>("tag_session", { recordId, tag });
+}
+
+export async function toggleStarSession(
+  recordId: string,
+  starred: boolean
+): Promise<SessionHistoryRecord> {
+  return invokeVoicewave<SessionHistoryRecord>("toggle_star_session", { recordId, starred });
+}
+
+export async function exportSessionHistoryPreset(
+  preset: HistoryExportPreset
+): Promise<HistoryExportResult> {
+  return invokeVoicewave<HistoryExportResult>("export_session_history_preset", { preset });
 }
 
 export async function setHistoryRetention(policy: RetentionPolicy): Promise<RetentionPolicy> {

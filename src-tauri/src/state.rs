@@ -6,13 +6,17 @@ use crate::{
     benchmark::{
         self, BenchmarkRequest, BenchmarkRun, ModelRecommendation, RecommendationConstraints,
     },
+    billing::{
+        BillingError, BillingManager, CheckoutLaunchResult, EntitlementSnapshot, PortalLaunchResult,
+    },
     diagnostics::{
         DiagnosticsError, DiagnosticsExportResult, DiagnosticsManager, DiagnosticsStatus,
         LatencyMetricRecord,
     },
     dictionary::{DictionaryError, DictionaryManager, DictionaryQueueItem, DictionaryTerm},
     history::{
-        HistoryError, HistoryManager, RetentionPolicy, SessionHistoryQuery, SessionHistoryRecord,
+        HistoryError, HistoryExportPreset, HistoryExportResult, HistoryManager, RetentionPolicy,
+        SessionHistoryQuery, SessionHistoryRecord,
     },
     hotkey::{HotkeyAction, HotkeyConfig, HotkeyError, HotkeyManager, HotkeyPhase, HotkeySnapshot},
     inference::{
@@ -31,10 +35,14 @@ use crate::{
     permissions::{MicrophonePermission, PermissionManager, PermissionSnapshot},
     phase1,
     settings::{
-        normalize_hotkey_bindings, DecodeMode, SettingsError, SettingsStore, VoiceWaveSettings,
-        LOCKED_PUSH_TO_TALK_HOTKEY, LOCKED_TOGGLE_HOTKEY,
+        normalize_hotkey_bindings, normalize_pro_settings, AppProfileBehavior, AppProfileOverrides,
+        AppTargetClass, CodeModeSettings, DecodeMode, DomainPackId, FormatProfile, SettingsError,
+        SettingsStore, VoiceWaveSettings, LOCKED_PUSH_TO_TALK_HOTKEY, LOCKED_TOGGLE_HOTKEY,
     },
-    transcript::{merge_incremental_transcript, sanitize_user_transcript},
+    transcript::{
+        finalize_pro_transcript, merge_incremental_transcript, sanitize_user_transcript,
+        ProTranscriptOptions,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -169,8 +177,12 @@ pub enum ControllerError {
     History(#[from] HistoryError),
     #[error("dictionary error: {0}")]
     Dictionary(#[from] DictionaryError),
+    #[error("billing error: {0}")]
+    Billing(#[from] BillingError),
     #[error("diagnostics error: {0}")]
     Diagnostics(#[from] DiagnosticsError),
+    #[error("PRO_REQUIRED:{0}")]
+    ProRequired(String),
     #[error("model not found: {0}")]
     MissingModel(String),
     #[error("benchmark results unavailable")]
@@ -512,6 +524,7 @@ pub struct VoiceWaveController {
     permission_manager: Mutex<PermissionManager>,
     insertion_engine: Mutex<InsertionEngine>,
     history_manager: Arc<Mutex<HistoryManager>>,
+    billing_manager: Arc<Mutex<BillingManager>>,
     model_manager: Mutex<crate::model_manager::ModelManager>,
     dictionary_manager: Arc<Mutex<DictionaryManager>>,
     benchmark_results: Mutex<Option<BenchmarkRun>>,
@@ -541,6 +554,7 @@ impl VoiceWaveController {
         let previous_toggle_hotkey = settings.toggle_hotkey.clone();
         let previous_push_to_talk_hotkey = settings.push_to_talk_hotkey.clone();
         normalize_hotkey_bindings(&mut settings);
+        normalize_pro_settings(&mut settings);
         let mut settings_changed = false;
         if (clamped_vad - settings.vad_threshold).abs() > f32::EPSILON {
             settings.vad_threshold = clamped_vad;
@@ -579,6 +593,7 @@ impl VoiceWaveController {
         };
         let permission_manager = PermissionManager::new(&audio);
         let history_manager = HistoryManager::new()?;
+        let billing_manager = BillingManager::new()?;
         let model_manager = crate::model_manager::ModelManager::new()?;
         let dictionary_manager = DictionaryManager::new()?;
         let diagnostics_manager = DiagnosticsManager::new()?;
@@ -606,6 +621,7 @@ impl VoiceWaveController {
             permission_manager: Mutex::new(permission_manager),
             insertion_engine: Mutex::new(InsertionEngine::default()),
             history_manager: Arc::new(Mutex::new(history_manager)),
+            billing_manager: Arc::new(Mutex::new(billing_manager)),
             model_manager: Mutex::new(model_manager),
             dictionary_manager: Arc::new(Mutex::new(dictionary_manager)),
             benchmark_results: Mutex::new(None),
@@ -640,6 +656,7 @@ impl VoiceWaveController {
         settings.max_utterance_ms = clamp_max_utterance_ms(settings.max_utterance_ms);
         settings.release_tail_ms = clamp_release_tail_ms(settings.release_tail_ms);
         normalize_hotkey_bindings(&mut settings);
+        normalize_pro_settings(&mut settings);
         self.settings_store.save(&settings)?;
         {
             let mut current = self.settings.lock().await;
@@ -669,6 +686,97 @@ impl VoiceWaveController {
         }
 
         Ok(settings)
+    }
+
+    pub async fn get_entitlement_snapshot(&self) -> Result<EntitlementSnapshot, ControllerError> {
+        Ok(self.billing_manager.lock().await.snapshot())
+    }
+
+    pub async fn start_pro_checkout(&self) -> Result<CheckoutLaunchResult, ControllerError> {
+        Ok(self.billing_manager.lock().await.start_checkout())
+    }
+
+    pub async fn refresh_entitlement(&self) -> Result<EntitlementSnapshot, ControllerError> {
+        self.billing_manager
+            .lock()
+            .await
+            .refresh_entitlement()
+            .map_err(ControllerError::from)
+    }
+
+    pub async fn restore_purchase(&self) -> Result<EntitlementSnapshot, ControllerError> {
+        self.billing_manager
+            .lock()
+            .await
+            .restore_purchase()
+            .map_err(ControllerError::from)
+    }
+
+    pub async fn open_billing_portal(&self) -> Result<PortalLaunchResult, ControllerError> {
+        Ok(self.billing_manager.lock().await.open_billing_portal())
+    }
+
+    pub async fn set_owner_device_override(
+        &self,
+        enabled: bool,
+        passphrase: String,
+    ) -> Result<EntitlementSnapshot, ControllerError> {
+        self.billing_manager
+            .lock()
+            .await
+            .set_owner_override(enabled, &passphrase)
+            .map_err(ControllerError::from)
+    }
+
+    pub async fn set_format_profile(
+        &self,
+        profile: FormatProfile,
+    ) -> Result<VoiceWaveSettings, ControllerError> {
+        self.ensure_pro_feature("format_profile").await?;
+        let mut settings = self.settings.lock().await.clone();
+        settings.format_profile = profile;
+        settings.pro_post_processing_enabled = true;
+        self.update_settings(settings).await
+    }
+
+    pub async fn set_active_domain_packs(
+        &self,
+        packs: Vec<DomainPackId>,
+    ) -> Result<VoiceWaveSettings, ControllerError> {
+        self.ensure_pro_feature("domain_packs").await?;
+        let mut settings = self.settings.lock().await.clone();
+        settings.active_domain_packs = packs;
+        self.update_settings(settings).await
+    }
+
+    pub async fn set_app_profile_overrides(
+        &self,
+        overrides: AppProfileOverrides,
+    ) -> Result<VoiceWaveSettings, ControllerError> {
+        self.ensure_pro_feature("app_profiles").await?;
+        let mut settings = self.settings.lock().await.clone();
+        settings.app_profile_overrides = overrides;
+        self.update_settings(settings).await
+    }
+
+    pub async fn set_code_mode_settings(
+        &self,
+        code_mode: CodeModeSettings,
+    ) -> Result<VoiceWaveSettings, ControllerError> {
+        self.ensure_pro_feature("code_mode").await?;
+        let mut settings = self.settings.lock().await.clone();
+        settings.code_mode = code_mode;
+        self.update_settings(settings).await
+    }
+
+    pub async fn set_pro_post_processing_enabled(
+        &self,
+        enabled: bool,
+    ) -> Result<VoiceWaveSettings, ControllerError> {
+        self.ensure_pro_feature("post_processing").await?;
+        let mut settings = self.settings.lock().await.clone();
+        settings.pro_post_processing_enabled = enabled;
+        self.update_settings(settings).await
     }
 
     pub async fn start_dictation(
@@ -1867,6 +1975,60 @@ impl VoiceWaveController {
         self.history_manager.lock().await.get_records(query)
     }
 
+    pub async fn search_session_history(
+        &self,
+        query: String,
+        tags: Option<Vec<String>>,
+        starred: Option<bool>,
+    ) -> Result<Vec<SessionHistoryRecord>, ControllerError> {
+        self.ensure_pro_feature("advanced_history").await?;
+        Ok(self.history_manager.lock().await.get_records(SessionHistoryQuery {
+            limit: Some(100),
+            include_failed: Some(true),
+            search_query: Some(query),
+            tags,
+            starred,
+        }))
+    }
+
+    pub async fn tag_session(
+        &self,
+        record_id: String,
+        tag: String,
+    ) -> Result<SessionHistoryRecord, ControllerError> {
+        self.ensure_pro_feature("advanced_history").await?;
+        self.history_manager
+            .lock()
+            .await
+            .tag_record(&record_id, &tag)
+            .map_err(ControllerError::from)
+    }
+
+    pub async fn toggle_star_session(
+        &self,
+        record_id: String,
+        starred: bool,
+    ) -> Result<SessionHistoryRecord, ControllerError> {
+        self.ensure_pro_feature("advanced_history").await?;
+        self.history_manager
+            .lock()
+            .await
+            .toggle_star_record(&record_id, starred)
+            .map_err(ControllerError::from)
+    }
+
+    pub async fn export_session_history_preset(
+        &self,
+        preset: HistoryExportPreset,
+    ) -> Result<HistoryExportResult, ControllerError> {
+        self.ensure_pro_feature("advanced_history").await?;
+        Ok(self
+            .history_manager
+            .lock()
+            .await
+            .export_preset(preset, SessionHistoryQuery::default()))
+    }
+
     pub async fn set_history_retention(
         &self,
         _app: AppHandle,
@@ -1939,6 +2101,24 @@ impl VoiceWaveController {
             .await
             .remove_term(&term_id)
             .map_err(ControllerError::from)
+    }
+
+    async fn ensure_pro_feature(&self, feature_key: &str) -> Result<(), ControllerError> {
+        let entitlement = self.billing_manager.lock().await.snapshot();
+        if entitlement.is_pro {
+            Ok(())
+        } else {
+            Err(ControllerError::ProRequired(feature_key.to_string()))
+        }
+    }
+
+    fn active_profile_behavior(settings: &VoiceWaveSettings) -> AppProfileBehavior {
+        match settings.app_profile_overrides.active_target {
+            AppTargetClass::Editor => settings.app_profile_overrides.editor.clone(),
+            AppTargetClass::Browser => settings.app_profile_overrides.browser.clone(),
+            AppTargetClass::Collab => settings.app_profile_overrides.collab.clone(),
+            AppTargetClass::Desktop => settings.app_profile_overrides.desktop.clone(),
+        }
     }
 
     async fn run_dictation_flow(
@@ -2379,7 +2559,31 @@ impl VoiceWaveController {
         } else {
             finalize_text.clone()
         };
-        let final_transcript = sanitize_user_transcript(&merged_transcript);
+        let baseline_transcript = sanitize_user_transcript(&merged_transcript);
+        let mut final_transcript = baseline_transcript.clone();
+        let entitlement = self.billing_manager.lock().await.snapshot();
+        if entitlement.is_pro {
+            let custom_terms = self
+                .dictionary_manager
+                .lock()
+                .await
+                .get_terms(None)
+                .into_iter()
+                .map(|row| row.term)
+                .collect::<Vec<_>>();
+            let app_profile_behavior = Self::active_profile_behavior(&settings);
+            final_transcript = finalize_pro_transcript(
+                &merged_transcript,
+                &ProTranscriptOptions {
+                    format_profile: settings.format_profile,
+                    domain_packs: &settings.active_domain_packs,
+                    code_mode: &settings.code_mode,
+                    post_processing_enabled: settings.pro_post_processing_enabled,
+                    app_profile_behavior: &app_profile_behavior,
+                    custom_terms: &custom_terms,
+                },
+            );
+        }
         let (asr_integrity_percent, asr_raw_word_count, asr_final_word_count) =
             asr_integrity_metrics(&finalize_text, &final_transcript);
 

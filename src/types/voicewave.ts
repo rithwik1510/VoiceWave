@@ -7,6 +7,31 @@ export type VoiceWaveHudState =
 
 export type DictationMode = "microphone" | "fixture";
 export type DecodeMode = "balanced" | "fast" | "quality";
+export type FormatProfile = "default" | "academic" | "technical" | "concise" | "code-doc";
+export type DomainPackId = "coding" | "student" | "productivity";
+export type AppTargetClass = "editor" | "browser" | "collab" | "desktop";
+export type CodeCasingStyle = "preserve" | "camelCase" | "snakeCase" | "pascalCase";
+
+export interface AppProfileBehavior {
+  punctuationAggressiveness: number;
+  sentenceCompactness: number;
+  autoListFormatting: boolean;
+}
+
+export interface AppProfileOverrides {
+  activeTarget: AppTargetClass;
+  editor: AppProfileBehavior;
+  browser: AppProfileBehavior;
+  collab: AppProfileBehavior;
+  desktop: AppProfileBehavior;
+}
+
+export interface CodeModeSettings {
+  enabled: boolean;
+  spokenSymbols: boolean;
+  preferredCasing: CodeCasingStyle;
+  wrapInFencedBlock: boolean;
+}
 
 export interface VoiceWaveSettings {
   inputDevice: string | null;
@@ -20,6 +45,11 @@ export interface VoiceWaveSettings {
   toggleHotkey: string;
   pushToTalkHotkey: string;
   preferClipboardFallback: boolean;
+  formatProfile: FormatProfile;
+  activeDomainPacks: DomainPackId[];
+  appProfileOverrides: AppProfileOverrides;
+  codeMode: CodeModeSettings;
+  proPostProcessingEnabled: boolean;
 }
 
 export interface VoiceWaveSnapshot {
@@ -281,6 +311,9 @@ export type RetentionPolicy = "off" | "days7" | "days30" | "forever";
 export interface SessionHistoryQuery {
   limit?: number | null;
   includeFailed?: boolean | null;
+  searchQuery?: string | null;
+  tags?: string[] | null;
+  starred?: boolean | null;
 }
 
 export interface SessionHistoryRecord {
@@ -291,6 +324,16 @@ export interface SessionHistoryRecord {
   success: boolean;
   source: string;
   message?: string | null;
+  tags: string[];
+  starred: boolean;
+}
+
+export type HistoryExportPreset = "plain" | "markdownNotes" | "studySummary";
+
+export interface HistoryExportResult {
+  preset: HistoryExportPreset;
+  recordCount: number;
+  content: string;
 }
 
 export interface DictionaryQueueItem {
@@ -305,4 +348,59 @@ export interface DictionaryTerm {
   term: string;
   source: string;
   createdAtUtcMs: number;
+}
+
+export type EntitlementTier = "free" | "pro";
+export type EntitlementStatus =
+  | "free"
+  | "pro_active"
+  | "grace"
+  | "expired"
+  | "owner_override";
+
+export interface BillingPlanDisplay {
+  basePriceUsdMonthly: number;
+  launchPriceUsdMonthly: number;
+  launchMonths: number;
+  displayBasePrice: string;
+  displayLaunchPrice: string;
+  offerCopy: string;
+}
+
+export interface EntitlementSnapshot {
+  tier: EntitlementTier;
+  status: EntitlementStatus;
+  isPro: boolean;
+  isOwnerOverride: boolean;
+  expiresAtUtcMs?: number | null;
+  graceUntilUtcMs?: number | null;
+  lastRefreshedAtUtcMs: number;
+  plan: BillingPlanDisplay;
+  message?: string | null;
+}
+
+export interface CheckoutLaunchResult {
+  url: string;
+  launched: boolean;
+  message?: string | null;
+}
+
+export interface GateErrorPayload {
+  code: "PRO_REQUIRED";
+  featureId: ProFeatureId;
+  message: string;
+}
+
+export type ProFeatureId =
+  | "format_profile"
+  | "domain_packs"
+  | "app_profiles"
+  | "code_mode"
+  | "post_processing"
+  | "advanced_history";
+
+export interface ProCatalogItem {
+  featureId: ProFeatureId;
+  title: string;
+  summary: string;
 }
