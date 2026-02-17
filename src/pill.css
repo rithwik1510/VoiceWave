@@ -31,8 +31,8 @@ body,
 
 .vw-pill-surface {
   border: 0;
-  width: 42px;
-  height: 16px;
+  width: 52px;
+  height: 20px;
   padding: 0;
   border-radius: 999px;
   position: relative;
@@ -57,15 +57,7 @@ body,
 }
 
 .vw-pill-glow {
-  position: absolute;
-  inset: 1px;
-  border-radius: inherit;
-  background: radial-gradient(
-    120% 120% at 20% 10%,
-    rgba(255, 255, 255, 0.2),
-    rgba(255, 255, 255, 0) 40%
-  );
-  pointer-events: none;
+  display: none;
 }
 
 .vw-pill-core {
@@ -94,14 +86,11 @@ body,
 }
 
 .vw-pill-bar {
-  width: 2px;
-  height: 10px;
+  width: 2.4px;
+  height: 12px;
   border-radius: 999px;
   transform-origin: 50% 100%;
   background: linear-gradient(180deg, var(--vw-brand-blue), var(--vw-brand-lime));
-  box-shadow:
-    0 0 9px rgba(56, 189, 248, 0.45),
-    0 0 13px rgba(163, 230, 53, 0.25);
   transition: transform 42ms linear;
 }
 
@@ -122,8 +111,8 @@ body,
 }
 
 .vw-pill-state-idle .vw-pill-surface {
-  width: 42px;
-  height: 16px;
+  width: 52px;
+  height: 20px;
   box-shadow:
     0 8px 18px rgba(0, 0, 0, 0.3),
     inset 0 0 0 1px rgba(228, 228, 231, 0.2),
@@ -132,31 +121,31 @@ body,
 
 .vw-pill-state-idle .vw-pill-surface:hover,
 .vw-pill-state-idle .vw-pill-surface:focus-visible {
-  width: 76px;
-  height: 26px;
+  width: 90px;
+  height: 32px;
   transform: translateY(-1px);
 }
 
 .vw-pill-state-listening .vw-pill-surface {
-  width: 76px;
-  height: 26px;
+  width: 96px;
+  height: 36px;
   box-shadow:
-    0 12px 26px rgba(0, 0, 0, 0.38),
+    0 14px 30px rgba(0, 0, 0, 0.4),
     inset 0 0 0 1px rgba(228, 228, 231, 0.24),
     inset 0 -9px 18px rgba(9, 9, 11, 0.3);
 }
 
 .vw-pill-state-listening .vw-pill-wave {
   opacity: 1;
-  width: 50px;
+  width: 62px;
   transform: scale(1);
 }
 
 .vw-pill-state-transcribing .vw-pill-surface {
-  width: 68px;
-  height: 24px;
+  width: 82px;
+  height: 30px;
   box-shadow:
-    0 10px 22px rgba(0, 0, 0, 0.36),
+    0 12px 24px rgba(0, 0, 0, 0.38),
     inset 0 0 0 1px rgba(228, 228, 231, 0.22),
     inset 0 -8px 16px rgba(9, 9, 11, 0.28);
 }
@@ -168,18 +157,15 @@ body,
 
 .vw-pill-state-transcribing .vw-pill-spinner {
   opacity: 1;
-  width: 10px;
-  height: 10px;
-  box-shadow:
-    0 0 10px rgba(56, 189, 248, 0.32),
-    0 0 14px rgba(163, 230, 53, 0.22);
+  width: 12px;
+  height: 12px;
   animation: vw-pill-spin 0.8s linear infinite;
 }
 
 .vw-pill-state-inserted .vw-pill-surface,
 .vw-pill-state-error .vw-pill-surface {
-  width: 58px;
-  height: 20px;
+  width: 68px;
+  height: 24px;
 }
 
 .vw-pill-state-inserted .vw-pill-wave,

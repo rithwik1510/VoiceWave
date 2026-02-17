@@ -11,6 +11,9 @@ interface LayoutProps {
   activePopupNav?: string | null;
   setActiveNav: (id: string) => void;
   isRecording: boolean;
+  onUpgradeClick?: () => void;
+  isPro?: boolean;
+  showProTools?: boolean;
 }
 
 export const Layout: React.FC<LayoutProps> = ({
@@ -19,11 +22,17 @@ export const Layout: React.FC<LayoutProps> = ({
   activeNav,
   activePopupNav = null,
   setActiveNav,
-  isRecording
+  isRecording,
+  onUpgradeClick,
+  isPro = false,
+  showProTools = false
 }) => {
   const { colors, typography, shapes } = theme;
   const LogoComponent = theme.logo;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const topNavItems = NAV_ITEMS_TOP.filter(
+    (item) => showProTools || item.id !== "pro-tools"
+  );
 
   const NavButton = ({ item }: { item: { id: string; label: string; icon: React.ComponentType<any> } }) => {
     const isActive = activeNav === item.id || activePopupNav === item.id;
@@ -124,7 +133,7 @@ export const Layout: React.FC<LayoutProps> = ({
         </div>
 
         <nav className={`relative z-50 ${sidebarCollapsed ? "px-2" : "px-4"} space-y-1 flex-shrink-0`}>
-          {NAV_ITEMS_TOP.map((item) => (
+          {topNavItems.map((item) => (
             <NavButton key={item.id} item={item} />
           ))}
         </nav>
@@ -138,6 +147,7 @@ export const Layout: React.FC<LayoutProps> = ({
                 p-5 relative overflow-hidden group
                 ${colors.surface} shadow-sm border ${colors.surfaceBorder}
                 ${shapes.radius}
+                ${isPro ? "vw-pro-sidebar-card" : ""}
               `}
             >
               <div className="absolute -right-2 -top-2 opacity-80 pointer-events-none">
@@ -157,26 +167,67 @@ export const Layout: React.FC<LayoutProps> = ({
                     className="text-[10px] uppercase font-bold px-2 py-0.5 rounded text-[#3F3F46]"
                     style={{
                       backgroundImage:
-                        "linear-gradient(90deg, rgba(56,189,248,0.35) 0%, rgba(163,230,53,0.35) 100%)",
+                        "linear-gradient(90deg, rgba(56,189,248,0.28) 0%, rgba(163,230,53,0.26) 100%)",
                     }}
                   >
-                    PRO
+                    {isPro ? "PRO ACTIVE" : "PRO"}
                   </span>
                 </div>
-                <p className="text-xs opacity-75 mb-4 leading-relaxed">
-                  Unlimited local dictation and advanced export models.
-                </p>
+                {isPro ? (
+                  <>
+                    <p className="text-xs opacity-75 mb-3 leading-relaxed">
+                      Your Pro workspace is unlocked with advanced tools and enhanced UI polish.
+                    </p>
+                    <p className="text-[11px] text-[#52525B] mb-3 leading-relaxed">
+                      Pro active on this device.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs opacity-75 mb-2 leading-relaxed">
+                      Launch offer for coders and students.
+                    </p>
+                    <div className="mb-4">
+                      <p className="text-[11px] text-[#71717A] line-through">~$4/mo~</p>
+                      <p className="text-lg font-semibold text-[#09090B]">$1.50/mo</p>
+                      <p className="text-[11px] text-[#71717A]">First 3 months, then $4/mo</p>
+                    </div>
+                    <p className="text-[11px] text-[#52525B] mb-3 leading-relaxed">
+                      Advanced formatting, domain packs, code mode, and power history tools.
+                    </p>
+                  </>
+                )}
                 <button
                   className={`w-full text-xs py-2.5 font-bold transition-opacity text-[#18181B] hover:opacity-90 ${shapes.buttonShape}`}
                   style={{
                     backgroundImage:
-                      "linear-gradient(90deg, rgba(56,189,248,0.72) 0%, rgba(163,230,53,0.72) 100%)",
+                      "linear-gradient(90deg, rgba(56,189,248,0.62) 0%, rgba(163,230,53,0.58) 100%)",
                     border: "1px solid rgba(24,24,27,0.08)",
                   }}
                   type="button"
+                  onClick={() => {
+                    if (isPro) {
+                      setActiveNav("pro-tools");
+                      return;
+                    }
+                    if (onUpgradeClick) {
+                      onUpgradeClick();
+                      return;
+                    }
+                    setActiveNav("pro");
+                  }}
                 >
-                  Upgrade Plan
+                  {isPro ? "Open Pro Tools" : "Upgrade to Pro"}
                 </button>
+                {isPro && onUpgradeClick && (
+                  <button
+                    type="button"
+                    className="mt-2 w-full text-[11px] font-semibold text-[#52525B] underline underline-offset-2 hover:text-[#18181B]"
+                    onClick={onUpgradeClick}
+                  >
+                    Manage Plan
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -223,7 +274,9 @@ export const Layout: React.FC<LayoutProps> = ({
 
         <div className="flex-1 overflow-hidden relative pr-2 pb-2">
           <div
-            className={`w-full h-full overflow-y-auto relative scroll-smooth ${colors.canvasBg} rounded-[2rem] border border-[#DEE0E7] shadow-[0_8px_20px_rgba(9,9,11,0.05),0_1px_4px_rgba(9,9,11,0.03)]`}
+            className={`w-full h-full overflow-y-auto relative scroll-smooth ${colors.canvasBg} rounded-[2rem] ${
+              isPro && activeNav === "home" ? "vw-pro-canvas" : "border border-[#DEE0E7]"
+            } shadow-[0_8px_20px_rgba(9,9,11,0.05),0_1px_4px_rgba(9,9,11,0.03)]`}
           >
             <div className="px-6 py-6 min-h-full">{children}</div>
           </div>

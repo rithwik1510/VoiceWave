@@ -2,6 +2,7 @@ import React from "react";
 import type { ThemeConfig } from "./types";
 import {
   Book,
+  Crown,
   Cpu,
   FileText,
   HelpCircle,
@@ -49,12 +50,12 @@ const ONYX_PALETTE = {
   surfaceHighlight: "bg-[#F4F4F5]",
   border: "border-[#E4E4E7]",
   textPrimary: "text-[#09090B]",
-  textSecondary: "text-[#52525B]",
-  textTertiary: "text-[#A1A1AA]",
+  textSecondary: "text-[#475569]",
+  textTertiary: "text-[#94A3B8]",
   accent: "bg-[#18181B]",
   accentFg: "text-white",
   success: "text-[#18181B]",
-  warning: "text-[#3F3F46]",
+  warning: "text-[#4B5563]",
   error: "text-[#991B1B]",
   recording: "bg-[#000000]",
   navActiveBg: "bg-[#FFFFFF]",
@@ -67,7 +68,7 @@ const ONYX_PALETTE = {
   accentBlue: "#38BDF8",
   accentLime: "#A3E635",
   accentGradient: "linear-gradient(90deg, #38BDF8 0%, #A3E635 100%)",
-  accentGradientSoft: "linear-gradient(135deg, rgba(56,189,248,0.14) 0%, rgba(163,230,53,0.14) 100%)"
+  accentGradientSoft: "linear-gradient(135deg, rgba(56,189,248,0.14) 0%, rgba(163,230,53,0.12) 100%)"
 };
 
 const SHARED_STRUCTURE = {
@@ -107,7 +108,8 @@ export const NAV_ITEMS_TOP = [
   { id: "sessions", label: "Sessions", icon: Book },
   { id: "models", label: "Models", icon: Cpu },
   { id: "dictionary", label: "Dictionary", icon: FileText },
-  { id: "snippets", label: "Snippets", icon: Zap }
+  { id: "pro", label: "Pro", icon: Crown },
+  { id: "pro-tools", label: "Pro Tools", icon: Zap }
 ];
 
 export const NAV_ITEMS_BOTTOM = [

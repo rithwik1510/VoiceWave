@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import * as hookModule from "./hooks/useVoiceWave";
 
@@ -10,6 +10,24 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     benchmarkResults: null,
     cancelModelInstall: vi.fn(),
     clearSessionHistory: vi.fn(),
+    entitlement: {
+      tier: "free",
+      status: "free",
+      isPro: false,
+      isOwnerOverride: false,
+      expiresAtUtcMs: null,
+      graceUntilUtcMs: null,
+      lastRefreshedAtUtcMs: 0,
+      plan: {
+        basePriceUsdMonthly: 4,
+        launchPriceUsdMonthly: 1.5,
+        launchMonths: 3,
+        displayBasePrice: "$4/mo",
+        displayLaunchPrice: "$1.50/mo",
+        offerCopy: "Launch offer: first 3 months at $1.50, then $4/month"
+      },
+      message: null
+    },
     diagnosticsStatus: {
       optIn: false,
       recordCount: 0,
@@ -21,8 +39,11 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     dictionaryQueue: [],
     dictionaryTerms: [],
     error: null,
+    exportHistoryPreset: vi.fn(),
     exportDiagnosticsBundle: vi.fn(),
     historyPolicy: "days30",
+    isPro: false,
+    isOwnerOverride: false,
     hotkeys: {
       config: { toggle: "Ctrl+Alt+X", pushToTalk: "Ctrl+Windows" },
       conflicts: [],
@@ -40,9 +61,12 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     modelRecommendation: null,
     modelSpeeds: {},
     modelStatuses: {},
+    lastHistoryExport: null,
     lastDiagnosticsExport: null,
     lastLatency: null,
+    openBillingPortal: vi.fn(),
     permissions: { microphone: "granted", insertionCapability: "available", message: null },
+    proRequiredFeature: null,
     micLevel: 0,
     micLevelError: null,
     audioQualityReport: null,
@@ -58,15 +82,26 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     runAudioQualityDiagnostic: vi.fn(),
     runBenchmarkAndRecommend: vi.fn(),
     runDictation: vi.fn(),
+    searchHistory: vi.fn(),
     sessionHistory: [],
+    setAppProfiles: vi.fn(),
+    setCodeModeSettings: vi.fn(),
     setDiagnosticsOptIn: vi.fn(),
+    setDomainPacks: vi.fn(),
+    setFormatProfile: vi.fn(),
     setInputDevice: vi.fn(),
     setMaxUtteranceMs: vi.fn(),
+    setOwnerOverride: vi.fn(),
     setReleaseTailMs: vi.fn(),
     setDecodeMode: vi.fn(),
+    setProPostProcessingEnabled: vi.fn(),
+    setSessionStarred: vi.fn(),
     setPreferClipboardFallback: vi.fn(),
     setVadThreshold: vi.fn(),
+    addSessionTag: vi.fn(),
     resetVadThreshold: vi.fn(),
+    restorePurchase: vi.fn(),
+    startProCheckout: vi.fn(),
     settings: {
       inputDevice: null,
       activeModel: "fw-small.en",
@@ -78,7 +113,23 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
       diagnosticsOptIn: false,
       toggleHotkey: "Ctrl+Alt+X",
       pushToTalkHotkey: "Ctrl+Windows",
-      preferClipboardFallback: false
+      preferClipboardFallback: false,
+      formatProfile: "default",
+      activeDomainPacks: [],
+      appProfileOverrides: {
+        activeTarget: "editor",
+        editor: { punctuationAggressiveness: 2, sentenceCompactness: 1, autoListFormatting: true },
+        browser: { punctuationAggressiveness: 1, sentenceCompactness: 1, autoListFormatting: false },
+        collab: { punctuationAggressiveness: 1, sentenceCompactness: 2, autoListFormatting: true },
+        desktop: { punctuationAggressiveness: 1, sentenceCompactness: 1, autoListFormatting: false }
+      },
+      codeMode: {
+        enabled: false,
+        spokenSymbols: true,
+        preferredCasing: "preserve",
+        wrapInFencedBlock: false
+      },
+      proPostProcessingEnabled: false
     },
     switchToRecommendedInput: vi.fn(),
     recommendedVadThreshold: 0.014,
@@ -92,12 +143,89 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     tauriAvailable: false,
     undoInsertion: vi.fn(),
     updateHotkeys: vi.fn(),
+    refreshEntitlement: vi.fn(),
     updateRetentionPolicy: vi.fn(),
     ...overrides
   };
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("App navigation and phase three panels", () => {
+  it("hides Pro Tools navigation for free users", async () => {
+    render(<App />);
+    expect(screen.queryByRole("button", { name: "Pro Tools" })).not.toBeInTheDocument();
+  });
+
+  it("shows Pro Tools for pro users and applies Coding mode", async () => {
+    const setFormatProfile = vi.fn();
+    const setDomainPacks = vi.fn();
+    const setCodeModeSettings = vi.fn();
+    const setAppProfiles = vi.fn();
+    const setProPostProcessingEnabled = vi.fn();
+    const useVoiceWaveSpy = vi
+      .spyOn(hookModule, "useVoiceWave")
+      .mockReturnValue(
+        buildHookMock({
+          isPro: true,
+          entitlement: {
+            tier: "pro",
+            status: "pro_active",
+            isPro: true,
+            isOwnerOverride: false,
+            expiresAtUtcMs: null,
+            graceUntilUtcMs: null,
+            lastRefreshedAtUtcMs: 0,
+            plan: {
+              basePriceUsdMonthly: 4,
+              launchPriceUsdMonthly: 1.5,
+              launchMonths: 3,
+              displayBasePrice: "$4/mo",
+              displayLaunchPrice: "$1.50/mo",
+              offerCopy: "Launch offer: first 3 months at $1.50, then $4/month"
+            },
+            message: null
+          },
+          setFormatProfile,
+          setDomainPacks,
+          setCodeModeSettings,
+          setAppProfiles,
+          setProPostProcessingEnabled
+        }) as any
+      );
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Pro Tools" }));
+    expect(screen.getByText("Pro Tools Modes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Default/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Coding/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Writing/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Study/i })).toBeInTheDocument();
+    expect(screen.queryByText("Fine Tuning")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Coding/i }));
+    await waitFor(() => {
+      expect(setFormatProfile).toHaveBeenCalledWith("code-doc");
+      expect(setDomainPacks).toHaveBeenCalledWith(["coding"]);
+      expect(setCodeModeSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enabled: true,
+          preferredCasing: "camelCase"
+        })
+      );
+      expect(setAppProfiles).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activeTarget: "editor"
+        })
+      );
+      expect(setProPostProcessingEnabled).toHaveBeenCalledWith(true);
+    });
+
+    useVoiceWaveSpy.mockRestore();
+  });
+
   it("switches between home, models, sessions, and dictionary tabs", async () => {
     render(<App />);
 

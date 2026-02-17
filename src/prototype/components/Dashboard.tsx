@@ -12,6 +12,7 @@ interface DashboardProps {
   partialTranscript: string | null;
   finalTranscript: string | null;
   pushToTalkHotkey: string;
+  isPro?: boolean;
 }
 
 const WAVE_BARS = [18, 34, 26, 44, 30, 50, 22, 42, 28, 36, 24, 40];
@@ -34,10 +35,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
   currentModel,
   partialTranscript,
   finalTranscript,
-  pushToTalkHotkey
+  pushToTalkHotkey,
+  isPro = false
 }) => {
   const { colors, typography, shapes, effects } = theme;
   const isRecording = status === "listening" || status === "transcribing";
+  const proIconGradient = "linear-gradient(135deg, rgba(56,189,248,0.2) 0%, rgba(163,230,53,0.2) 100%)";
+  const proDotGradient = "linear-gradient(90deg, #38BDF8 0%, #A3E635 100%)";
   const idleHint = finalTranscript ?? partialTranscript ?? `Hold ${pushToTalkHotkey} to start capturing`;
   const hasFinal = Boolean(finalTranscript && finalTranscript.trim().length > 0);
   const nowLabel = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -58,9 +62,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div className="pt-2">
           <h1 className={`${typography.fontDisplay} text-5xl mb-2 ${colors.textPrimary} tracking-tight`}>Good morning, Rishi.</h1>
           <p className={`${colors.textSecondary} text-lg font-light opacity-80`}>System is local and secure. Ready to transcribe.</p>
+          {isPro && (
+            <div className="mt-3">
+              <span className="vw-home-pro-title-chip">Pro Workspace Active</span>
+            </div>
+          )}
         </div>
 
-        <div className={`flex items-center justify-end gap-6 px-6 py-3 mt-1 ${colors.surface} border ${colors.surfaceBorder} rounded-full shadow-sm`}>
+        <div
+          className={`flex items-center justify-end gap-6 px-6 py-3 mt-1 ${colors.surface} border ${colors.surfaceBorder} rounded-full shadow-sm ${
+            isPro ? "vw-home-pro-metrics" : ""
+          }`}
+        >
           <div className="flex flex-col items-end">
             <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">Streak</span>
             <span className={`text-lg font-bold ${colors.textPrimary} leading-none`}>
@@ -94,6 +107,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               className={`
                 p-8 flex flex-col md:flex-row md:items-center md:justify-between gap-5
                 ${colors.surface} border-2 border-[#E4E4E7] ${shapes.radius} ${effects.shadow}
+                ${isPro ? "vw-home-pro-panel" : ""}
               `}
             >
               <div>
@@ -140,6 +154,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   ${isRecording ? colors.recording : colors.accent}
                   ${colors.accentFg} ${shapes.buttonShape}
                   hover:scale-105 active:scale-95 shadow-lg
+                  ${isPro ? "vw-home-pro-mic" : ""}
                 `}
                 style={
                   isRecording
@@ -154,14 +169,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
 
             <div className="space-y-3">
-              <div className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm`}>
+              <div
+                className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm ${
+                  isPro ? "vw-home-pro-sidecard" : ""
+                }`}
+              >
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <div
                       className="h-9 w-9 rounded-full flex items-center justify-center"
-                      style={{ backgroundImage: colors.accentGradientSoft }}
+                      style={{ backgroundImage: isPro ? proIconGradient : colors.accentGradientSoft }}
                     >
-                      <Cpu size={16} className="text-[#18181B]" />
+                      <Cpu size={16} className={isPro ? "text-[#0C4A6E]" : "text-[#18181B]"} />
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-[#09090B] leading-none">Model</p>
@@ -172,19 +191,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </div>
                   <div
                     className="h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundImage: colors.accentGradient }}
+                    style={{ backgroundImage: isPro ? proDotGradient : colors.accentGradient }}
                   />
                 </div>
               </div>
 
-              <div className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm`}>
+              <div
+                className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm ${
+                  isPro ? "vw-home-pro-sidecard" : ""
+                }`}
+              >
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <div
                       className="h-9 w-9 rounded-full flex items-center justify-center"
-                      style={{ backgroundImage: colors.accentGradientSoft }}
+                      style={{ backgroundImage: isPro ? proIconGradient : colors.accentGradientSoft }}
                     >
-                      <Zap size={16} className="text-[#18181B]" />
+                      <Zap size={16} className={isPro ? "text-[#65A30D]" : "text-[#18181B]"} />
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-[#09090B] leading-none">Mode</p>
@@ -205,6 +228,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             className={`
               w-full min-h-24 relative overflow-hidden transition-colors duration-200
               ${isRecording ? "bg-black shadow-xl" : `${colors.surface} border ${colors.surfaceBorder} shadow-sm`}
+              ${isPro && !isRecording ? "vw-home-pro-output" : ""}
               ${shapes.radius} flex items-center px-8 py-6
             `}
           >

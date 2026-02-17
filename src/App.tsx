@@ -1,13 +1,30 @@
-import { ChevronDown, CircleHelp, Palette, X } from "lucide-react";
+import {
+  ChevronDown,
+  CircleHelp,
+  Crown,
+  Palette,
+  Search,
+  Sparkles,
+  Star,
+  X
+} from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useVoiceWave } from "./hooks/useVoiceWave";
 import { THEMES } from "./prototype/constants";
 import { Dashboard } from "./prototype/components/Dashboard";
 import { Layout } from "./prototype/components/Layout";
 import type { DictationState } from "./prototype/types";
-import type { RetentionPolicy } from "./types/voicewave";
+import type {
+  AppProfileOverrides,
+  CodeModeSettings,
+  DomainPackId,
+  FormatProfile,
+  RetentionPolicy,
+  VoiceWaveSettings
+} from "./types/voicewave";
 
 type OverlayPanel = "style" | "settings" | "help";
+type ProToolsMode = "default" | "coding" | "writing" | "study";
 
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -34,6 +51,163 @@ function policyLabel(policy: RetentionPolicy): string {
     return "30 Days";
   }
   return "Forever";
+}
+
+interface ProToolsPreset {
+  formatProfile: FormatProfile;
+  domainPacks: DomainPackId[];
+  codeMode: CodeModeSettings;
+  appProfiles: AppProfileOverrides;
+  postProcessingEnabled: boolean;
+}
+
+const PRO_TOOLS_MODE_CARDS: Array<{
+  id: ProToolsMode;
+  title: string;
+  description: string;
+  highlight: string;
+}> = [
+  {
+    id: "default",
+    title: "Default",
+    description: "Closest to classic dictation with light cleanup.",
+    highlight: "Best for everyday typing without aggressive transforms."
+  },
+  {
+    id: "coding",
+    title: "Coding",
+    description: "Voice-to-code setup with symbol handling and coding vocabulary.",
+    highlight: "Enables Code Mode + coding domain dictionary."
+  },
+  {
+    id: "writing",
+    title: "Writing",
+    description: "Cleaner prose output for docs, posts, and polished text.",
+    highlight: "Uses formal formatting + productivity wording."
+  },
+  {
+    id: "study",
+    title: "Study",
+    description: "Note-friendly flow for lectures, revision, and summaries.",
+    highlight: "Uses concise formatting + student-focused dictionary."
+  }
+];
+
+function detectProToolsMode(settings: VoiceWaveSettings): ProToolsMode {
+  if (
+    settings.codeMode.enabled ||
+    settings.formatProfile === "code-doc" ||
+    settings.activeDomainPacks.includes("coding")
+  ) {
+    return "coding";
+  }
+
+  if (settings.activeDomainPacks.includes("student")) {
+    return "study";
+  }
+
+  if (
+    settings.formatProfile === "academic" ||
+    settings.formatProfile === "concise" ||
+    settings.activeDomainPacks.includes("productivity")
+  ) {
+    return "writing";
+  }
+
+  return "default";
+}
+
+function buildProToolsPreset(mode: ProToolsMode, settings: VoiceWaveSettings): ProToolsPreset {
+  switch (mode) {
+    case "coding":
+      return {
+        formatProfile: "code-doc",
+        domainPacks: ["coding"],
+        codeMode: {
+          ...settings.codeMode,
+          enabled: true,
+          spokenSymbols: true,
+          preferredCasing: "camelCase",
+          wrapInFencedBlock: false
+        },
+        appProfiles: {
+          ...settings.appProfileOverrides,
+          activeTarget: "editor",
+          editor: {
+            punctuationAggressiveness: 0,
+            sentenceCompactness: 0,
+            autoListFormatting: false
+          }
+        },
+        postProcessingEnabled: true
+      };
+    case "writing":
+      return {
+        formatProfile: "academic",
+        domainPacks: ["productivity"],
+        codeMode: {
+          ...settings.codeMode,
+          enabled: false,
+          spokenSymbols: true,
+          preferredCasing: "preserve",
+          wrapInFencedBlock: false
+        },
+        appProfiles: {
+          ...settings.appProfileOverrides,
+          activeTarget: "collab",
+          collab: {
+            punctuationAggressiveness: 2,
+            sentenceCompactness: 1,
+            autoListFormatting: true
+          }
+        },
+        postProcessingEnabled: true
+      };
+    case "study":
+      return {
+        formatProfile: "concise",
+        domainPacks: ["student", "productivity"],
+        codeMode: {
+          ...settings.codeMode,
+          enabled: false,
+          spokenSymbols: true,
+          preferredCasing: "preserve",
+          wrapInFencedBlock: false
+        },
+        appProfiles: {
+          ...settings.appProfileOverrides,
+          activeTarget: "browser",
+          browser: {
+            punctuationAggressiveness: 2,
+            sentenceCompactness: 2,
+            autoListFormatting: true
+          }
+        },
+        postProcessingEnabled: true
+      };
+    default:
+      return {
+        formatProfile: "default",
+        domainPacks: [],
+        codeMode: {
+          ...settings.codeMode,
+          enabled: false,
+          spokenSymbols: true,
+          preferredCasing: "preserve",
+          wrapInFencedBlock: false
+        },
+        appProfiles: {
+          ...settings.appProfileOverrides,
+          activeTarget: "desktop",
+          desktop: {
+            punctuationAggressiveness: 1,
+            sentenceCompactness: 1,
+            autoListFormatting: false
+          }
+        },
+        postProcessingEnabled: false
+      };
+  }
 }
 
 interface OverlayModalProps {
@@ -74,6 +248,11 @@ function App() {
   const [activeNav, setActiveNav] = useState("home");
   const [activeOverlay, setActiveOverlay] = useState<OverlayPanel | null>(null);
   const [settingsAdvancedOpen, setSettingsAdvancedOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyTag, setHistoryTag] = useState("");
+  const [ownerTapCount, setOwnerTapCount] = useState(0);
+  const [ownerPassphrase, setOwnerPassphrase] = useState("");
+  const [modeApplyPending, setModeApplyPending] = useState<ProToolsMode | null>(null);
   const {
     activeState,
     approveDictionaryQueueEntry,
@@ -84,8 +263,12 @@ function App() {
     deleteDictionaryTerm,
     dictionaryQueue,
     dictionaryTerms,
+    entitlement,
     error,
+    exportHistoryPreset,
     exportDiagnosticsBundle,
+    isOwnerOverride,
+    isPro,
     historyPolicy,
     inputDevices,
     installModel,
@@ -95,9 +278,12 @@ function App() {
     modelRecommendation,
     modelSpeeds,
     modelStatuses,
+    lastHistoryExport,
     lastDiagnosticsExport,
     lastLatency,
+    openBillingPortal,
     permissions,
+    proRequiredFeature,
     audioQualityReport,
     micQualityWarning,
     pauseModelInstall,
@@ -110,30 +296,67 @@ function App() {
     runAudioQualityDiagnostic,
     runBenchmarkAndRecommend,
     runDictation,
+    searchHistory,
     sessionHistory,
+    setAppProfiles,
+    setCodeModeSettings,
     setDiagnosticsOptIn,
+    setDomainPacks,
+    setFormatProfile,
     setInputDevice,
     setMaxUtteranceMs,
+    setOwnerOverride,
     setReleaseTailMs,
     setPreferClipboardFallback,
+    setProPostProcessingEnabled,
+    setSessionStarred,
     setVadThreshold,
+    addSessionTag,
     resetVadThreshold,
+    restorePurchase,
+    startProCheckout,
     settings,
     switchToRecommendedInput,
     recommendedVadThreshold,
     snapshot,
     stopDictation,
     tauriAvailable,
-    updateRetentionPolicy
+    updateRetentionPolicy,
+    refreshEntitlement
   } = useVoiceWave();
 
   const status = useMemo<DictationState>(() => activeState, [activeState]);
+  const displayError = useMemo(() => {
+    if (!error) {
+      return null;
+    }
+    if (proRequiredFeature) {
+      return "This action requires Pro. Free dictation remains fully available.";
+    }
+    return error;
+  }, [error, proRequiredFeature]);
   const isRecording = status === "listening" || status === "transcribing";
   const installedModelSet = useMemo(
     () => new Set(installedModels.map((row) => row.modelId)),
     [installedModels]
   );
+  const showOwnerUnlock = ownerTapCount >= 5;
   const pressActiveRef = useRef(false);
+  const modeApplyInFlightRef = useRef(false);
+  const activeProToolsMode = useMemo(() => detectProToolsMode(settings), [settings]);
+  const displayedProToolsMode = modeApplyPending ?? activeProToolsMode;
+
+  useEffect(() => {
+    if (proRequiredFeature) {
+      setActiveNav("pro");
+    }
+  }, [proRequiredFeature]);
+
+  useEffect(() => {
+    if (!isPro && activeNav === "pro-tools") {
+      setActiveNav("pro");
+    }
+  }, [activeNav, isPro]);
 
   const isOverlayNav = (value: string): value is OverlayPanel =>
     value === "style" || value === "settings" || value === "help";
@@ -166,6 +389,11 @@ function App() {
       return;
     }
 
+    if (nextNav === "pro-tools" && !isPro) {
+      setActiveNav("pro");
+      return;
+    }
+
     if (nextNav === activeNav) {
       return;
     }
@@ -173,6 +401,35 @@ function App() {
     pressActiveRef.current = false;
     closeOverlay();
     setActiveNav(nextNav);
+  };
+
+  const applyProToolsMode = async (mode: ProToolsMode) => {
+    if (!isPro) {
+      setActiveNav("pro");
+      return;
+    }
+    if (modeApplyInFlightRef.current || modeApplyPending) {
+      return;
+    }
+    if (mode === activeProToolsMode) {
+      return;
+    }
+
+    const preset = buildProToolsPreset(mode, settings);
+    modeApplyInFlightRef.current = true;
+    setModeApplyPending(mode);
+    try {
+      await setFormatProfile(preset.formatProfile);
+      await setDomainPacks(preset.domainPacks);
+      await setCodeModeSettings(preset.codeMode);
+      await setAppProfiles(preset.appProfiles);
+      await setProPostProcessingEnabled(preset.postProcessingEnabled);
+    } catch (err) {
+      console.error("Failed to apply Pro Tools mode:", err);
+    } finally {
+      modeApplyInFlightRef.current = false;
+      setModeApplyPending(null);
+    }
   };
 
   useEffect(() => {
@@ -195,7 +452,14 @@ function App() {
     };
   }, [activeOverlay]);
 
+  useEffect(() => {
+    if (activeNav === "pro") {
+      void refreshEntitlement();
+    }
+  }, [activeNav, refreshEntitlement]);
+
   const retentionOptions: RetentionPolicy[] = ["off", "days7", "days30", "forever"];
+  const domainPackOptions: DomainPackId[] = ["coding", "student", "productivity"];
 
   return (
     <>
@@ -205,8 +469,11 @@ function App() {
         activePopupNav={activeOverlay}
         setActiveNav={handleNavChange}
         isRecording={isRecording}
+        isPro={isPro}
+        showProTools={isPro}
+        onUpgradeClick={() => setActiveNav("pro")}
       >
-        <div key={activeNav} className="vw-page-shell">
+        <div key={activeNav} className={`vw-page-shell ${isPro ? "vw-pro-ui" : ""}`}>
           {activeNav === "home" && (
             <>
               {!tauriAvailable && (
@@ -224,7 +491,134 @@ function App() {
                 partialTranscript={snapshot.lastPartial}
                 finalTranscript={snapshot.lastFinal}
                 pushToTalkHotkey={settings.pushToTalkHotkey}
+                isPro={isPro}
               />
+            </>
+          )}
+
+          {activeNav === "pro" && (
+            <>
+              <section className="vw-panel vw-panel-soft">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="vw-kicker">VoiceWave Pro</p>
+                    <h3 className="text-lg font-semibold text-[#09090B]">Power Features for Coders + Students</h3>
+                    <p className="mt-1 text-sm text-[#71717A]">
+                      Keep fast local dictation in Free, unlock advanced formatting, domain packs, code mode, and power history tools in Pro.
+                    </p>
+                  </div>
+                  <span className={`vw-chip ${isPro ? "vw-pro-chip-active" : ""}`}>
+                    {isOwnerOverride ? "Owner Pro (Device Override)" : isPro ? "Pro Active" : "Free"}
+                  </span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <div className="vw-stat-card md:col-span-2">
+                    {isPro ? (
+                      <>
+                        <p className="vw-kicker">Plan Active</p>
+                        <p className="mt-2 text-2xl font-semibold text-[#09090B]">VoiceWave Pro</p>
+                        <p className="mt-2 text-xs text-[#71717A]">
+                          Your account already has Pro access. Pricing offers are hidden while Pro is active.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="vw-kicker">Launch Pricing</p>
+                        <div className="mt-2 flex items-end gap-3">
+                          <p className="text-sm text-[#71717A] line-through">~{entitlement.plan.displayBasePrice}~</p>
+                          <p className="text-2xl font-semibold text-[#09090B]">{entitlement.plan.displayLaunchPrice}</p>
+                        </div>
+                        <p className="mt-2 text-xs text-[#71717A]">{entitlement.plan.offerCopy}</p>
+                      </>
+                    )}
+                  </div>
+                  <div className="vw-stat-card">
+                    <p className="vw-kicker">Status</p>
+                    <p className="mt-1 text-base font-semibold text-[#09090B]">{entitlement.status}</p>
+                    <p className="mt-1 text-xs text-[#71717A]">
+                      Last refresh: {entitlement.lastRefreshedAtUtcMs ? formatDate(entitlement.lastRefreshedAtUtcMs) : "Never"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {!isPro && (
+                    <button type="button" className="vw-btn-primary" onClick={() => void startProCheckout()}>
+                      Upgrade to Pro
+                    </button>
+                  )}
+                  <button type="button" className="vw-btn-secondary" onClick={() => void refreshEntitlement()}>
+                    Refresh Entitlement
+                  </button>
+                  <button type="button" className="vw-btn-secondary" onClick={() => void restorePurchase()}>
+                    Restore Purchase
+                  </button>
+                  {isPro && (
+                    <button type="button" className="vw-btn-secondary" onClick={() => void openBillingPortal()}>
+                      Open Billing Portal
+                    </button>
+                  )}
+                </div>
+
+                <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {[
+                    { icon: Sparkles, title: "Advanced Formatting Engine", detail: "Profiles: Default, Academic, Technical, Concise, Code Doc." },
+                    { icon: Crown, title: "Domain Dictionaries", detail: "Coding, Student, and Productivity packs with weighted corrections." },
+                    { icon: Search, title: "Advanced History Tools", detail: "Search, tags, starring, and export presets." },
+                    { icon: Star, title: "Code Mode", detail: "Spoken symbols, casing controls, and optional fenced output." }
+                  ].map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <div key={item.title} className="vw-interactive-row rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <Icon size={16} className="text-[#18181B]" />
+                          <p className="text-sm font-semibold text-[#09090B]">{item.title}</p>
+                          <span className="vw-chip">{isPro ? "Unlocked" : "Pro"}</span>
+                        </div>
+                        <p className="mt-1 text-xs text-[#71717A]">{item.detail}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-5 rounded-2xl border border-dashed border-[#D4D4D8] bg-[#FAFAFA] px-4 py-3">
+                  <button
+                    type="button"
+                    className="text-xs font-semibold text-[#52525B] underline underline-offset-2"
+                    onClick={() => setOwnerTapCount((count) => Math.min(count + 1, 5))}
+                  >
+                    Owner tools
+                  </button>
+                  {showOwnerUnlock ? (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <input
+                        type="password"
+                        value={ownerPassphrase}
+                        onChange={(event) => setOwnerPassphrase(event.target.value)}
+                        placeholder="Owner passphrase"
+                        className="rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                      />
+                      <button
+                        type="button"
+                        className="vw-btn-primary"
+                        onClick={() => void setOwnerOverride(true, ownerPassphrase)}
+                      >
+                        Enable Owner Pro
+                      </button>
+                      <button
+                        type="button"
+                        className="vw-btn-secondary"
+                        onClick={() => void setOwnerOverride(false, ownerPassphrase)}
+                      >
+                        Disable
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-[#71717A]">Tap owner tools five times to reveal device override controls.</p>
+                  )}
+                </div>
+              </section>
             </>
           )}
 
@@ -465,6 +859,74 @@ function App() {
               </button>
             </div>
 
+            <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-[#09090B]">Advanced History Tools</p>
+                <span className="vw-chip">{isPro ? "Pro Unlocked" : "Pro"}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                <input
+                  value={historyQuery}
+                  onChange={(event) => setHistoryQuery(event.target.value)}
+                  placeholder="Search query"
+                  className="rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                />
+                <input
+                  value={historyTag}
+                  onChange={(event) => setHistoryTag(event.target.value)}
+                  placeholder="Tag filter (optional)"
+                  className="rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                />
+                <button
+                  type="button"
+                  className={isPro ? "vw-btn-secondary" : "vw-btn-primary"}
+                  onClick={() => {
+                    if (!isPro) {
+                      setActiveNav("pro");
+                      return;
+                    }
+                    const tags = historyTag.trim() ? [historyTag.trim()] : null;
+                    void searchHistory(historyQuery, tags, null);
+                  }}
+                >
+                  {isPro ? "Run Search" : "Upgrade to Pro"}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(["plain", "markdownNotes", "studySummary"] as const).map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    className={isPro ? "vw-btn-secondary" : "vw-btn-primary"}
+                    onClick={() => {
+                      if (!isPro) {
+                        setActiveNav("pro");
+                        return;
+                      }
+                      void exportHistoryPreset(preset);
+                    }}
+                  >
+                    Export {preset}
+                  </button>
+                ))}
+              </div>
+              {!isPro && (
+                <p className="mt-2 text-xs text-[#71717A]">
+                  Search, tagging, starring, and exports are Pro features. Free retains full timeline and retention controls.
+                </p>
+              )}
+              {lastHistoryExport && (
+                <div className="mt-3 rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2">
+                  <p className="text-xs font-semibold text-[#09090B]">
+                    Export ready: {lastHistoryExport.preset} ({lastHistoryExport.recordCount} records)
+                  </p>
+                  <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap text-[11px] text-[#52525B]">
+                    {lastHistoryExport.content}
+                  </pre>
+                </div>
+              )}
+            </div>
+
             <div className="vw-list-stagger mt-4 space-y-2">
               {sessionHistory.length === 0 && (
                 <p className="text-sm text-[#71717A]">No sessions available.</p>
@@ -479,8 +941,49 @@ function App() {
                       {record.source} / {record.success ? "success" : "failed"}
                     </p>
                     {record.method && <span className="vw-chip">{record.method}</span>}
+                    {record.starred && <span className="vw-chip">Starred</span>}
                   </div>
                   <p className="text-xs text-[#71717A] mt-1">{record.preview}</p>
+                  {record.tags.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {record.tags.map((tag) => (
+                        <span key={`${record.recordId}-${tag}`} className="vw-chip">
+                          #{tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className={isPro ? "vw-btn-secondary text-xs px-3 py-1" : "vw-btn-primary text-xs px-3 py-1"}
+                      onClick={() => {
+                        if (!isPro) {
+                          setActiveNav("pro");
+                          return;
+                        }
+                        void setSessionStarred(record.recordId, !record.starred);
+                      }}
+                    >
+                      {record.starred ? "Unstar" : "Star"}
+                    </button>
+                    <button
+                      type="button"
+                      className={isPro ? "vw-btn-secondary text-xs px-3 py-1" : "vw-btn-primary text-xs px-3 py-1"}
+                      onClick={() => {
+                        if (!isPro) {
+                          setActiveNav("pro");
+                          return;
+                        }
+                        if (!historyTag.trim()) {
+                          return;
+                        }
+                        void addSessionTag(record.recordId, historyTag.trim());
+                      }}
+                    >
+                      Tag
+                    </button>
+                  </div>
                   <p className="text-[11px] text-[#A1A1AA] mt-1">{formatDate(record.timestampUtcMs)}</p>
                 </div>
               ))}
@@ -497,6 +1000,42 @@ function App() {
             <div className="mt-3 flex flex-wrap gap-2">
               <span className="vw-chip">Queue: {dictionaryQueue.length}</span>
               <span className="vw-chip">Accepted: {dictionaryTerms.length}</span>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-[#09090B]">Domain Dictionaries (Pro)</p>
+                <span className="vw-chip">{isPro ? "Unlocked" : "Pro"}</span>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {domainPackOptions.map((pack) => {
+                  const active = settings.activeDomainPacks.includes(pack);
+                  return (
+                    <button
+                      key={pack}
+                      type="button"
+                      className={active ? "vw-btn-primary" : "vw-btn-secondary"}
+                      onClick={() => {
+                        if (!isPro) {
+                          setActiveNav("pro");
+                          return;
+                        }
+                        const next = active
+                          ? settings.activeDomainPacks.filter((value) => value !== pack)
+                          : [...settings.activeDomainPacks, pack];
+                        void setDomainPacks(next);
+                      }}
+                    >
+                      {pack}
+                    </button>
+                  );
+                })}
+              </div>
+              {!isPro && (
+                <p className="mt-2 text-xs text-[#71717A]">
+                  Free keeps baseline dictionary queue and approvals. Pro adds domain packs and weighted correction behavior.
+                </p>
+              )}
             </div>
 
             <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -564,20 +1103,98 @@ function App() {
             </section>
           )}
 
-          {activeNav === "snippets" && (
-            <section className="vw-panel vw-panel-soft">
-              <h3 className="text-lg font-semibold text-[#09090B]">Section Ready</h3>
-              <p className="mt-2 text-sm text-[#71717A]">
-                This navigation tab is connected and can host additional Phase IV+ features without
-                changing the current layout shell.
-              </p>
-            </section>
+          {activeNav === "pro-tools" && (
+            <>
+              <section className="vw-panel vw-panel-soft">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-semibold text-[#09090B]">Pro Tools Modes</h3>
+                    <p className="mt-1 text-sm text-[#71717A]">
+                      Pick one mode and VoiceWave reconfigures output behavior for that workflow.
+                    </p>
+                  </div>
+                  <span className="vw-chip">Pro Active</span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {PRO_TOOLS_MODE_CARDS.map((mode) => {
+                    const isActiveMode = displayedProToolsMode === mode.id;
+                    const isApplying = modeApplyPending === mode.id;
+                    return (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        className={`vw-mode-card rounded-2xl border px-4 py-4 text-left ${
+                          isActiveMode ? "vw-pro-mode-card-active" : "vw-pro-mode-card"
+                        }`}
+                        onClick={() => void applyProToolsMode(mode.id)}
+                        aria-disabled={modeApplyPending ? "true" : "false"}
+                        aria-busy={isApplying ? "true" : "false"}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-base font-semibold text-[#09090B]">{mode.title}</p>
+                          <span className={`vw-chip vw-mode-status-chip ${isActiveMode ? "vw-mode-status-chip-active" : ""}`}>
+                            {isActiveMode ? "Active" : "Apply"}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-[#3F3F46]">{mode.description}</p>
+                        <p className="mt-2 text-xs text-[#71717A]">{mode.highlight}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {displayedProToolsMode === "coding" && (
+                  <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                    <p className="text-sm font-semibold text-[#09090B]">How To Speak In Coding Mode</p>
+                    <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-[#52525B] md:grid-cols-2">
+                      <p><span className="font-semibold">Symbols:</span> open paren, open parenthesis, close paren, underscore, arrow, equals.</p>
+                      <p><span className="font-semibold">Casing:</span> say plain words, then choose camelCase or snake_case in mode settings.</p>
+                      <p><span className="font-semibold">Example speech:</span> open paren user id close paren arrow result</p>
+                      <p><span className="font-semibold">Expected output:</span> (user id)-&gt;result</p>
+                    </div>
+                  </div>
+                )}
+
+                {displayedProToolsMode === "writing" && (
+                  <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                    <p className="text-sm font-semibold text-[#09090B]">Writing Mode Focus</p>
+                    <p className="mt-2 text-xs text-[#52525B]">
+                      List intent is detected more strongly. Example: "there are two process one hi two real" becomes:
+                      <br />
+                      1. Hi
+                      <br />
+                      2. Real
+                    </p>
+                  </div>
+                )}
+
+                {displayedProToolsMode === "study" && (
+                  <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                    <p className="text-sm font-semibold text-[#09090B]">Study Mode Focus</p>
+                    <p className="mt-2 text-xs text-[#52525B]">
+                      Designed for voice notes you can revise later. Speak with markers like:
+                      <span className="font-semibold"> topic</span>, <span className="font-semibold">definition</span>, <span className="font-semibold">example</span>, and <span className="font-semibold">summary</span>.
+                    </p>
+                  </div>
+                )}
+              </section>
+            </>
           )}
         </div>
 
-        {error && (
+        {displayError && (
           <div className="mt-6 rounded-2xl border border-[#f3c2c2] bg-[#fff1f1] px-4 py-3 text-sm text-[#a94444]">
-            {error}
+            <p>{displayError}</p>
+            {proRequiredFeature && (
+              <button
+                type="button"
+                className="vw-btn-primary mt-3"
+                onClick={() => setActiveNav("pro")}
+              >
+                View Pro Plans
+              </button>
+            )}
           </div>
         )}
       </Layout>
