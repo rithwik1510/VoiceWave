@@ -48,7 +48,7 @@ export const Layout: React.FC<LayoutProps> = ({
         aria-current={isActive ? "page" : undefined}
         title={sidebarCollapsed ? item.label : undefined}
         className={`
-          w-full cursor-pointer select-none flex items-center ${sidebarCollapsed ? "justify-center px-2" : "justify-between px-4"} py-2.5 text-sm transition-all duration-200 group
+          vw-nav-button w-full cursor-pointer select-none flex items-center ${sidebarCollapsed ? "justify-center px-2" : "justify-between px-4"} py-2.5 text-sm transition-all duration-200 group
           ${shapes.navItemShape}
           ${
             isActive
@@ -58,16 +58,17 @@ export const Layout: React.FC<LayoutProps> = ({
         `}
         type="button"
       >
-        <div className={`flex items-center ${sidebarCollapsed ? "gap-0" : "gap-3"}`}>
-          <Icon size={18} className={isActive ? "opacity-100" : "opacity-70 group-hover:opacity-100"} />
-          {!sidebarCollapsed && <span>{item.label}</span>}
-        </div>
-        {!sidebarCollapsed && isActive && (
-          <div
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ backgroundImage: colors.accentGradient }}
+        <div className={`flex items-center ${sidebarCollapsed ? "gap-0 justify-center w-full" : "gap-3"}`}>
+          <Icon
+            size={18}
+            className={`vw-nav-icon ${isActive ? "opacity-100" : "opacity-70 group-hover:opacity-100"}`}
           />
-        )}
+          <span className="vw-nav-label">{item.label}</span>
+        </div>
+        <div
+          className={`vw-nav-active-dot ${isActive ? "opacity-100" : "opacity-0"}`}
+          style={{ backgroundImage: colors.accentGradient }}
+        />
       </button>
     );
   };
@@ -76,7 +77,7 @@ export const Layout: React.FC<LayoutProps> = ({
     <div className={`relative isolate flex h-screen w-full overflow-hidden ${colors.shellBg} ${colors.textPrimary} ${typography.fontBody}`}>
       <aside
         data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
-        className={`relative z-40 ${sidebarCollapsed ? "w-20" : "w-52"} flex-shrink-0 flex flex-col ${colors.shellBg} transition-all duration-300`}
+        className={`vw-sidebar-shell relative z-40 ${sidebarCollapsed ? "w-20" : "w-52"} flex-shrink-0 flex flex-col ${colors.shellBg}`}
       >
         <div className={`${sidebarCollapsed ? "px-3 pt-4 pb-4 flex-col gap-2" : "p-6 pb-4 gap-3"} flex items-center flex-shrink-0`}>
           {sidebarCollapsed ? (
@@ -140,16 +141,16 @@ export const Layout: React.FC<LayoutProps> = ({
 
         <div className="flex-1" />
 
-        {!sidebarCollapsed && (
-          <div className="px-5 pb-4">
-            <div
-              className={`
-                p-5 relative overflow-hidden group
-                ${colors.surface} shadow-sm border ${colors.surfaceBorder}
-                ${shapes.radius}
-                ${isPro ? "vw-pro-sidebar-card" : ""}
-              `}
-            >
+        <div className={`vw-sidebar-pro-wrap ${sidebarCollapsed ? "is-collapsed" : ""}`}>
+          <div className="vw-sidebar-pro-wrap-inner">
+          <div
+            className={`
+              vw-sidebar-pro-panel p-4 relative overflow-hidden group
+              ${colors.surface} shadow-sm border ${colors.surfaceBorder}
+              ${shapes.radius}
+              ${isPro ? "vw-pro-sidebar-card vw-pro-glass-card" : ""}
+            `}
+          >
               <div className="absolute -right-2 -top-2 opacity-80 pointer-events-none">
                 <svg width="76" height="54" viewBox="0 0 76 54" fill="none" aria-hidden="true">
                   <path
@@ -164,21 +165,19 @@ export const Layout: React.FC<LayoutProps> = ({
               <div className="relative z-10">
                 <div className="flex items-center gap-2 mb-2">
                   <span
-                    className="text-[10px] uppercase font-bold px-2 py-0.5 rounded text-[#3F3F46]"
-                    style={{
-                      backgroundImage:
-                        "linear-gradient(90deg, rgba(56,189,248,0.28) 0%, rgba(163,230,53,0.26) 100%)",
-                    }}
+                    className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                      isPro ? "vw-pro-badge-active" : "vw-pro-badge"
+                    }`}
                   >
                     {isPro ? "PRO ACTIVE" : "PRO"}
                   </span>
                 </div>
                 {isPro ? (
                   <>
-                    <p className="text-xs opacity-75 mb-3 leading-relaxed">
-                      Your Pro workspace is unlocked with advanced tools and enhanced UI polish.
+                    <p className="text-xs opacity-75 mb-2 leading-relaxed">
+                      Your Pro workspace is unlocked with advanced tools and clean premium visuals.
                     </p>
-                    <p className="text-[11px] text-[#52525B] mb-3 leading-relaxed">
+                    <p className="text-[11px] text-[#18181B] mb-2.5 leading-relaxed">
                       Pro active on this device.
                     </p>
                   </>
@@ -187,7 +186,7 @@ export const Layout: React.FC<LayoutProps> = ({
                     <p className="text-xs opacity-75 mb-2 leading-relaxed">
                       Launch offer for coders and students.
                     </p>
-                    <div className="mb-4">
+                    <div className="mb-3.5">
                       <p className="text-[11px] text-[#71717A] line-through">~$4/mo~</p>
                       <p className="text-lg font-semibold text-[#09090B]">$1.50/mo</p>
                       <p className="text-[11px] text-[#71717A]">First 3 months, then $4/mo</p>
@@ -198,12 +197,7 @@ export const Layout: React.FC<LayoutProps> = ({
                   </>
                 )}
                 <button
-                  className={`w-full text-xs py-2.5 font-bold transition-opacity text-[#18181B] hover:opacity-90 ${shapes.buttonShape}`}
-                  style={{
-                    backgroundImage:
-                      "linear-gradient(90deg, rgba(56,189,248,0.62) 0%, rgba(163,230,53,0.58) 100%)",
-                    border: "1px solid rgba(24,24,27,0.08)",
-                  }}
+                  className="vw-action-button vw-sidebar-pro-cta w-full text-xs py-2 font-bold transition-opacity hover:opacity-95"
                   type="button"
                   onClick={() => {
                     if (isPro) {
@@ -222,22 +216,20 @@ export const Layout: React.FC<LayoutProps> = ({
                 {isPro && onUpgradeClick && (
                   <button
                     type="button"
-                    className="mt-2 w-full text-[11px] font-semibold text-[#52525B] underline underline-offset-2 hover:text-[#18181B]"
+                    className="mt-1.5 w-full text-[11px] font-semibold text-[#52525B] underline underline-offset-2 hover:text-[#18181B]"
                     onClick={onUpgradeClick}
                   >
                     Manage Plan
                   </button>
                 )}
               </div>
-            </div>
           </div>
-        )}
+          </div>
+        </div>
 
-        {!sidebarCollapsed && (
-          <div className="px-6 pb-3">
-            <div className={`h-px mx-1 border-t ${colors.divider}`} />
-          </div>
-        )}
+        <div className="vw-sidebar-divider-wrap">
+          <div className={`h-px mx-1 border-t ${colors.divider}`} />
+        </div>
 
         <nav className={`relative z-50 ${sidebarCollapsed ? "px-2" : "px-4"} pb-7 space-y-1 flex-shrink-0`}>
           {NAV_ITEMS_BOTTOM.map((item) => (
@@ -274,7 +266,7 @@ export const Layout: React.FC<LayoutProps> = ({
 
         <div className="flex-1 overflow-hidden relative pr-2 pb-2">
           <div
-            className={`w-full h-full overflow-y-auto relative scroll-smooth ${colors.canvasBg} rounded-[2rem] ${
+            className={`w-full h-full overflow-y-auto relative scroll-smooth ${colors.canvasBg} rounded-3xl ${
               isPro && activeNav === "home" ? "vw-pro-canvas" : "border border-[#DEE0E7]"
             } shadow-[0_8px_20px_rgba(9,9,11,0.05),0_1px_4px_rgba(9,9,11,0.03)]`}
           >

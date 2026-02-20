@@ -1,7 +1,6 @@
 import React from "react";
 import type { ThemeConfig } from "./types";
 import {
-  Book,
   Crown,
   Cpu,
   FileText,
@@ -78,7 +77,7 @@ const SHARED_STRUCTURE = {
     weightHeading: "font-semibold"
   },
   shapes: {
-    radius: "rounded-[2rem]",
+    radius: "rounded-3xl",
     borderWidth: "border-0",
     buttonShape: "rounded-full",
     navItemShape: "rounded-full"
@@ -105,7 +104,6 @@ export const THEMES: Record<string, ThemeConfig> = {
 
 export const NAV_ITEMS_TOP = [
   { id: "home", label: "Home", icon: Home },
-  { id: "sessions", label: "Sessions", icon: Book },
   { id: "models", label: "Models", icon: Cpu },
   { id: "dictionary", label: "Dictionary", icon: FileText },
   { id: "pro", label: "Pro", icon: Crown },
