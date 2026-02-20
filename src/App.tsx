@@ -230,7 +230,7 @@ function OverlayModal({ title, subtitle, onClose, children }: OverlayModalProps)
       <section className="vw-modal-card max-w-3xl" role="dialog" aria-modal="true" aria-label={title}>
         <header className="vw-modal-header">
           <div>
-            <h3 className="text-xl font-semibold text-[#09090B]">{title}</h3>
+            <h3 className="vw-section-heading text-xl font-semibold text-[#09090B]">{title}</h3>
             <p className="mt-1 text-sm text-[#71717A]">{subtitle}</p>
           </div>
           <button type="button" className="vw-modal-close" onClick={onClose} aria-label={`Close ${title}`}>
@@ -357,6 +357,12 @@ function App() {
       setActiveNav("pro");
     }
   }, [activeNav, isPro]);
+
+  useEffect(() => {
+    if (activeNav === "sessions") {
+      setActiveNav("home");
+    }
+  }, [activeNav]);
 
   const isOverlayNav = (value: string): value is OverlayPanel =>
     value === "style" || value === "settings" || value === "help";
@@ -502,12 +508,12 @@ function App() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="vw-kicker">VoiceWave Pro</p>
-                    <h3 className="text-lg font-semibold text-[#09090B]">Power Features for Coders + Students</h3>
+                    <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Power Features for Coders + Students</h3>
                     <p className="mt-1 text-sm text-[#71717A]">
                       Keep fast local dictation in Free, unlock advanced formatting, domain packs, code mode, and power history tools in Pro.
                     </p>
                   </div>
-                  <span className={`vw-chip ${isPro ? "vw-pro-chip-active" : ""}`}>
+                  <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>
                     {isOwnerOverride ? "Owner Pro (Device Override)" : isPro ? "Pro Active" : "Free"}
                   </span>
                 </div>
@@ -544,7 +550,11 @@ function App() {
 
                 <div className="mt-4 flex flex-wrap gap-2">
                   {!isPro && (
-                    <button type="button" className="vw-btn-primary" onClick={() => void startProCheckout()}>
+                    <button
+                      type="button"
+                      className="vw-btn-primary vw-action-button"
+                      onClick={() => void startProCheckout()}
+                    >
                       Upgrade to Pro
                     </button>
                   )}
@@ -574,7 +584,9 @@ function App() {
                         <div className="flex items-center gap-2">
                           <Icon size={16} className="text-[#18181B]" />
                           <p className="text-sm font-semibold text-[#09090B]">{item.title}</p>
-                          <span className="vw-chip">{isPro ? "Unlocked" : "Pro"}</span>
+                          <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
+                            {isPro ? "Unlocked" : "Pro"}
+                          </span>
                         </div>
                         <p className="mt-1 text-xs text-[#71717A]">{item.detail}</p>
                       </div>
@@ -601,7 +613,7 @@ function App() {
                       />
                       <button
                         type="button"
-                        className="vw-btn-primary"
+                        className="vw-btn-primary vw-action-button"
                         onClick={() => void setOwnerOverride(true, ownerPassphrase)}
                       >
                         Enable Owner Pro
@@ -628,7 +640,7 @@ function App() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="vw-kicker">Phase III</p>
-                  <h3 className="text-lg font-semibold text-[#09090B]">Model Manager</h3>
+                  <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Model Manager</h3>
                   <p className="mt-1 text-sm text-[#71717A]">
                     Windows-only local model install, checksum verification, benchmark, and activation.
                   </p>
@@ -746,7 +758,11 @@ function App() {
                         {isInstalled && (
                           <button
                             type="button"
-                            className={settings.activeModel === model.modelId ? "vw-btn-primary" : "vw-btn-secondary"}
+                            className={
+                              settings.activeModel === model.modelId
+                                ? "vw-btn-primary vw-life-button"
+                                : "vw-btn-secondary"
+                            }
                             onClick={() => void makeModelActive(model.modelId)}
                           >
                             {settings.activeModel === model.modelId ? "Active" : "Make Active"}
@@ -762,18 +778,22 @@ function App() {
               <section className="vw-panel mt-8">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-lg font-semibold text-[#09090B]">Benchmark Recommendation</h3>
+                  <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Benchmark Recommendation</h3>
                   <p className="mt-1 text-sm text-[#71717A]">
                     Runs local benchmark and recommends the best model under default gates.
                   </p>
                 </div>
-                <button type="button" className="vw-btn-primary" onClick={() => void runBenchmarkAndRecommend()}>
+                <button
+                  type="button"
+                  className="vw-btn-primary vw-action-button"
+                  onClick={() => void runBenchmarkAndRecommend()}
+                >
                   Run Benchmark
                 </button>
               </div>
 
               {modelRecommendation && (
-                <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3">
+                <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3">
                   <p className="text-sm font-semibold text-[#09090B]">
                     Recommended: {modelRecommendation.modelId}
                   </p>
@@ -782,7 +802,7 @@ function App() {
               )}
 
               {benchmarkResults && (
-                <div className="mt-4 overflow-x-auto rounded-2xl border border-[#E4E4E7]">
+                <div className="vw-surface-base mt-4 overflow-x-auto rounded-2xl border border-[#E4E4E7]">
                   <table className="w-full text-left text-sm">
                     <thead className="bg-[#FAFAFA] text-[#71717A]">
                       <tr>
@@ -811,7 +831,7 @@ function App() {
 
           {activeNav === "sessions" && (
             <section className="vw-panel vw-panel-soft">
-            <h3 className="text-lg font-semibold text-[#09090B]">Session History and Retention</h3>
+            <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Session History and Retention</h3>
             <p className="mt-1 text-sm text-[#71717A]">
               Configure retention and review local session history.
             </p>
@@ -859,10 +879,12 @@ function App() {
               </button>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+            <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold text-[#09090B]">Advanced History Tools</p>
-                <span className="vw-chip">{isPro ? "Pro Unlocked" : "Pro"}</span>
+                <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
+                  {isPro ? "Pro Unlocked" : "Pro"}
+                </span>
               </div>
               <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
                 <input
@@ -879,7 +901,7 @@ function App() {
                 />
                 <button
                   type="button"
-                  className={isPro ? "vw-btn-secondary" : "vw-btn-primary"}
+                  className={isPro ? "vw-btn-secondary" : "vw-btn-primary vw-action-button"}
                   onClick={() => {
                     if (!isPro) {
                       setActiveNav("pro");
@@ -897,7 +919,7 @@ function App() {
                   <button
                     key={preset}
                     type="button"
-                    className={isPro ? "vw-btn-secondary" : "vw-btn-primary"}
+                    className={isPro ? "vw-btn-secondary" : "vw-btn-primary vw-action-button"}
                     onClick={() => {
                       if (!isPro) {
                         setActiveNav("pro");
@@ -916,7 +938,7 @@ function App() {
                 </p>
               )}
               {lastHistoryExport && (
-                <div className="mt-3 rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2">
+                <div className="vw-surface-base-sm mt-3 rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2">
                   <p className="text-xs font-semibold text-[#09090B]">
                     Export ready: {lastHistoryExport.preset} ({lastHistoryExport.recordCount} records)
                   </p>
@@ -993,7 +1015,7 @@ function App() {
 
           {activeNav === "dictionary" && (
             <section className="vw-panel">
-            <h3 className="text-lg font-semibold text-[#09090B]">Personal Dictionary Queue</h3>
+            <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Personal Dictionary Queue</h3>
             <p className="mt-1 text-sm text-[#71717A]">
               Approve or reject suggested terms, then manage accepted dictionary entries.
             </p>
@@ -1002,10 +1024,12 @@ function App() {
               <span className="vw-chip">Accepted: {dictionaryTerms.length}</span>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+            <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold text-[#09090B]">Domain Dictionaries (Pro)</p>
-                <span className="vw-chip">{isPro ? "Unlocked" : "Pro"}</span>
+                <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
+                  {isPro ? "Unlocked" : "Pro"}
+                </span>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 {domainPackOptions.map((pack) => {
@@ -1014,7 +1038,7 @@ function App() {
                     <button
                       key={pack}
                       type="button"
-                      className={active ? "vw-btn-primary" : "vw-btn-secondary"}
+                      className={active ? "vw-btn-primary vw-life-button" : "vw-btn-secondary"}
                       onClick={() => {
                         if (!isPro) {
                           setActiveNav("pro");
@@ -1040,7 +1064,7 @@ function App() {
 
             <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-2">
               <div className="p-1">
-                <h4 className="text-sm font-semibold text-[#09090B]">Queue</h4>
+                <h4 className="vw-section-heading text-sm font-semibold text-[#09090B]">Queue</h4>
                 <div className="vw-list-stagger mt-2 space-y-2">
                   {dictionaryQueue.length === 0 && (
                     <p className="text-sm text-[#71717A]">Queue is empty.</p>
@@ -1053,9 +1077,9 @@ function App() {
                       <p className="text-sm font-semibold text-[#09090B]">{item.term}</p>
                       <p className="text-xs text-[#71717A] mt-1">{item.sourcePreview}</p>
                       <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          className="vw-btn-primary text-xs px-3 py-1"
+                          <button
+                            type="button"
+                            className="vw-btn-primary text-xs px-3 py-1"
                           onClick={() => void approveDictionaryQueueEntry(item.entryId)}
                         >
                           Approve
@@ -1074,7 +1098,7 @@ function App() {
               </div>
 
               <div className="p-1">
-                <h4 className="text-sm font-semibold text-[#09090B]">Accepted Terms</h4>
+                <h4 className="vw-section-heading text-sm font-semibold text-[#09090B]">Accepted Terms</h4>
                 <div className="vw-list-stagger mt-2 space-y-2">
                   {dictionaryTerms.length === 0 && (
                     <p className="text-sm text-[#71717A]">No accepted terms yet.</p>
@@ -1108,12 +1132,12 @@ function App() {
               <section className="vw-panel vw-panel-soft">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <h3 className="text-lg font-semibold text-[#09090B]">Pro Tools Modes</h3>
+                    <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Pro Tools Modes</h3>
                     <p className="mt-1 text-sm text-[#71717A]">
                       Pick one mode and VoiceWave reconfigures output behavior for that workflow.
                     </p>
                   </div>
-                  <span className="vw-chip">Pro Active</span>
+                  <span className="vw-chip vw-chip-life">Pro Active</span>
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -1145,7 +1169,7 @@ function App() {
                 </div>
 
                 {displayedProToolsMode === "coding" && (
-                  <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                  <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
                     <p className="text-sm font-semibold text-[#09090B]">How To Speak In Coding Mode</p>
                     <div className="mt-2 grid grid-cols-1 gap-2 text-xs text-[#52525B] md:grid-cols-2">
                       <p><span className="font-semibold">Symbols:</span> open paren, open parenthesis, close paren, underscore, arrow, equals.</p>
@@ -1157,7 +1181,7 @@ function App() {
                 )}
 
                 {displayedProToolsMode === "writing" && (
-                  <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                  <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
                     <p className="text-sm font-semibold text-[#09090B]">Writing Mode Focus</p>
                     <p className="mt-2 text-xs text-[#52525B]">
                       List intent is detected more strongly. Example: "there are two process one hi two real" becomes:
@@ -1170,7 +1194,7 @@ function App() {
                 )}
 
                 {displayedProToolsMode === "study" && (
-                  <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                  <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
                     <p className="text-sm font-semibold text-[#09090B]">Study Mode Focus</p>
                     <p className="mt-2 text-xs text-[#52525B]">
                       Designed for voice notes you can revise later. Speak with markers like:
@@ -1189,7 +1213,7 @@ function App() {
             {proRequiredFeature && (
               <button
                 type="button"
-                className="vw-btn-primary mt-3"
+                className="vw-btn-primary vw-action-button mt-3"
                 onClick={() => setActiveNav("pro")}
               >
                 View Pro Plans
@@ -1206,7 +1230,7 @@ function App() {
           onClose={closeOverlay}
         >
           <div className="space-y-5">
-            <section className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
+            <section className="vw-surface-base rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-[#09090B]">Microphone Input</p>
@@ -1236,7 +1260,7 @@ function App() {
             </section>
 
             {micQualityWarning && (
-              <section className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-4">
+              <section className="vw-surface-elevated rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-4">
                 <p className="text-sm font-semibold text-[#09090B]">Microphone Quality Warning</p>
                 <p className="mt-1 text-sm text-[#3F3F46]">{micQualityWarning.message}</p>
                 <p className="mt-2 text-xs text-[#71717A]">Current input: {micQualityWarning.currentDevice}</p>
@@ -1258,7 +1282,7 @@ function App() {
               </section>
             )}
 
-            <section className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
+            <section className="vw-surface-base rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
               <div className="flex flex-wrap gap-2">
                 <span className="vw-chip">Microphone: {permissions.microphone}</span>
                 <span className="vw-chip">Insertion: {permissions.insertionCapability}</span>
@@ -1279,7 +1303,7 @@ function App() {
               </div>
             </section>
 
-            <section className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
+            <section className="vw-surface-base rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
               <p className="text-sm font-semibold text-[#09090B]">Diagnostics</p>
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                 <label className="flex items-center gap-2 text-sm text-[#09090B]">
@@ -1307,7 +1331,7 @@ function App() {
                 </p>
               </div>
               {lastDiagnosticsExport && (
-                <div className="mt-3 rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2 text-xs text-[#52525B]">
+                <div className="vw-surface-base-sm mt-3 rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2 text-xs text-[#52525B]">
                   <p>
                     Export complete:{" "}
                     <span className="font-semibold">
@@ -1319,7 +1343,7 @@ function App() {
               )}
             </section>
 
-            <section className="rounded-2xl border border-[#E4E4E7] bg-white">
+            <section className="vw-surface-base rounded-2xl border border-[#E4E4E7] bg-white">
               <button
                 type="button"
                 className="flex w-full items-center justify-between gap-3 px-4 py-4 text-left"
@@ -1389,7 +1413,7 @@ function App() {
                       <p className="mt-1 text-base font-semibold text-[#09090B]">{settings.releaseTailMs}</p>
                     </div>
                   </div>
-                  <div className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3">
+                  <div className="vw-surface-elevated rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <p className="text-sm font-semibold text-[#09090B]">Audio Chunk Quality</p>
@@ -1446,7 +1470,7 @@ function App() {
           onClose={closeOverlay}
         >
           <div className="space-y-4">
-            <section className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
+            <section className="vw-surface-base rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 rounded-full bg-[#F4F4F5] p-2 text-[#18181B]">
                   <Palette size={16} />
@@ -1460,7 +1484,7 @@ function App() {
                 </div>
               </div>
             </section>
-            <section className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-4">
+            <section className="vw-surface-elevated rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-4">
               <p className="text-sm font-semibold text-[#09090B]">Current Theme</p>
               <p className="mt-1 text-xs text-[#71717A]">
                 Harmonic v1.0 with high-contrast cards, neutral white surfaces, and focused action styling.
@@ -1477,7 +1501,7 @@ function App() {
           onClose={closeOverlay}
         >
           <div className="space-y-4">
-            <section className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
+            <section className="vw-surface-base rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 rounded-full bg-[#F4F4F5] p-2 text-[#18181B]">
                   <CircleHelp size={16} />
@@ -1490,7 +1514,7 @@ function App() {
                 </div>
               </div>
             </section>
-            <section className="rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
+            <section className="vw-surface-base rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
               <p className="text-sm font-semibold text-[#09090B]">Troubleshooting Flow</p>
               <ul className="mt-2 space-y-1 text-sm text-[#71717A]">
                 <li>1. Refresh microphone devices.</li>
