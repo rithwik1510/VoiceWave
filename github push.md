@@ -232,68 +232,13 @@ docs/phaseB/artifacts/fw-reset-backup-20260213-143659/
 u_o8xh7gwsrj-bubble_pop_1-476367.mp3
 ```
 
-## Deferred 3-Push Plan (Run Later Manually)
+## Deferred 3-Push Plan (Completed)
 
-Status: prepared only. Do not execute automatically in this cycle.
+Status: ✅ Completed and pushed to `origin/main`.
 
-### Push 1 - Pro UI Polish (Already Committed Locally)
-
-Commit:
-
-```text
-2f9acba
-```
-
-Commands:
-
-```bash
-git show --stat --oneline 2f9acba
-git push origin main
-```
-
-### Push 2 - Product/Agent Context Docs
-
-Commit message:
-
-```text
-docs(context): align readme agent rules and product soul notes
-```
-
-Files:
-
-```text
-AGENTS.md
-README.md
-soul.md
-```
-
-Commands:
-
-```bash
-git add AGENTS.md README.md soul.md
-git commit -m "docs(context): align readme agent rules and product soul notes"
-git push origin main
-```
-
-### Push 3 - Ops Checklist + Push Plan Update
-
-Commit message:
-
-```text
-docs(ops): add release checklist and refresh github push plan
-```
-
-Files:
-
-```text
-checklist before production.md
-github push.md
-```
-
-Commands:
-
-```bash
-git add "checklist before production.md" "github push.md"
-git commit -m "docs(ops): add release checklist and refresh github push plan"
-git push origin main
-```
+- [x] Push 1 - Pro UI Polish
+  - Commit: `2f9acba`
+- [x] Push 2 - Product/Agent Context Docs
+  - Commit: `be40de8` - `docs(context): update readiness notes and agent guardrails`
+- [x] Push 3 - Ops Checklist + Push Plan Update
+  - Commit: `b322985` - `docs(ops): refresh deferred push plan status`
