@@ -234,7 +234,7 @@ u_o8xh7gwsrj-bubble_pop_1-476367.mp3
 
 ## Deferred 3-Push Plan (Completed)
 
-Status: ✅ Completed and pushed to `origin/main`.
+Status: [x] Completed and pushed to `origin/main`.
 
 - [x] Push 1 - Pro UI Polish
   - Commit: `2f9acba`
@@ -242,3 +242,25 @@ Status: ✅ Completed and pushed to `origin/main`.
   - Commit: `be40de8` - `docs(context): update readiness notes and agent guardrails`
 - [x] Push 3 - Ops Checklist + Push Plan Update
   - Commit: `b322985` - `docs(ops): refresh deferred push plan status`
+
+## UI Deployment Plan (Progress Tracking)
+
+Status: 3 of 5 deployments pushed to `origin/main`.
+
+- [x] Deployment 1 - Foundation + Design Language Alignment
+  - Commit: `e00daf8` - `refactor(ui-foundation): align radius, serif headings, and core surface tokens`
+- [x] Deployment 2 - Home Glass Hierarchy Rebalance
+  - Commit: `459459e` - `refactor(home): rebalance glass hierarchy and reduce heavy/uneven depth`
+- [x] Deployment 3 - Cross-Page Consistency Pass
+  - Commit: `df0be5e` - `refactor(ui-consistency): unify surface behavior across app pages`
+- [ ] Deployment 4 - Tauri-Safe Animated Border Ring (Home Cards)
+  - Planned commit message: `feat(home-visuals): add webview-safe animated gradient ring wrappers`
+- [ ] Deployment 5 - Final Visual Polish (Performance Widget + Ring Tuning)
+  - Planned commit message: `fix(home-polish): improve performance widget glass contrast and ring subtlety`
+
+## Suggested Validation Before Each Future Push
+
+```bash
+npm run build
+git status --short
+```
