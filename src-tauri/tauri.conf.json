@@ -6,6 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
     "beforeBuildCommand": "npm run build",
+    "beforeBundleCommand": "powershell -ExecutionPolicy Bypass -File ./scripts/tauri/prepare-tauri-bundle-windows.ps1",
     "devUrl": "http://127.0.0.1:5173",
     "frontendDist": "../dist"
   },
@@ -26,6 +27,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "windows/WebView2Loader.dll": "WebView2Loader.dll"
+    },
     "icon": [
       "icons/icon.ico"
     ]
