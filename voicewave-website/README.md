@@ -1,0 +1,35 @@
+# VoiceWave Website
+
+Marketing site for VoiceWave desktop download distribution.
+
+## Local
+
+```powershell
+npm install
+npm run dev
+```
+
+## Build
+
+```powershell
+npm run build
+```
+
+## Download URL Wiring
+
+All primary download CTAs are controlled by one environment variable:
+
+`VITE_WINDOWS_DOWNLOAD_URL`
+
+Example:
+
+`VITE_WINDOWS_DOWNLOAD_URL=https://github.com/rithwik1510/voice-vibe/releases/latest/download/VoiceWave%20Local%20Core_0.1.0_x64-setup.exe`
+
+See `voicewave-website/.env.example`.
+
+## Render Static Site Settings
+
+1. Root directory: `voicewave-website`
+2. Build command: `npm install && npm run build`
+3. Publish directory: `dist`
+4. Environment variable: `VITE_WINDOWS_DOWNLOAD_URL=<your release asset URL>`
