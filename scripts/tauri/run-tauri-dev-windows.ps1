@@ -160,7 +160,6 @@ Stop-StaleVoiceWaveRuntimeProcesses
 Ensure-NoSpaceTargetDir
 
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
-$env:CARGO_BUILD_TARGET = "x86_64-pc-windows-gnu"
 
 $tauriCli = Join-Path $repoRoot "node_modules\.bin\tauri.cmd"
 if (-not (Test-Path $tauriCli)) {
@@ -169,7 +168,6 @@ if (-not (Test-Path $tauriCli)) {
 
 $commandArgs = @("dev")
 $commandArgs += Resolve-WhisperFeatureArgs
-$commandArgs += @("--", "--target", "x86_64-pc-windows-gnu")
 if ($TauriArgs) {
   $commandArgs += $TauriArgs
 }
@@ -177,7 +175,6 @@ if ($TauriArgs) {
 if ($DryRun) {
   Write-Host "Repo root: $repoRoot"
   Write-Host "RUSTUP_TOOLCHAIN=$env:RUSTUP_TOOLCHAIN"
-  Write-Host "CARGO_BUILD_TARGET=$env:CARGO_BUILD_TARGET"
   Write-Host "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
   Write-Host ($tauriCli + " " + ($commandArgs -join " "))
   exit 0

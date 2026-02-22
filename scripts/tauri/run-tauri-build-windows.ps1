@@ -32,6 +32,32 @@ function Add-MingwToPathIfAvailable {
   throw "MinGW toolchain not found at expected WinLibs path. Install BrechtSanders.WinLibs.POSIX.UCRT via winget."
 }
 
+function Prepend-PathEntryIfExists([string]$pathEntry) {
+  if (-not (Test-Path $pathEntry)) {
+    return
+  }
+
+  $entries = $env:PATH -split ";"
+  if ($entries -contains $pathEntry) {
+    return
+  }
+
+  $env:PATH = "$pathEntry;$env:PATH"
+}
+
+function Add-BundlerToolsToPath {
+  $candidatePaths = @(
+    "C:\\Program Files (x86)\\NSIS",
+    "C:\\Program Files\\NSIS",
+    "C:\\Program Files (x86)\\WiX Toolset v3.14\\bin",
+    "C:\\Program Files\\WiX Toolset v3.14\\bin"
+  )
+
+  foreach ($pathEntry in $candidatePaths) {
+    Prepend-PathEntryIfExists $pathEntry
+  }
+}
+
 function Ensure-NoSpaceTargetDir {
   if ($env:VIBE_SAFE_TARGET_DIR) {
     $env:CARGO_TARGET_DIR = $env:VIBE_SAFE_TARGET_DIR
@@ -61,6 +87,43 @@ function Test-TruthyValue([string]$value) {
 function Test-CommandAvailable([string]$commandName) {
   $command = Get-Command $commandName -ErrorAction SilentlyContinue
   return $null -ne $command
+}
+
+function Resolve-BundleTargetArgs([string[]]$existingArgs) {
+  $explicitBundles = $false
+  if ($existingArgs) {
+    foreach ($arg in $existingArgs) {
+      if ($arg -eq "--bundles" -or $arg -eq "-b") {
+        $explicitBundles = $true
+        break
+      }
+    }
+  }
+
+  if ($explicitBundles) {
+    return @()
+  }
+
+  $hasNsis = (Test-CommandAvailable "makensis.exe") -or (Test-CommandAvailable "makensis")
+  $hasCandle = (Test-CommandAvailable "candle.exe") -or (Test-CommandAvailable "candle")
+  $hasLight = (Test-CommandAvailable "light.exe") -or (Test-CommandAvailable "light")
+  $hasWix = $hasCandle -and $hasLight
+
+  if ($hasNsis -and $hasWix) {
+    return @()
+  }
+
+  if ($hasNsis -and (-not $hasWix)) {
+    Write-Warning "WiX bundler tools were not found (candle.exe + light.exe). Building NSIS installer only."
+    return @("--bundles", "nsis")
+  }
+
+  if ((-not $hasNsis) -and $hasWix) {
+    Write-Warning "NSIS bundler tool was not found (makensis.exe). Building MSI installer only."
+    return @("--bundles", "msi")
+  }
+
+  throw "No supported Windows bundler tools were found. Install NSIS (makensis.exe) and/or WiX Toolset (candle.exe + light.exe), then rerun npm run tauri:build."
 }
 
 function Resolve-WhisperFeatureArgs {
@@ -106,10 +169,10 @@ function Resolve-WhisperFeatureArgs {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Ensure-GnuRustToolchain
 Add-MingwToPathIfAvailable
+Add-BundlerToolsToPath
 Ensure-NoSpaceTargetDir
 
 $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"
-$env:CARGO_BUILD_TARGET = "x86_64-pc-windows-gnu"
 
 $tauriCli = Join-Path $repoRoot "node_modules\.bin\tauri.cmd"
 if (-not (Test-Path $tauriCli)) {
@@ -118,7 +181,7 @@ if (-not (Test-Path $tauriCli)) {
 
 $commandArgs = @("build")
 $commandArgs += Resolve-WhisperFeatureArgs
-$commandArgs += @("--", "--target", "x86_64-pc-windows-gnu")
+$commandArgs += Resolve-BundleTargetArgs $TauriArgs
 if ($TauriArgs) {
   $commandArgs += $TauriArgs
 }
@@ -126,7 +189,6 @@ if ($TauriArgs) {
 if ($DryRun) {
   Write-Host "Repo root: $repoRoot"
   Write-Host "RUSTUP_TOOLCHAIN=$env:RUSTUP_TOOLCHAIN"
-  Write-Host "CARGO_BUILD_TARGET=$env:CARGO_BUILD_TARGET"
   Write-Host "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
   Write-Host ($tauriCli + " " + ($commandArgs -join " "))
   exit 0
