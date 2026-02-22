@@ -49,17 +49,24 @@ use state::{DictationMode, VoiceWaveController, VoiceWaveSnapshot};
 use std::sync::Arc;
 #[cfg(feature = "desktop")]
 use tauri::{
-    Manager, PhysicalPosition, Position, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    LogicalSize, Manager, PhysicalPosition, Position, Size, State, WebviewUrl,
+    WebviewWindowBuilder, WindowEvent,
 };
 
 #[cfg(feature = "desktop")]
 const PILL_WINDOW_LABEL: &str = "voicewave-pill";
 #[cfg(feature = "desktop")]
-const PILL_WINDOW_WIDTH: f64 = 112.0;
+const PILL_WINDOW_COMPACT_WIDTH: f64 = 112.0;
 #[cfg(feature = "desktop")]
-const PILL_WINDOW_HEIGHT: f64 = 40.0;
+const PILL_WINDOW_COMPACT_HEIGHT: f64 = 40.0;
 #[cfg(feature = "desktop")]
-const PILL_WINDOW_BOTTOM_MARGIN: f64 = 14.0;
+const PILL_WINDOW_REVIEW_WIDTH: f64 = 420.0;
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_REVIEW_HEIGHT: f64 = 104.0;
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_COMPACT_BOTTOM_MARGIN: f64 = 14.0;
+#[cfg(feature = "desktop")]
+const PILL_WINDOW_REVIEW_BOTTOM_MARGIN: f64 = 54.0;
 #[cfg(feature = "desktop")]
 const PILL_WINDOW_NUDGE_X: i32 = -22;
 
@@ -95,7 +102,7 @@ fn ensure_pill_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, St
         WebviewUrl::App("pill.html".into()),
     )
     .title("VoiceWave Pill")
-    .inner_size(PILL_WINDOW_WIDTH, PILL_WINDOW_HEIGHT)
+    .inner_size(PILL_WINDOW_COMPACT_WIDTH, PILL_WINDOW_COMPACT_HEIGHT)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
@@ -112,12 +119,24 @@ fn ensure_pill_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, St
     let window = builder
         .build()
         .map_err(|err| format!("failed to create floating pill window: {err}"))?;
-    position_pill_window(app, &window);
+    position_pill_window(
+        app,
+        &window,
+        PILL_WINDOW_COMPACT_WIDTH,
+        PILL_WINDOW_COMPACT_HEIGHT,
+        PILL_WINDOW_COMPACT_BOTTOM_MARGIN,
+    );
     Ok(window)
 }
 
 #[cfg(feature = "desktop")]
-fn position_pill_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+fn position_pill_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    width_logical: f64,
+    height_logical: f64,
+    bottom_margin_logical: f64,
+) {
     let monitor = app
         .get_webview_window("main")
         .and_then(|main| main.current_monitor().ok().flatten())
@@ -128,9 +147,9 @@ fn position_pill_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     };
 
     let work_area = monitor.work_area();
-    let width = PILL_WINDOW_WIDTH.round() as i32;
-    let height = PILL_WINDOW_HEIGHT.round() as i32;
-    let margin = PILL_WINDOW_BOTTOM_MARGIN.round() as i32;
+    let width = width_logical.round() as i32;
+    let height = height_logical.round() as i32;
+    let margin = bottom_margin_logical.round() as i32;
     let center_offset_x = ((work_area.size.width as i32 - width) / 2).max(0);
     let bottom_offset_y = (work_area.size.height as i32 - height - margin).max(0);
     let x = work_area.position.x + center_offset_x + PILL_WINDOW_NUDGE_X;
@@ -144,7 +163,17 @@ fn sync_pill_visibility(app: &tauri::AppHandle, visible: bool) -> Result<(), Str
     // Keep the floating pill purely visual so it never steals pointer focus from the main window.
     let _ = pill.set_ignore_cursor_events(true);
     if visible {
-        position_pill_window(app, &pill);
+        let _ = pill.set_size(Size::Logical(LogicalSize::new(
+            PILL_WINDOW_COMPACT_WIDTH,
+            PILL_WINDOW_COMPACT_HEIGHT,
+        )));
+        position_pill_window(
+            app,
+            &pill,
+            PILL_WINDOW_COMPACT_WIDTH,
+            PILL_WINDOW_COMPACT_HEIGHT,
+            PILL_WINDOW_COMPACT_BOTTOM_MARGIN,
+        );
         pill.show()
             .map_err(|err| format!("failed to show floating pill: {err}"))?;
     } else {
@@ -350,6 +379,42 @@ async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
     main_window
         .set_focus()
         .map_err(|err| format!("failed to focus main window: {err}"))?;
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn set_pill_review_mode(app: tauri::AppHandle, review_mode: bool) -> Result<(), String> {
+    let pill = ensure_pill_window(&app)?;
+    if review_mode {
+        let _ = pill.set_ignore_cursor_events(false);
+        pill.set_size(Size::Logical(LogicalSize::new(
+            PILL_WINDOW_REVIEW_WIDTH,
+            PILL_WINDOW_REVIEW_HEIGHT,
+        )))
+        .map_err(|err| format!("failed to expand floating pill: {err}"))?;
+        position_pill_window(
+            &app,
+            &pill,
+            PILL_WINDOW_REVIEW_WIDTH,
+            PILL_WINDOW_REVIEW_HEIGHT,
+            PILL_WINDOW_REVIEW_BOTTOM_MARGIN,
+        );
+    } else {
+        let _ = pill.set_ignore_cursor_events(true);
+        pill.set_size(Size::Logical(LogicalSize::new(
+            PILL_WINDOW_COMPACT_WIDTH,
+            PILL_WINDOW_COMPACT_HEIGHT,
+        )))
+        .map_err(|err| format!("failed to collapse floating pill: {err}"))?;
+        position_pill_window(
+            &app,
+            &pill,
+            PILL_WINDOW_COMPACT_WIDTH,
+            PILL_WINDOW_COMPACT_HEIGHT,
+            PILL_WINDOW_COMPACT_BOTTOM_MARGIN,
+        );
+    }
     Ok(())
 }
 
@@ -857,6 +922,20 @@ async fn remove_dictionary_term(
 }
 
 #[cfg(feature = "desktop")]
+#[tauri::command]
+async fn add_dictionary_term(
+    app: tauri::AppHandle,
+    runtime: State<'_, RuntimeContext>,
+    term: String,
+) -> Result<DictionaryTerm, String> {
+    runtime
+        .controller
+        .add_dictionary_term(app, term)
+        .await
+        .map_err(|err| AppError::Controller(err).into())
+}
+
+#[cfg(feature = "desktop")]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -901,6 +980,7 @@ pub fn run() {
             set_code_mode_settings,
             set_pro_post_processing_enabled,
             show_main_window,
+            set_pill_review_mode,
             get_diagnostics_status,
             set_diagnostics_opt_in,
             export_diagnostics_bundle,
@@ -942,7 +1022,8 @@ pub fn run() {
             approve_dictionary_entry,
             reject_dictionary_entry,
             get_dictionary_terms,
-            remove_dictionary_term
+            remove_dictionary_term,
+            add_dictionary_term
         ])
         .run(tauri::generate_context!())
         .expect("error while running voicewave tauri app");

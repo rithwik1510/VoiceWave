@@ -802,6 +802,21 @@ mod tests {
     }
 
     #[test]
+    fn prefer_clipboard_flag_forces_clipboard_first_even_for_short_plain_text() {
+        let backend = DeterministicMatrixBackend::new();
+        let mut engine = InsertionEngine::new(Box::new(backend));
+        let result = engine
+            .insert_text(InsertTextRequest {
+                text: "ok".to_string(),
+                target_app: Some("Notepad".to_string()),
+                prefer_clipboard: true,
+            })
+            .expect("insert should work");
+        assert!(result.success);
+        assert_eq!(result.method, InsertionMethod::ClipboardPaste);
+    }
+
+    #[test]
     fn history_fallback_runs_when_all_methods_fail() {
         let backend = DeterministicMatrixBackend::new()
             .with_failure_budget("Cursor", InsertionMethod::Direct, 1)
@@ -820,6 +835,28 @@ mod tests {
     }
 
     #[test]
+    fn history_fallback_surfaces_last_failure_message() {
+        let backend = DeterministicMatrixBackend::new()
+            .with_failure_budget("Cursor", InsertionMethod::Direct, 1)
+            .with_failure_budget("Cursor", InsertionMethod::ClipboardPaste, 1)
+            .with_failure_budget("Cursor", InsertionMethod::ClipboardOnly, 1);
+        let mut engine = InsertionEngine::new(Box::new(backend));
+        let result = engine
+            .insert_text(InsertTextRequest {
+                text: "test".to_string(),
+                target_app: Some("Cursor".to_string()),
+                prefer_clipboard: false,
+            })
+            .expect("history fallback should still return result");
+        assert!(!result.success);
+        assert_eq!(result.method, InsertionMethod::HistoryFallback);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("Clipboard-only fallback blocked.")
+        );
+    }
+
+    #[test]
     fn undo_uses_backend_path() {
         let backend = DeterministicMatrixBackend::new();
         let mut engine = InsertionEngine::new(Box::new(backend));
@@ -833,6 +870,23 @@ mod tests {
         assert!(first.success);
         let second = engine.undo_last();
         assert!(!second.success);
+    }
+
+    #[test]
+    fn undo_failure_returns_backend_error_message() {
+        let backend = DeterministicMatrixBackend::new().with_undo_failure(true);
+        let mut engine = InsertionEngine::new(Box::new(backend));
+        let _ = engine.insert_text(InsertTextRequest {
+            text: "hello".to_string(),
+            target_app: Some("Notepad".to_string()),
+            prefer_clipboard: false,
+        });
+
+        let result = engine.undo_last();
+        assert!(!result.success);
+        assert_eq!(result.transaction_id, None);
+        let message = result.message.unwrap_or_default();
+        assert!(message.contains("active app rejected Ctrl+Z"));
     }
 
     #[test]

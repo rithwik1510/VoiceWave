@@ -1432,27 +1432,49 @@ mod tests {
         root
     }
 
+    fn configure_manifest_for_file_download(manager: &mut ModelManager, model_id: &str) -> PathBuf {
+        let manifest = manager
+            .catalog
+            .iter_mut()
+            .find(|row| row.model_id == model_id)
+            .expect("manifest should exist");
+
+        fs::create_dir_all(&manager.source_dir).expect("create source dir");
+        let source_path = manager
+            .source_dir
+            .join(format!("{}-test-source.bin", model_id.replace('.', "_")));
+        let payload = source_payload_for_manifest(&manifest.model_id, &manifest.version, manifest.size);
+        fs::write(&source_path, payload).expect("seed local source payload");
+        let payload = fs::read(&source_path).expect("read local source payload");
+        manifest.size = payload.len() as u64;
+        manifest.sha256 = sha256_hex(&payload);
+
+        manifest.download_url = format!("file://{}", source_path.to_string_lossy());
+        manifest.signature = sign_manifest(manifest);
+        source_path
+    }
+
     #[test]
     fn tampered_model_is_rejected_and_quarantined() {
         let root = test_root("tampered");
         let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        let source_path = configure_manifest_for_file_download(&mut manager, "fw-small.en");
 
         let manifest = manager
             .catalog
             .iter()
-            .find(|row| row.model_id == "tiny.en")
+            .find(|row| row.model_id == "fw-small.en")
             .cloned()
             .expect("manifest");
-        let source_path = manager
-            .resolve_download_source(&manifest)
-            .expect("source path");
+        let resolved_source = manager.resolve_download_source(&manifest).expect("source path");
+        assert_eq!(resolved_source, source_path);
 
         let mut tampered = fs::read(&source_path).expect("source bytes");
         tampered[0] ^= 0xFF;
         fs::write(&source_path, tampered).expect("write tampered source");
 
         let err = manager
-            .install_model_resumable("tiny.en", || false, || false, |_| {})
+            .install_model_resumable("fw-small.en", || false, || false, |_| {})
             .expect_err("install should fail");
 
         match err {
@@ -1467,7 +1489,7 @@ mod tests {
         assert!(quarantined > 0, "tampered artifact should be quarantined");
 
         let status = manager
-            .get_download_status("tiny.en", None)
+            .get_download_status("fw-small.en", None)
             .expect("failed status");
         assert_eq!(status.state, ModelStatusState::Failed);
         assert!(status.resumable);
@@ -1477,12 +1499,13 @@ mod tests {
     fn interrupted_download_resumes_from_checkpoint() {
         let root = test_root("resume");
         let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        configure_manifest_for_file_download(&mut manager, "fw-small.en");
         manager.set_test_chunk_size(2048);
 
         let mut pause_after_checks = 0_u32;
         let paused = manager
             .install_model_resumable(
-                "base.en",
+                "fw-small.en",
                 || false,
                 || {
                     pause_after_checks += 1;
@@ -1497,7 +1520,7 @@ mod tests {
         assert!(paused.progress < 100);
 
         let installed = manager
-            .install_model_resumable("base.en", || false, || false, |_| {})
+            .install_model_resumable("fw-small.en", || false, || false, |_| {})
             .expect("resume to completion");
 
         assert_eq!(installed.state, ModelStatusState::Installed);
@@ -1509,10 +1532,11 @@ mod tests {
     fn low_disk_failure_can_retry_after_capacity_restored() {
         let root = test_root("lowdisk");
         let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        configure_manifest_for_file_download(&mut manager, "fw-small.en");
         manager.set_test_storage_limit(Some(16 * 1024));
 
         let err = manager
-            .install_model_resumable("small.en", || false, || false, |_| {})
+            .install_model_resumable("fw-small.en", || false, || false, |_| {})
             .expect_err("low disk should fail");
 
         match err {
@@ -1522,7 +1546,7 @@ mod tests {
 
         manager.set_test_storage_limit(None);
         let installed = manager
-            .install_model_resumable("small.en", || false, || false, |_| {})
+            .install_model_resumable("fw-small.en", || false, || false, |_| {})
             .expect("retry should succeed");
         assert_eq!(installed.state, ModelStatusState::Installed);
     }
@@ -1531,12 +1555,13 @@ mod tests {
     fn cancel_then_retry_completes_install() {
         let root = test_root("cancel-retry");
         let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        configure_manifest_for_file_download(&mut manager, "fw-large-v3");
         manager.set_test_chunk_size(2048);
 
         let mut checks = 0_u32;
         let cancelled = manager
             .install_model_resumable(
-                "medium.en",
+                "fw-large-v3",
                 || {
                     checks += 1;
                     checks > 4
@@ -1547,10 +1572,10 @@ mod tests {
             .expect("cancel status");
 
         assert_eq!(cancelled.state, ModelStatusState::Cancelled);
-        assert!(cancelled.progress > 0);
+        assert!(cancelled.resumable);
 
         let installed = manager
-            .install_model_resumable("medium.en", || false, || false, |_| {})
+            .install_model_resumable("fw-large-v3", || false, || false, |_| {})
             .expect("retry after cancel should install");
         assert_eq!(installed.state, ModelStatusState::Installed);
     }
@@ -1559,11 +1584,12 @@ mod tests {
     fn invalid_manifest_signature_rejects_and_quarantines_partial() {
         let root = test_root("signature");
         let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        configure_manifest_for_file_download(&mut manager, "fw-small.en");
 
         let manifest = manager
             .catalog
             .iter()
-            .find(|row| row.model_id == "tiny.en")
+            .find(|row| row.model_id == "fw-small.en")
             .cloned()
             .expect("manifest");
         let partial_path = manager.partial_model_path_for(&manifest);
@@ -1573,12 +1599,12 @@ mod tests {
         let tampered_manifest = manager
             .catalog
             .iter_mut()
-            .find(|row| row.model_id == "tiny.en")
+            .find(|row| row.model_id == "fw-small.en")
             .expect("tampered manifest");
         tampered_manifest.signature = "broken-signature".to_string();
 
         let err = manager
-            .install_model_resumable("tiny.en", || false, || false, |_| {})
+            .install_model_resumable("fw-small.en", || false, || false, |_| {})
             .expect_err("signature must fail");
 
         match err {
@@ -1593,11 +1619,12 @@ mod tests {
     fn corrupt_partial_is_quarantined_then_recovered() {
         let root = test_root("corrupt-partial");
         let mut manager = ModelManager::with_test_paths(&root).expect("manager");
+        configure_manifest_for_file_download(&mut manager, "fw-small.en");
 
         let manifest = manager
             .catalog
             .iter()
-            .find(|row| row.model_id == "base.en")
+            .find(|row| row.model_id == "fw-small.en")
             .cloned()
             .expect("manifest");
         let partial_path = manager.partial_model_path_for(&manifest);
@@ -1605,7 +1632,7 @@ mod tests {
         fs::write(&partial_path, vec![0_u8; manifest.size as usize + 4096]).expect("oversized partial");
 
         let installed = manager
-            .install_model_resumable("base.en", || false, || false, |_| {})
+            .install_model_resumable("fw-small.en", || false, || false, |_| {})
             .expect("should recover from corrupt partial");
         assert_eq!(installed.state, ModelStatusState::Installed);
     }

@@ -7,9 +7,14 @@ use voicewave_core_lib::insertion::{
 };
 
 static LAST_INSERTED_TEXT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static LONG_UTTERANCE_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn capture_slot() -> &'static Mutex<Option<String>> {
     LAST_INSERTED_TEXT.get_or_init(|| Mutex::new(None))
+}
+
+fn long_utterance_test_mutex() -> &'static Mutex<()> {
+    LONG_UTTERANCE_TEST_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(Default)]
@@ -79,6 +84,11 @@ fn build_long_utterance(target_seconds: usize, suffix_terms: &[&str]) -> String 
 }
 
 fn assert_paths_receive_full_transcript(transcript: &str, suffix_terms: &[&str]) {
+    let _serial_guard = match long_utterance_test_mutex().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
     // Insertion path: backend receives full text without truncation.
     *capture_slot().lock().expect("capture mutex should be available") = None;
     let mut insertion = InsertionEngine::new(Box::new(CaptureBackend));
@@ -115,12 +125,13 @@ fn assert_paths_receive_full_transcript(transcript: &str, suffix_terms: &[&str])
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].source, "dictation");
 
-    // Dictionary path: suffix terms from the end of long utterance must be ingested.
+    // Dictionary path: suffix terms from the end of long utterance must be ingested
+    // when the runtime marks the utterance as low-confidence.
     let dictionary_path = make_temp_path("dictionary-long-utterance", "json");
     let mut dictionary =
         DictionaryManager::from_path(&dictionary_path).expect("dictionary manager should init");
     dictionary
-        .ingest_transcript(transcript)
+        .ingest_transcript_with_signal(transcript, true)
         .expect("dictionary ingestion should succeed");
     let queue = dictionary.get_queue(Some(20));
     for token in suffix_terms {

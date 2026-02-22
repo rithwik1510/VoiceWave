@@ -346,4 +346,43 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn load_returns_default_for_whitespace_only_json() {
+        let path = temp_settings_path();
+        let store = SettingsStore::from_path(path.clone());
+        std::fs::write(&path, " \n\t  ").expect("write should succeed");
+
+        let loaded = store.load().expect("load should succeed");
+        assert_eq!(loaded.active_model, "fw-small.en");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalize_pro_settings_clamps_behavior_and_deduplicates_domain_packs() {
+        let mut settings = VoiceWaveSettings::default();
+        settings.app_profile_overrides.editor.punctuation_aggressiveness = 9;
+        settings.app_profile_overrides.browser.sentence_compactness = 7;
+        settings.active_domain_packs = vec![
+            DomainPackId::Coding,
+            DomainPackId::Student,
+            DomainPackId::Coding,
+            DomainPackId::Productivity,
+            DomainPackId::Student,
+        ];
+
+        normalize_pro_settings(&mut settings);
+
+        assert_eq!(settings.app_profile_overrides.editor.punctuation_aggressiveness, 2);
+        assert_eq!(settings.app_profile_overrides.browser.sentence_compactness, 2);
+        assert_eq!(
+            settings.active_domain_packs,
+            vec![
+                DomainPackId::Coding,
+                DomainPackId::Student,
+                DomainPackId::Productivity
+            ]
+        );
+    }
 }

@@ -217,6 +217,10 @@ const FINALIZE_LOOKBACK_MS: u64 = 1_200;
 const FW_MIN_DECODE_AUDIO_MS_DEFAULT: u64 = 280;
 const TRANSCRIPT_OVERLAP_TOKENS: usize = 8;
 const BENCHMARK_RELIABILITY_WINDOW: usize = 40;
+const CORRECTION_SESSION_WINDOW_MS: u64 = 15_000;
+const CORRECTION_MIN_SHARED_RATIO: f32 = 0.72;
+const CORRECTION_MAX_CHANGED_TOKENS: usize = 2;
+const CORRECTION_MAX_TOKEN_EDIT_DISTANCE: usize = 2;
 #[cfg(target_os = "windows")]
 const HOTKEY_CUE_PRESS_WAV: &[u8] = include_bytes!("../assets/audio/cue_press.wav");
 #[cfg(target_os = "windows")]
@@ -259,6 +263,161 @@ fn tokenize_transcript_words(text: &str) -> Vec<String> {
                 .to_ascii_lowercase()
         })
         .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn tokenize_correction_terms(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|token| {
+            token
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_' || *ch == '.')
+                .collect::<String>()
+        })
+        .map(|token| token.trim_matches(|ch: char| ch == '-' || ch == '_' || ch == '.').to_string())
+        .filter(|token| token.len() >= 2)
+        .collect()
+}
+
+fn is_high_signal_correction_token(token: &str) -> bool {
+    if token.len() < 4 || token.len() > 36 {
+        return false;
+    }
+
+    let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
+    let has_structure = token.contains('-') || token.contains('_') || token.contains('.');
+    if has_digit || has_structure {
+        return true;
+    }
+
+    let uppercase_count = token.chars().filter(|ch| ch.is_ascii_uppercase()).count();
+    let has_internal_upper = token.chars().skip(1).any(|ch| ch.is_ascii_uppercase());
+    uppercase_count >= 3 || (has_internal_upper && token.len() >= 5)
+}
+
+fn normalize_correction_token_for_similarity(token: &str) -> String {
+    token
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+fn bounded_levenshtein(a: &str, b: &str, max_distance: usize) -> usize {
+    if a == b {
+        return 0;
+    }
+    let a_len = a.chars().count();
+    let b_len = b.chars().count();
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
+    if a_len.abs_diff(b_len) > max_distance {
+        return max_distance + 1;
+    }
+
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
+    let mut curr = vec![0usize; b_chars.len() + 1];
+    for (i, a_ch) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        let mut row_min = curr[0];
+        for (j, b_ch) in b_chars.iter().enumerate() {
+            let substitution = prev[j] + usize::from(a_ch != *b_ch);
+            let insertion = curr[j] + 1;
+            let deletion = prev[j + 1] + 1;
+            let distance = substitution.min(insertion).min(deletion);
+            curr[j + 1] = distance;
+            row_min = row_min.min(distance);
+        }
+        if row_min > max_distance {
+            return max_distance + 1;
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b_chars.len()]
+}
+
+fn has_similar_replaced_token(changed_token: &str, removed_tokens: &[String]) -> bool {
+    let normalized_changed = normalize_correction_token_for_similarity(changed_token);
+    if normalized_changed.len() < 4 {
+        return false;
+    }
+
+    removed_tokens.iter().any(|removed| {
+        let normalized_removed = normalize_correction_token_for_similarity(removed);
+        if normalized_removed.len() < 4 {
+            return false;
+        }
+        bounded_levenshtein(
+            &normalized_changed,
+            &normalized_removed,
+            CORRECTION_MAX_TOKEN_EDIT_DISTANCE,
+        ) <= CORRECTION_MAX_TOKEN_EDIT_DISTANCE
+    })
+}
+
+fn derive_correction_candidates(previous: &str, current: &str) -> Vec<String> {
+    let prev_tokens = tokenize_correction_terms(previous);
+    let curr_tokens = tokenize_correction_terms(current);
+    if prev_tokens.len() < 3 || curr_tokens.len() < 3 {
+        return Vec::new();
+    }
+
+    let prev_set: HashSet<String> = prev_tokens
+        .iter()
+        .map(|token| token.to_ascii_lowercase())
+        .collect();
+    let curr_set: HashSet<String> = curr_tokens
+        .iter()
+        .map(|token| token.to_ascii_lowercase())
+        .collect();
+    let curr_original_by_lower: HashMap<String, String> = curr_tokens
+        .iter()
+        .map(|token| (token.to_ascii_lowercase(), token.clone()))
+        .collect();
+
+    if prev_set.is_empty() || curr_set.is_empty() {
+        return Vec::new();
+    }
+
+    let shared = curr_set.iter().filter(|token| prev_set.contains(*token)).count();
+    let min_len = prev_set.len().min(curr_set.len());
+    if min_len == 0 {
+        return Vec::new();
+    }
+    let shared_ratio = shared as f32 / min_len as f32;
+    if shared_ratio < CORRECTION_MIN_SHARED_RATIO {
+        return Vec::new();
+    }
+
+    let changed: Vec<String> = curr_set
+        .iter()
+        .filter(|token| !prev_set.contains(*token))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = prev_set
+        .iter()
+        .filter(|token| !curr_set.contains(*token))
+        .cloned()
+        .collect();
+    if changed.is_empty()
+        || changed.len() > CORRECTION_MAX_CHANGED_TOKENS
+        || removed.is_empty()
+        || removed.len() > CORRECTION_MAX_CHANGED_TOKENS
+    {
+        return Vec::new();
+    }
+
+    changed
+        .into_iter()
+        .filter_map(|token| curr_original_by_lower.get(&token).cloned())
+        .filter(|token| is_high_signal_correction_token(token))
+        .filter(|token| has_similar_replaced_token(token, &removed))
+        .take(CORRECTION_MAX_CHANGED_TOKENS)
         .collect()
 }
 
@@ -515,6 +674,12 @@ struct DictationSession {
     release_requested_at_utc_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+struct CorrectionSession {
+    inserted_text: String,
+    inserted_at_utc_ms: u64,
+}
+
 pub struct VoiceWaveController {
     audio: AudioCaptureService,
     settings_store: SettingsStore,
@@ -540,6 +705,7 @@ pub struct VoiceWaveController {
     hotkey_runtime_monitor: Mutex<Option<Arc<AtomicBool>>>,
     mic_level_monitor: Mutex<Option<Arc<AtomicBool>>>,
     decode_policy: Mutex<RuntimeDecodePolicy>,
+    correction_session: Mutex<Option<CorrectionSession>>,
 }
 
 impl VoiceWaveController {
@@ -637,6 +803,7 @@ impl VoiceWaveController {
             hotkey_runtime_monitor: Mutex::new(None),
             mic_level_monitor: Mutex::new(None),
             decode_policy: Mutex::new(RuntimeDecodePolicy::default()),
+            correction_session: Mutex::new(None),
         })
     }
 
@@ -2103,6 +2270,18 @@ impl VoiceWaveController {
             .map_err(ControllerError::from)
     }
 
+    pub async fn add_dictionary_term(
+        &self,
+        _app: AppHandle,
+        term: String,
+    ) -> Result<DictionaryTerm, ControllerError> {
+        self.dictionary_manager
+            .lock()
+            .await
+            .add_term(&term, Some("manual-add".to_string()))
+            .map_err(ControllerError::from)
+    }
+
     async fn ensure_pro_feature(&self, feature_key: &str) -> Result<(), ControllerError> {
         let entitlement = self.billing_manager.lock().await.snapshot();
         if entitlement.is_pro {
@@ -2654,6 +2833,34 @@ impl VoiceWaveController {
                 }
             };
         let insert_ms = insert_started.elapsed().as_millis() as u64;
+        let inserted_at_utc_ms = now_utc_ms();
+        let previous_correction_session = { self.correction_session.lock().await.clone() };
+        let correction_candidates = if insertion_success {
+            if let Some(previous) = previous_correction_session {
+                if inserted_at_utc_ms.saturating_sub(previous.inserted_at_utc_ms)
+                    <= CORRECTION_SESSION_WINDOW_MS
+                {
+                    derive_correction_candidates(&previous.inserted_text, &final_transcript)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        {
+            let mut correction_session = self.correction_session.lock().await;
+            if insertion_success {
+                *correction_session = Some(CorrectionSession {
+                    inserted_text: final_transcript.clone(),
+                    inserted_at_utc_ms,
+                });
+            } else {
+                *correction_session = None;
+            }
+        }
 
         self.set_session_state(session_id, DictationLifecycleState::Inserted, None, None)
             .await;
@@ -2769,7 +2976,8 @@ impl VoiceWaveController {
         let history_manager = Arc::clone(&self.history_manager);
         let dictionary_manager = Arc::clone(&self.dictionary_manager);
         let transcript_for_history = final_transcript.clone();
-        let transcript_for_dictionary = final_transcript;
+        let transcript_for_dictionary_preview = final_transcript;
+        let correction_candidates_for_dictionary = correction_candidates;
         tauri::async_runtime::spawn(async move {
             if let Err(err) = history_manager
                 .lock()
@@ -2781,7 +2989,10 @@ impl VoiceWaveController {
             if let Err(err) = dictionary_manager
                 .lock()
                 .await
-                .ingest_transcript(&transcript_for_dictionary)
+                .queue_correction_candidates(
+                    &correction_candidates_for_dictionary,
+                    &transcript_for_dictionary_preview,
+                )
             {
                 eprintln!("dictionary ingest failed: {err}");
             }
@@ -3170,9 +3381,12 @@ fn percentile_index(len: usize, percentile: f32) -> usize {
 mod tests {
     use super::{
         asr_integrity_metrics, build_terminology_hint_from_texts, clamp_vad_threshold,
-        floor_decode_mode, is_likely_low_quality_input_name, now_utc_ms, push_release_allowed,
-        DictationStartTrigger, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD, RECOMMENDED_VAD_THRESHOLD,
+        classify_insertion_target, decode_mode_key, derive_correction_candidates,
+        floor_decode_mode, insertion_method_key, is_likely_low_quality_input_name, now_utc_ms,
+        push_release_allowed, DictationStartTrigger, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD,
+        RECOMMENDED_VAD_THRESHOLD,
     };
+    use crate::insertion::InsertionMethod;
     use crate::settings::DecodeMode;
     use std::time::Duration;
 
@@ -3214,6 +3428,42 @@ mod tests {
     }
 
     #[test]
+    fn decode_mode_key_mapping_is_stable() {
+        assert_eq!(decode_mode_key(DecodeMode::Fast), "fast");
+        assert_eq!(decode_mode_key(DecodeMode::Balanced), "balanced");
+        assert_eq!(decode_mode_key(DecodeMode::Quality), "quality");
+    }
+
+    #[test]
+    fn insertion_method_key_mapping_is_stable() {
+        assert_eq!(insertion_method_key(&InsertionMethod::Direct), "direct");
+        assert_eq!(
+            insertion_method_key(&InsertionMethod::ClipboardPaste),
+            "clipboardPaste"
+        );
+        assert_eq!(
+            insertion_method_key(&InsertionMethod::ClipboardOnly),
+            "clipboardOnly"
+        );
+        assert_eq!(
+            insertion_method_key(&InsertionMethod::HistoryFallback),
+            "historyFallback"
+        );
+    }
+
+    #[test]
+    fn insertion_target_classification_covers_known_app_families() {
+        assert_eq!(classify_insertion_target(None), "unknown");
+        assert_eq!(
+            classify_insertion_target(Some("Google AI Studio - Google Chrome")),
+            "browser"
+        );
+        assert_eq!(classify_insertion_target(Some("VS Code")), "editor");
+        assert_eq!(classify_insertion_target(Some("Slack")), "collab");
+        assert_eq!(classify_insertion_target(Some("Some Desktop App")), "desktop");
+    }
+
+    #[test]
     fn decode_mode_floor_never_drops_below_requested_floor() {
         assert_eq!(floor_decode_mode(DecodeMode::Fast, DecodeMode::Balanced), DecodeMode::Balanced);
         assert_eq!(floor_decode_mode(DecodeMode::Balanced, DecodeMode::Quality), DecodeMode::Quality);
@@ -3246,5 +3496,41 @@ mod tests {
         let hint = build_terminology_hint_from_texts(&terms, 4).expect("hint should exist");
         assert!(hint.contains("gRPC"));
         assert!(hint.to_ascii_lowercase().contains("kubernetes"));
+    }
+
+    #[test]
+    fn correction_candidates_ignore_plain_rephrasing() {
+        let candidates = derive_correction_candidates(
+            "today we should finalize the proposal and timeline",
+            "today we should finalize the proposal and delivery",
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn correction_candidates_pick_high_signal_token_changes() {
+        let candidates = derive_correction_candidates(
+            "please open VoiceWave and load FW-V2 model",
+            "please open VoiceWave and load FW-V3 model",
+        );
+        assert!(candidates.contains(&"FW-V3".to_string()));
+    }
+
+    #[test]
+    fn correction_candidates_ignore_high_signal_additions_without_replacement() {
+        let candidates = derive_correction_candidates(
+            "please open the project and run the build now",
+            "please open the project and run the GitHub build now",
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn correction_candidates_require_similar_replacement() {
+        let candidates = derive_correction_candidates(
+            "please review githib issues in the tracker",
+            "please review GitHub issues in the tracker",
+        );
+        assert!(candidates.contains(&"GitHub".to_string()));
     }
 }

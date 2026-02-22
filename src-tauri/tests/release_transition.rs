@@ -1,3 +1,5 @@
+#![cfg(feature = "desktop")]
+
 use voicewave_core_lib::state::{
     release_watchdog_recovered, release_watchdog_threshold_ms,
 };

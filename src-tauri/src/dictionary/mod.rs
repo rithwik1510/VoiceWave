@@ -2,6 +2,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    collections::HashSet,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -47,6 +48,8 @@ pub enum DictionaryError {
     QueueEntryNotFound(String),
     #[error("dictionary term not found: {0}")]
     TermNotFound(String),
+    #[error("dictionary term is empty")]
+    EmptyTerm,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -85,10 +88,21 @@ impl DictionaryManager {
     }
 
     pub fn ingest_transcript(&mut self, transcript: &str) -> Result<usize, DictionaryError> {
+        self.ingest_transcript_with_signal(transcript, false)
+    }
+
+    pub fn ingest_transcript_with_signal(
+        &mut self,
+        transcript: &str,
+        low_confidence: bool,
+    ) -> Result<usize, DictionaryError> {
         let preview = transcript.chars().take(80).collect::<String>();
         let mut added = 0usize;
 
-        for candidate in candidate_terms(transcript).into_iter().take(5) {
+        for candidate in candidate_terms(transcript, low_confidence)
+            .into_iter()
+            .take(3)
+        {
             if self.contains_term(&candidate) || self.in_queue(&candidate) {
                 continue;
             }
@@ -97,6 +111,39 @@ impl DictionaryManager {
             self.store.queue.push(DictionaryQueueItem {
                 entry_id,
                 term: candidate,
+                source_preview: preview.clone(),
+                created_at_utc_ms: now_utc_ms(),
+            });
+            added += 1;
+        }
+
+        if added > 0 {
+            self.persist()?;
+        }
+        Ok(added)
+    }
+
+    pub fn queue_correction_candidates(
+        &mut self,
+        candidates: &[String],
+        source_preview: &str,
+    ) -> Result<usize, DictionaryError> {
+        let mut added = 0usize;
+        let preview = source_preview.chars().take(80).collect::<String>();
+
+        for candidate in candidates.iter().take(3) {
+            let normalized = candidate.trim();
+            if normalized.is_empty() || !is_high_signal_term(normalized) {
+                continue;
+            }
+            if self.contains_term(normalized) || self.in_queue(normalized) {
+                continue;
+            }
+
+            let entry_id = self.next_id("dq");
+            self.store.queue.push(DictionaryQueueItem {
+                entry_id,
+                term: normalized.to_string(),
                 source_preview: preview.clone(),
                 created_at_utc_ms: now_utc_ms(),
             });
@@ -186,6 +233,44 @@ impl DictionaryManager {
         Ok(())
     }
 
+    pub fn add_term(
+        &mut self,
+        term: &str,
+        source: Option<String>,
+    ) -> Result<DictionaryTerm, DictionaryError> {
+        let normalized = term.trim();
+        if normalized.is_empty() {
+            return Err(DictionaryError::EmptyTerm);
+        }
+
+        if let Some(existing) = self
+            .store
+            .terms
+            .iter()
+            .find(|row| row.term.eq_ignore_ascii_case(normalized))
+            .cloned()
+        {
+            return Ok(existing);
+        }
+
+        // If the term existed in pending queue, remove it now that user added it explicitly.
+        self.store
+            .queue
+            .retain(|row| !row.term.eq_ignore_ascii_case(normalized));
+
+        let added = DictionaryTerm {
+            term_id: self.next_id("dt"),
+            term: normalized.to_string(),
+            source: source.unwrap_or_else(|| "manual-add".to_string()),
+            created_at_utc_ms: now_utc_ms(),
+        };
+        self.store.terms.push(added.clone());
+
+        self.persist()?;
+
+        Ok(added)
+    }
+
     pub fn event(&self, action: &str, message: Option<String>) -> DictionaryEvent {
         DictionaryEvent {
             action: action.to_string(),
@@ -223,6 +308,13 @@ impl DictionaryManager {
         }
         let raw = fs::read_to_string(&self.path).map_err(DictionaryError::Read)?;
         self.store = serde_json::from_str(&raw).map_err(DictionaryError::Parse)?;
+        let before = self.store.queue.len();
+        self.store
+            .queue
+            .retain(|item| is_high_signal_term(&item.term));
+        if self.store.queue.len() != before {
+            self.persist()?;
+        }
         Ok(())
     }
 
@@ -236,21 +328,56 @@ impl DictionaryManager {
     }
 }
 
-fn candidate_terms(transcript: &str) -> Vec<String> {
-    transcript
-        .split(|ch: char| !ch.is_alphanumeric() && ch != '-')
-        .filter_map(|token| {
-            let cleaned = token.trim_matches('-');
-            if cleaned.len() < 4 {
-                return None;
-            }
-            let first = cleaned.chars().next()?;
-            if !first.is_uppercase() {
-                return None;
-            }
-            Some(cleaned.to_string())
-        })
-        .collect()
+fn candidate_terms(transcript: &str, low_confidence: bool) -> Vec<String> {
+    if !low_confidence {
+        return Vec::new();
+    }
+
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+
+    for token in transcript.split_whitespace() {
+        let cleaned = token.trim_matches(|ch: char| {
+            !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' && ch != '.'
+        });
+        if cleaned.len() < 4 || cleaned.len() > 36 {
+            continue;
+        }
+        let normalized_key = cleaned.to_ascii_lowercase();
+        if seen.contains(&normalized_key) {
+            continue;
+        }
+
+        if is_high_signal_term(cleaned) {
+            seen.insert(normalized_key);
+            candidates.push(cleaned.to_string());
+        }
+    }
+
+    candidates
+}
+
+fn is_high_signal_term(token: &str) -> bool {
+    let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
+    let has_structure = has_digit || token.contains('-') || token.contains('_') || token.contains('.');
+    if has_structure {
+        return token.len() >= 4;
+    }
+
+    let uppercase_count = token.chars().filter(|ch| ch.is_ascii_uppercase()).count();
+    let has_internal_upper = token.chars().skip(1).any(|ch| ch.is_ascii_uppercase());
+
+    if uppercase_count >= 3 {
+        return token.len() >= 4;
+    }
+    if has_internal_upper {
+        return token.len() >= 5;
+    }
+    if uppercase_count >= 2 && token.len() >= 6 {
+        return true;
+    }
+
+    false
 }
 
 fn now_utc_ms() -> u64 {
@@ -265,16 +392,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ingest_adds_capitalized_candidates() {
+    fn ingest_adds_distinctive_candidates() {
         let mut manager = DictionaryManager {
             path: std::env::temp_dir().join("voicewave-dictionary-test.json"),
             store: DictionaryStore::default(),
         };
 
         let added = manager
-            .ingest_transcript("Reviewed VoiceWave and WhisperEngine roadmap with Alex")
+            .ingest_transcript_with_signal("Reviewed VoiceWave FW-V3 roadmap for OpenAI", true)
             .expect("ingest should succeed");
         assert!(added > 0);
         assert!(!manager.get_queue(None).is_empty());
+    }
+
+    #[test]
+    fn ingest_ignores_plain_sentence_words() {
+        let mut manager = DictionaryManager {
+            path: std::env::temp_dir().join("voicewave-dictionary-test-plain.json"),
+            store: DictionaryStore::default(),
+        };
+
+        let added = manager
+            .ingest_transcript("Today we discussed the project and the workflow in detail")
+            .expect("ingest should succeed");
+        assert_eq!(added, 0);
+    }
+
+    #[test]
+    fn ingest_requires_low_confidence_signal() {
+        let mut manager = DictionaryManager {
+            path: std::env::temp_dir().join("voicewave-dictionary-test-signal.json"),
+            store: DictionaryStore::default(),
+        };
+
+        let added = manager
+            .ingest_transcript_with_signal("Reviewed VoiceWave FW-V3 roadmap for OpenAI", false)
+            .expect("ingest should succeed");
+        assert_eq!(added, 0);
     }
 }
