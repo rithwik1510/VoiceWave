@@ -99,6 +99,7 @@ function buildHookMock(overrides: Record<string, unknown> = {}) {
     setPreferClipboardFallback: vi.fn(),
     setVadThreshold: vi.fn(),
     addSessionTag: vi.fn(),
+    addDictionaryTerm: vi.fn(),
     resetVadThreshold: vi.fn(),
     restorePurchase: vi.fn(),
     startProCheckout: vi.fn(),
@@ -226,7 +227,7 @@ describe("App navigation and phase three panels", () => {
     useVoiceWaveSpy.mockRestore();
   });
 
-  it("switches between home, models, sessions, and dictionary tabs", async () => {
+  it("switches between home, models, and dictionary tabs", async () => {
     render(<App />);
 
     expect(screen.getByText("Good morning, Rishi.")).toBeInTheDocument();
@@ -235,11 +236,8 @@ describe("App navigation and phase three panels", () => {
     fireEvent.click(screen.getByRole("button", { name: "Models" }));
     expect(screen.getByText("Model Manager")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
-    expect(screen.getByText("Session History and Retention")).toBeInTheDocument();
-
     fireEvent.click(screen.getByRole("button", { name: "Dictionary" }));
-    expect(screen.getByText("Personal Dictionary Queue")).toBeInTheDocument();
+    expect(screen.getByText("Personal Dictionary")).toBeInTheDocument();
   });
 
   it("supports model install action in web fallback mode", async () => {
@@ -329,6 +327,44 @@ describe("App navigation and phase three panels", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close Style" }));
     fireEvent.click(screen.getByRole("button", { name: "Help" }));
     expect(screen.getByRole("dialog", { name: "Help" })).toBeInTheDocument();
+  });
+
+  it("opens profile and auth overlays from the workspace menu while keeping guest access available", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open workspace menu" }));
+    const workspaceMenu = screen.getByRole("menu", { name: "Workspace menu" });
+    fireEvent.click(within(workspaceMenu).getByRole("menuitem", { name: "Profile" }));
+
+    const profileDialog = screen.getByRole("dialog", { name: "Profile" });
+    expect(within(profileDialog).getByText("Guest Workspace")).toBeInTheDocument();
+
+    fireEvent.click(within(profileDialog).getByRole("button", { name: "Sign In / Sign Up" }));
+    const authDialog = screen.getByRole("dialog", { name: "Sign In / Sign Up" });
+    expect(within(authDialog).getByRole("button", { name: "Continue as Guest" })).toBeInTheDocument();
+
+    fireEvent.click(within(authDialog).getByRole("button", { name: "Continue as Guest" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Sign In / Sign Up" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("applies demo sign-in locally and reflects account details in profile", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open workspace menu" }));
+    const workspaceMenu = screen.getByRole("menu", { name: "Workspace menu" });
+    fireEvent.click(within(workspaceMenu).getByRole("menuitem", { name: "Sign In" }));
+
+    const authDialog = screen.getByRole("dialog", { name: "Sign In / Sign Up" });
+    fireEvent.change(within(authDialog).getByLabelText("Email"), { target: { value: "alex@voicewave.app" } });
+    fireEvent.change(within(authDialog).getByLabelText("Password"), { target: { value: "pass-1234" } });
+    fireEvent.click(within(authDialog).getByRole("button", { name: "Sign In" }));
+
+    await waitFor(() => {
+      const profileDialog = screen.getByRole("dialog", { name: "Profile" });
+      expect(within(profileDialog).getByText("alex@voicewave.app")).toBeInTheDocument();
+    });
   });
 
   it("collapses and expands the sidebar shell", async () => {

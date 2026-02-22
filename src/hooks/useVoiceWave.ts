@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  addDictionaryTerm as addDictionaryTermCommand,
   approveDictionaryEntry,
   cancelModelDownload,
   canUseTauri,
@@ -1568,6 +1569,38 @@ export function useVoiceWave() {
     }
   }, [refreshPhase3Data, tauriAvailable]);
 
+  const addDictionaryTerm = useCallback(
+    async (term: string) => {
+      const normalized = term.trim();
+      if (!normalized) {
+        return;
+      }
+      if (!tauriAvailable) {
+        setDictionaryTerms((prev) => [
+          ...prev,
+          {
+            termId: `dt-${Date.now()}`,
+            term: normalized,
+            source: "manual-add",
+            createdAtUtcMs: Date.now()
+          }
+        ]);
+        setDictionaryQueue((prev) =>
+          prev.filter((entry) => entry.term.toLowerCase() !== normalized.toLowerCase())
+        );
+        return;
+      }
+
+      try {
+        await addDictionaryTermCommand(normalized);
+        await refreshPhase3Data();
+      } catch (dictionaryErr) {
+        setError(dictionaryErr instanceof Error ? dictionaryErr.message : "Failed to add term");
+      }
+    },
+    [refreshPhase3Data, tauriAvailable]
+  );
+
   useEffect(() => {
     if (!tauriAvailable) {
       setSessionHistory([
@@ -2045,6 +2078,7 @@ export function useVoiceWave() {
     approveDictionaryQueueEntry,
     rejectDictionaryQueueEntry,
     deleteDictionaryTerm,
+    addDictionaryTerm,
     canUseFeature,
     startProCheckout: startProCheckoutAction,
     refreshEntitlement,

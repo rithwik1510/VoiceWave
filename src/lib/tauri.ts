@@ -303,6 +303,10 @@ export async function showMainWindow(): Promise<void> {
   await invokeVoicewave<void>("show_main_window");
 }
 
+export async function setPillReviewMode(reviewMode: boolean): Promise<void> {
+  await invokeVoicewave<void>("set_pill_review_mode", { reviewMode });
+}
+
 export async function triggerHotkeyAction(action: HotkeyAction, phase: HotkeyPhase): Promise<void> {
   await invokeVoicewave<void>("trigger_hotkey_action", { action, phase });
 }
@@ -422,4 +426,8 @@ export async function getDictionaryTerms(query?: string): Promise<DictionaryTerm
 
 export async function removeDictionaryTerm(termId: string): Promise<void> {
   await invokeVoicewave<void>("remove_dictionary_term", { termId });
+}
+
+export async function addDictionaryTerm(term: string): Promise<DictionaryTerm> {
+  return invokeVoicewave<DictionaryTerm>("add_dictionary_term", { term });
 }

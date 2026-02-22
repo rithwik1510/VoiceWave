@@ -5,10 +5,9 @@ import {
   Palette,
   Search,
   Sparkles,
-  Star,
   X
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useVoiceWave } from "./hooks/useVoiceWave";
 import { THEMES } from "./prototype/constants";
 import { Dashboard } from "./prototype/components/Dashboard";
@@ -23,8 +22,15 @@ import type {
   VoiceWaveSettings
 } from "./types/voicewave";
 
-type OverlayPanel = "style" | "settings" | "help";
+type OverlayPanel = "style" | "settings" | "help" | "profile" | "auth";
 type ProToolsMode = "default" | "coding" | "writing" | "study";
+type AuthMode = "signin" | "signup";
+
+interface DemoProfile {
+  name: string;
+  email: string;
+  workspaceRole: string;
+}
 
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -91,6 +97,42 @@ const PRO_TOOLS_MODE_CARDS: Array<{
     description: "Note-friendly flow for lectures, revision, and summaries.",
     highlight: "Uses concise formatting + student-focused dictionary."
   }
+];
+
+const PRO_HIGHLIGHT_CARDS: Array<{
+  id: string;
+  icon: typeof Sparkles;
+  title: string;
+  subtitle: string;
+}> = [
+  {
+    id: "output",
+    icon: Sparkles,
+    title: "Better Output",
+    subtitle: "Profiles + polish"
+  },
+  {
+    id: "workflow",
+    icon: Crown,
+    title: "Workflow Packs",
+    subtitle: "Domain + code mode"
+  },
+  {
+    id: "history",
+    icon: Search,
+    title: "Power History",
+    subtitle: "Search, tag, export"
+  }
+];
+
+const PRO_FEATURE_CHIPS = [
+  "Format Profiles",
+  "Domain Packs",
+  "Code Mode",
+  "App Profiles",
+  "History Search",
+  "Tags + Stars",
+  "Export Presets"
 ];
 
 function detectProToolsMode(settings: VoiceWaveSettings): ProToolsMode {
@@ -250,9 +292,18 @@ function App() {
   const [settingsAdvancedOpen, setSettingsAdvancedOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyTag, setHistoryTag] = useState("");
+  const [dictionaryDraftTerm, setDictionaryDraftTerm] = useState("");
+  const [dictionaryPendingOpen, setDictionaryPendingOpen] = useState(false);
   const [ownerTapCount, setOwnerTapCount] = useState(0);
   const [ownerPassphrase, setOwnerPassphrase] = useState("");
   const [modeApplyPending, setModeApplyPending] = useState<ProToolsMode | null>(null);
+  const [benchmarkPanelOpen, setBenchmarkPanelOpen] = useState(false);
+  const [demoProfile, setDemoProfile] = useState<DemoProfile | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>("signin");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authWorkspaceRole, setAuthWorkspaceRole] = useState("");
   const {
     activeState,
     approveDictionaryQueueEntry,
@@ -312,6 +363,7 @@ function App() {
     setSessionStarred,
     setVadThreshold,
     addSessionTag,
+    addDictionaryTerm,
     resetVadThreshold,
     restorePurchase,
     startProCheckout,
@@ -345,6 +397,44 @@ function App() {
   const modeApplyInFlightRef = useRef(false);
   const activeProToolsMode = useMemo(() => detectProToolsMode(settings), [settings]);
   const displayedProToolsMode = modeApplyPending ?? activeProToolsMode;
+  const proStatusLabel = isOwnerOverride ? "Owner Pro (Device Override)" : isPro ? "Pro Active" : "Free";
+  const entitlementSyncedAt = entitlement.lastRefreshedAtUtcMs
+    ? formatDate(entitlement.lastRefreshedAtUtcMs)
+    : "Never";
+  const subscriptionHeadline = isPro
+    ? "VoiceWave Pro is active on this device."
+    : "Ready to unlock the full Pro toolkit.";
+  const subscriptionPriceLine = isPro
+    ? `Launch plan: ${entitlement.plan.displayLaunchPrice} for ${entitlement.plan.launchMonths} months, then ${entitlement.plan.displayBasePrice}.`
+    : `${entitlement.plan.displayLaunchPrice} for first ${entitlement.plan.launchMonths} months, then ${entitlement.plan.displayBasePrice}.`;
+  const subscriptionStateLine = useMemo(() => {
+    if (isOwnerOverride) {
+      return "Owner override is enabled on this machine for internal access.";
+    }
+    if (entitlement.status === "grace" && entitlement.graceUntilUtcMs) {
+      return `In grace period until ${formatDate(entitlement.graceUntilUtcMs)}.`;
+    }
+    if (entitlement.status === "expired") {
+      return "Subscription expired. Restore purchase or refresh entitlement to re-activate Pro.";
+    }
+    if (entitlement.expiresAtUtcMs) {
+      return `Current access window: ${formatDate(entitlement.expiresAtUtcMs)}.`;
+    }
+    return isPro
+      ? "Pro access is active and synced locally."
+      : "Free plan active. Upgrade to enable advanced workflow controls.";
+  }, [
+    entitlement.expiresAtUtcMs,
+    entitlement.graceUntilUtcMs,
+    entitlement.status,
+    isOwnerOverride,
+    isPro
+  ]);
+  const isDemoAuthenticated = Boolean(demoProfile);
+  const profileDisplayName = demoProfile?.name ?? "Workspace";
+  const profileStatusLabel = demoProfile
+    ? `${isPro ? "Pro" : "Free"} workspace`
+    : "Guest mode";
 
   useEffect(() => {
     if (proRequiredFeature) {
@@ -365,11 +455,19 @@ function App() {
   }, [activeNav]);
 
   const isOverlayNav = (value: string): value is OverlayPanel =>
-    value === "style" || value === "settings" || value === "help";
+    value === "style" || value === "settings" || value === "help" || value === "profile" || value === "auth";
 
   const closeOverlay = () => {
     setActiveOverlay(null);
     setSettingsAdvancedOpen(false);
+  };
+
+  const openOverlay = (panel: OverlayPanel) => {
+    pressActiveRef.current = false;
+    if (panel !== "settings") {
+      setSettingsAdvancedOpen(false);
+    }
+    setActiveOverlay(panel);
   };
 
   const handlePressStart = () => {
@@ -390,8 +488,7 @@ function App() {
 
   const handleNavChange = (nextNav: string) => {
     if (isOverlayNav(nextNav)) {
-      pressActiveRef.current = false;
-      setActiveOverlay(nextNav);
+      openOverlay(nextNav);
       return;
     }
 
@@ -407,6 +504,34 @@ function App() {
     pressActiveRef.current = false;
     closeOverlay();
     setActiveNav(nextNav);
+  };
+
+  const handleAuthSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalizedEmail = authEmail.trim();
+    if (!normalizedEmail) {
+      return;
+    }
+    const derivedName =
+      authMode === "signup"
+        ? authName.trim() || normalizedEmail.split("@")[0] || "VoiceWave User"
+        : demoProfile?.name || normalizedEmail.split("@")[0] || "VoiceWave User";
+    setDemoProfile({
+      name: derivedName,
+      email: normalizedEmail,
+      workspaceRole: authWorkspaceRole.trim() || "Personal Workspace"
+    });
+    setAuthPassword("");
+    setActiveOverlay("profile");
+  };
+
+  const continueAsGuest = () => {
+    closeOverlay();
+  };
+
+  const openAuthOverlay = (mode: AuthMode) => {
+    setAuthMode(mode);
+    openOverlay("auth");
   };
 
   const applyProToolsMode = async (mode: ProToolsMode) => {
@@ -466,6 +591,23 @@ function App() {
 
   const retentionOptions: RetentionPolicy[] = ["off", "days7", "days30", "forever"];
   const domainPackOptions: DomainPackId[] = ["coding", "student", "productivity"];
+  const sortedDictionaryTerms = useMemo(
+    () => [...dictionaryTerms].sort((left, right) => right.createdAtUtcMs - left.createdAtUtcMs),
+    [dictionaryTerms]
+  );
+  const sortedDictionaryQueue = useMemo(
+    () => [...dictionaryQueue].sort((left, right) => right.createdAtUtcMs - left.createdAtUtcMs),
+    [dictionaryQueue]
+  );
+
+  const submitDictionaryDraft = () => {
+    const normalized = dictionaryDraftTerm.trim();
+    if (!normalized) {
+      return;
+    }
+    void addDictionaryTerm(normalized);
+    setDictionaryDraftTerm("");
+  };
 
   return (
     <>
@@ -477,6 +619,9 @@ function App() {
         isRecording={isRecording}
         isPro={isPro}
         showProTools={isPro}
+        profileDisplayName={profileDisplayName}
+        profileStatusLabel={profileStatusLabel}
+        isProfileAuthenticated={isDemoAuthenticated}
         onUpgradeClick={() => setActiveNav("pro")}
       >
         <div key={activeNav} className={`vw-page-shell ${isPro ? "vw-pro-ui" : ""}`}>
@@ -513,86 +658,94 @@ function App() {
                       Keep fast local dictation in Free, unlock advanced formatting, domain packs, code mode, and power history tools in Pro.
                     </p>
                   </div>
-                  <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>
-                    {isOwnerOverride ? "Owner Pro (Device Override)" : isPro ? "Pro Active" : "Free"}
-                  </span>
+                  <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>{proStatusLabel}</span>
                 </div>
 
-                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-                  <div className="vw-stat-card md:col-span-2">
-                    {isPro ? (
-                      <>
-                        <p className="vw-kicker">Plan Active</p>
-                        <p className="mt-2 text-2xl font-semibold text-[#09090B]">VoiceWave Pro</p>
-                        <p className="mt-2 text-xs text-[#71717A]">
-                          Your account already has Pro access. Pricing offers are hidden while Pro is active.
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="vw-kicker">Launch Pricing</p>
-                        <div className="mt-2 flex items-end gap-3">
-                          <p className="text-sm text-[#71717A] line-through">~{entitlement.plan.displayBasePrice}~</p>
-                          <p className="text-2xl font-semibold text-[#09090B]">{entitlement.plan.displayLaunchPrice}</p>
-                        </div>
-                        <p className="mt-2 text-xs text-[#71717A]">{entitlement.plan.offerCopy}</p>
-                      </>
-                    )}
-                  </div>
-                  <div className="vw-stat-card">
-                    <p className="vw-kicker">Status</p>
-                    <p className="mt-1 text-base font-semibold text-[#09090B]">{entitlement.status}</p>
-                    <p className="mt-1 text-xs text-[#71717A]">
-                      Last refresh: {entitlement.lastRefreshedAtUtcMs ? formatDate(entitlement.lastRefreshedAtUtcMs) : "Never"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {!isPro && (
-                    <button
-                      type="button"
-                      className="vw-btn-primary vw-action-button"
-                      onClick={() => void startProCheckout()}
-                    >
-                      Upgrade to Pro
-                    </button>
-                  )}
-                  <button type="button" className="vw-btn-secondary" onClick={() => void refreshEntitlement()}>
-                    Refresh Entitlement
-                  </button>
-                  <button type="button" className="vw-btn-secondary" onClick={() => void restorePurchase()}>
-                    Restore Purchase
-                  </button>
-                  {isPro && (
-                    <button type="button" className="vw-btn-secondary" onClick={() => void openBillingPortal()}>
-                      Open Billing Portal
-                    </button>
-                  )}
-                </div>
-
-                <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {[
-                    { icon: Sparkles, title: "Advanced Formatting Engine", detail: "Profiles: Default, Academic, Technical, Concise, Code Doc." },
-                    { icon: Crown, title: "Domain Dictionaries", detail: "Coding, Student, and Productivity packs with weighted corrections." },
-                    { icon: Search, title: "Advanced History Tools", detail: "Search, tags, starring, and export presets." },
-                    { icon: Star, title: "Code Mode", detail: "Spoken symbols, casing controls, and optional fenced output." }
-                  ].map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <div key={item.title} className="vw-interactive-row rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <Icon size={16} className="text-[#18181B]" />
-                          <p className="text-sm font-semibold text-[#09090B]">{item.title}</p>
-                          <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
-                            {isPro ? "Unlocked" : "Pro"}
+                <div className="vw-ring-shell vw-ring-shell-lg mt-4">
+                  <div className="vw-ring-inner vw-pro-subscription-console rounded-3xl px-5 py-5">
+                    <div className="vw-pro-subscription-grid">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="vw-pro-subscription-kicker">Subscription Console</span>
+                          <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>
+                            {proStatusLabel}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs text-[#71717A]">{item.detail}</p>
+                        <p className="vw-section-heading mt-3 text-2xl font-semibold text-[#09090B]">
+                          {subscriptionHeadline}
+                        </p>
+                        <p className="mt-2 text-sm text-[#3F3F46]">{subscriptionPriceLine}</p>
+                        <p className="mt-2 text-xs text-[#71717A]">{subscriptionStateLine}</p>
+                        <p className="mt-3 text-xs text-[#71717A]">
+                          Current status key: <span className="font-semibold text-[#27272A]">{entitlement.status}</span>
+                        </p>
                       </div>
-                    );
-                  })}
+
+                      <div className="vw-pro-subscription-actions">
+                        {!isPro ? (
+                          <button
+                            type="button"
+                            className="vw-btn-primary vw-action-button"
+                            onClick={() => void startProCheckout()}
+                          >
+                            Upgrade to Pro
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="vw-btn-primary vw-action-button"
+                            onClick={() => void openBillingPortal()}
+                          >
+                            Manage Plan
+                          </button>
+                        )}
+                        <div className="vw-pro-subscription-action-row">
+                          <button type="button" className="vw-btn-secondary" onClick={() => void refreshEntitlement()}>
+                            Refresh Entitlement
+                          </button>
+                          <button type="button" className="vw-btn-secondary" onClick={() => void restorePurchase()}>
+                            Restore Purchase
+                          </button>
+                        </div>
+                        <p className="text-xs text-[#71717A]">Last synced: {entitlementSyncedAt}</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
+
+                {isPro && (
+                  <div className="mt-6">
+                    <div className="flex flex-wrap items-end justify-between gap-3">
+                      <div>
+                        <h4 className="vw-section-heading text-lg font-semibold text-[#09090B]">Your Pro Toolkit</h4>
+                      </div>
+                      <span className="vw-chip vw-chip-life">Pro Unlocked</span>
+                    </div>
+
+                    <div className="vw-pro-minimal-grid mt-4">
+                      {PRO_HIGHLIGHT_CARDS.map((item) => {
+                        const Icon = item.icon;
+                        return (
+                          <article key={item.id} className="vw-pro-minimal-card">
+                            <div className="vw-pro-minimal-icon">
+                              <Icon size={15} />
+                            </div>
+                            <p className="text-sm font-semibold text-[#09090B]">{item.title}</p>
+                            <p className="mt-1 text-xs text-[#71717A]">{item.subtitle}</p>
+                          </article>
+                        );
+                      })}
+                    </div>
+
+                    <div className="vw-pro-chip-cloud mt-3">
+                      {PRO_FEATURE_CHIPS.map((feature) => (
+                        <span key={feature} className="vw-chip vw-chip-life">
+                          {feature}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="mt-5 rounded-2xl border border-dashed border-[#D4D4D8] bg-[#FAFAFA] px-4 py-3">
                   <button
@@ -650,25 +803,13 @@ function App() {
                 </button>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
-                <div className="vw-stat-card">
-                  <p className="vw-kicker">Catalog Models</p>
-                  <p className="mt-1 text-2xl font-semibold text-[#09090B]">{modelCatalog.length}</p>
-                </div>
-                <div className="vw-stat-card">
-                  <p className="vw-kicker">Installed</p>
-                  <p className="mt-1 text-2xl font-semibold text-[#09090B]">{installedModels.length}</p>
-                </div>
-                <div className="vw-stat-card">
-                  <p className="vw-kicker">Active Model</p>
-                  <p className="mt-1 text-lg font-semibold text-[#09090B]">{settings.activeModel}</p>
-                </div>
-                <div className="vw-stat-card">
-                  <p className="vw-kicker">Recommendation</p>
-                  <p className="mt-1 text-lg font-semibold text-[#09090B]">
-                    {modelRecommendation?.modelId ?? "Pending"}
-                  </p>
-                </div>
+              <div className="vw-model-summary mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                <span className="vw-chip">Catalog {modelCatalog.length}</span>
+                <span className="vw-chip">Installed {installedModels.length}</span>
+                <span className="vw-chip">Active {settings.activeModel}</span>
+                <span className="vw-chip">
+                  Recommended {modelRecommendation?.modelId ?? "Pending"}
+                </span>
               </div>
 
               <div className="vw-list-stagger mt-4 space-y-3">
@@ -696,9 +837,8 @@ function App() {
                           </span>
                         </div>
                         <p className="text-xs text-[#71717A] mt-1">
-                          v{model.version} | {formatBytes(model.sizeBytes)}
+                          v{model.version} • {formatBytes(model.sizeBytes)} • {model.license}
                         </p>
-                        <p className="text-[11px] text-[#71717A] mt-1">License: {model.license}</p>
                         {typeof statusRow?.downloadedBytes === "number" &&
                           typeof statusRow?.totalBytes === "number" &&
                           statusRow.totalBytes > 0 &&
@@ -775,54 +915,70 @@ function App() {
               </div>
               </section>
 
-              <section className="vw-panel mt-8">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+              <section className="vw-panel mt-6">
+              <button
+                type="button"
+                className="vw-model-benchmark-toggle"
+                onClick={() => setBenchmarkPanelOpen((open) => !open)}
+                aria-expanded={benchmarkPanelOpen}
+              >
                 <div>
                   <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Benchmark Recommendation</h3>
                   <p className="mt-1 text-sm text-[#71717A]">
-                    Runs local benchmark and recommends the best model under default gates.
+                    {benchmarkPanelOpen
+                      ? "Runs local benchmark and updates recommendation."
+                      : "Tap to expand benchmark options."}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  className="vw-btn-primary vw-action-button"
-                  onClick={() => void runBenchmarkAndRecommend()}
-                >
-                  Run Benchmark
-                </button>
-              </div>
+                <ChevronDown
+                  size={17}
+                  className={`text-[#71717A] transition-transform ${benchmarkPanelOpen ? "rotate-180" : ""}`}
+                />
+              </button>
 
-              {modelRecommendation && (
-                <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3">
-                  <p className="text-sm font-semibold text-[#09090B]">
-                    Recommended: {modelRecommendation.modelId}
-                  </p>
-                  <p className="text-xs text-[#71717A]">{modelRecommendation.reason}</p>
-                </div>
-              )}
+              {benchmarkPanelOpen && (
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    className="vw-btn-primary vw-action-button"
+                    onClick={() => void runBenchmarkAndRecommend()}
+                  >
+                    Run Benchmark
+                  </button>
 
-              {benchmarkResults && (
-                <div className="vw-surface-base mt-4 overflow-x-auto rounded-2xl border border-[#E4E4E7]">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-[#FAFAFA] text-[#71717A]">
-                      <tr>
-                        <th className="px-3 py-2">Model</th>
-                        <th className="px-3 py-2">P50</th>
-                        <th className="px-3 py-2">P95</th>
-                        <th className="px-3 py-2">Avg RTF</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {benchmarkResults.rows.map((row) => (
-                        <tr key={row.modelId} className="border-t border-[#E4E4E7] text-[#09090B]">
-                          <td className="px-3 py-2">{row.modelId}</td>
-                          <td className="px-3 py-2">{row.p50LatencyMs} ms</td>
-                          <td className="px-3 py-2">{row.p95LatencyMs} ms</td>
-                          <td className="px-3 py-2">{row.averageRtf.toFixed(2)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  {modelRecommendation && (
+                    <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3">
+                      <p className="text-sm font-semibold text-[#09090B]">
+                        Recommended: {modelRecommendation.modelId}
+                      </p>
+                      <p className="text-xs text-[#71717A]">{modelRecommendation.reason}</p>
+                    </div>
+                  )}
+
+                  {benchmarkResults && (
+                    <div className="vw-surface-base mt-4 overflow-x-auto rounded-2xl border border-[#E4E4E7]">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-[#FAFAFA] text-[#71717A]">
+                          <tr>
+                            <th className="px-3 py-2">Model</th>
+                            <th className="px-3 py-2">P50</th>
+                            <th className="px-3 py-2">P95</th>
+                            <th className="px-3 py-2">Avg RTF</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {benchmarkResults.rows.map((row) => (
+                            <tr key={row.modelId} className="border-t border-[#E4E4E7] text-[#09090B]">
+                              <td className="px-3 py-2">{row.modelId}</td>
+                              <td className="px-3 py-2">{row.p50LatencyMs} ms</td>
+                              <td className="px-3 py-2">{row.p95LatencyMs} ms</td>
+                              <td className="px-3 py-2">{row.averageRtf.toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
               </section>
@@ -1015,95 +1171,82 @@ function App() {
 
           {activeNav === "dictionary" && (
             <section className="vw-panel">
-            <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Personal Dictionary Queue</h3>
-            <p className="mt-1 text-sm text-[#71717A]">
-              Approve or reject suggested terms, then manage accepted dictionary entries.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="vw-chip">Queue: {dictionaryQueue.length}</span>
-              <span className="vw-chip">Accepted: {dictionaryTerms.length}</span>
-            </div>
-
-            <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-[#09090B]">Domain Dictionaries (Pro)</p>
-                <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
-                  {isPro ? "Unlocked" : "Pro"}
-                </span>
-              </div>
+              <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Personal Dictionary</h3>
+              <p className="mt-1 text-sm text-[#71717A]">
+                Keep this compact: approved words live here, while new suggestions are reviewed in the floating pill.
+              </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {domainPackOptions.map((pack) => {
-                  const active = settings.activeDomainPacks.includes(pack);
-                  return (
-                    <button
-                      key={pack}
-                      type="button"
-                      className={active ? "vw-btn-primary vw-life-button" : "vw-btn-secondary"}
-                      onClick={() => {
-                        if (!isPro) {
-                          setActiveNav("pro");
-                          return;
-                        }
-                        const next = active
-                          ? settings.activeDomainPacks.filter((value) => value !== pack)
-                          : [...settings.activeDomainPacks, pack];
-                        void setDomainPacks(next);
-                      }}
-                    >
-                      {pack}
-                    </button>
-                  );
-                })}
+                <span className="vw-chip">Approved: {dictionaryTerms.length}</span>
+                <span className="vw-chip">Pending: {dictionaryQueue.length}</span>
               </div>
-              {!isPro && (
-                <p className="mt-2 text-xs text-[#71717A]">
-                  Free keeps baseline dictionary queue and approvals. Pro adds domain packs and weighted correction behavior.
-                </p>
-              )}
-            </div>
 
-            <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <div className="p-1">
-                <h4 className="vw-section-heading text-sm font-semibold text-[#09090B]">Queue</h4>
-                <div className="vw-list-stagger mt-2 space-y-2">
-                  {dictionaryQueue.length === 0 && (
-                    <p className="text-sm text-[#71717A]">Queue is empty.</p>
-                  )}
-                  {dictionaryQueue.map((item) => (
-                    <div
-                      key={item.entryId}
-                      className="vw-interactive-row rounded-xl border border-[#E4E4E7] bg-white px-3 py-2"
-                    >
-                      <p className="text-sm font-semibold text-[#09090B]">{item.term}</p>
-                      <p className="text-xs text-[#71717A] mt-1">{item.sourcePreview}</p>
-                      <div className="mt-2 flex gap-2">
-                          <button
-                            type="button"
-                            className="vw-btn-primary text-xs px-3 py-1"
-                          onClick={() => void approveDictionaryQueueEntry(item.entryId)}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          className="vw-btn-danger text-xs px-3 py-1"
-                          onClick={() => void rejectDictionaryQueueEntry(item.entryId)}
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+              <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-[#09090B]">Add Term</p>
+                  <span className="vw-chip">Manual</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <input
+                    value={dictionaryDraftTerm}
+                    onChange={(event) => setDictionaryDraftTerm(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        submitDictionaryDraft();
+                      }
+                    }}
+                    placeholder="Add a custom term"
+                    className="min-w-[220px] flex-1 rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                  />
+                  <button type="button" className="vw-btn-primary" onClick={submitDictionaryDraft}>
+                    Add
+                  </button>
                 </div>
               </div>
 
-              <div className="p-1">
-                <h4 className="vw-section-heading text-sm font-semibold text-[#09090B]">Accepted Terms</h4>
-                <div className="vw-list-stagger mt-2 space-y-2">
-                  {dictionaryTerms.length === 0 && (
-                    <p className="text-sm text-[#71717A]">No accepted terms yet.</p>
+              <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-[#09090B]">Domain Dictionaries (Pro)</p>
+                  <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
+                    {isPro ? "Unlocked" : "Pro"}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {domainPackOptions.map((pack) => {
+                    const active = settings.activeDomainPacks.includes(pack);
+                    return (
+                      <button
+                        key={pack}
+                        type="button"
+                        className={active ? "vw-btn-primary vw-life-button" : "vw-btn-secondary"}
+                        onClick={() => {
+                          if (!isPro) {
+                            setActiveNav("pro");
+                            return;
+                          }
+                          const next = active
+                            ? settings.activeDomainPacks.filter((value) => value !== pack)
+                            : [...settings.activeDomainPacks, pack];
+                          void setDomainPacks(next);
+                        }}
+                      >
+                        {pack}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="vw-surface-base mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="vw-section-heading text-sm font-semibold text-[#09090B]">Approved Terms</h4>
+                  <span className="text-xs text-[#71717A]">{sortedDictionaryTerms.length} total</span>
+                </div>
+                <div className="vw-list-stagger mt-3 max-h-[380px] space-y-2 overflow-y-auto pr-1">
+                  {sortedDictionaryTerms.length === 0 && (
+                    <p className="text-sm text-[#71717A]">No approved terms yet.</p>
                   )}
-                  {dictionaryTerms.map((term) => (
+                  {sortedDictionaryTerms.map((term) => (
                     <div
                       key={term.termId}
                       className="vw-interactive-row rounded-xl border border-[#E4E4E7] bg-white px-3 py-2"
@@ -1123,7 +1266,50 @@ function App() {
                   ))}
                 </div>
               </div>
-            </div>
+
+              <div className="mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between gap-2 text-left"
+                  onClick={() => setDictionaryPendingOpen((open) => !open)}
+                  aria-expanded={dictionaryPendingOpen}
+                >
+                  <p className="text-sm font-semibold text-[#09090B]">Pending Review Queue</p>
+                  <span className="text-xs text-[#71717A]">{dictionaryQueue.length} items</span>
+                </button>
+                {dictionaryPendingOpen && (
+                  <div className="vw-list-stagger mt-3 space-y-2">
+                    {sortedDictionaryQueue.length === 0 && (
+                      <p className="text-sm text-[#71717A]">Queue is empty.</p>
+                    )}
+                    {sortedDictionaryQueue.map((item) => (
+                      <div
+                        key={item.entryId}
+                        className="vw-interactive-row rounded-xl border border-[#E4E4E7] bg-white px-3 py-2"
+                      >
+                        <p className="text-sm font-semibold text-[#09090B]">{item.term}</p>
+                        <p className="text-xs text-[#71717A] mt-1">{item.sourcePreview}</p>
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            type="button"
+                            className="vw-btn-primary text-xs px-3 py-1"
+                            onClick={() => void approveDictionaryQueueEntry(item.entryId)}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            className="vw-btn-danger text-xs px-3 py-1"
+                            onClick={() => void rejectDictionaryQueueEntry(item.entryId)}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </section>
           )}
 
@@ -1459,6 +1645,178 @@ function App() {
                 </div>
               )}
             </section>
+          </div>
+        </OverlayModal>
+      )}
+
+      {activeOverlay === "profile" && (
+        <OverlayModal
+          title="Profile"
+          subtitle="Your workspace identity and subscription shortcuts."
+          onClose={closeOverlay}
+        >
+          <div className="space-y-4">
+            <section className="vw-profile-summary-card rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="vw-profile-avatar">
+                    {(demoProfile?.name ?? "Guest").slice(0, 1).toUpperCase()}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-[#09090B]">
+                      {demoProfile?.name ?? "Guest Workspace"}
+                    </p>
+                    <p className="mt-1 text-xs text-[#71717A]">
+                      {demoProfile?.email ?? "No sign-in required yet"}
+                    </p>
+                  </div>
+                </div>
+                <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>
+                  {isPro ? "Pro Active" : "Free Plan"}
+                </span>
+              </div>
+              <p className="mt-3 text-xs text-[#71717A]">
+                {isDemoAuthenticated
+                  ? "Demo account is active locally. Backend and database connection will be wired later."
+                  : "Guest mode is enabled. You can keep using all core flows without signing in."}
+              </p>
+            </section>
+
+            <section className="vw-profile-quick-grid">
+              <button type="button" className="vw-profile-quick-action" onClick={() => openOverlay("settings")}>
+                Open Settings
+              </button>
+              <button
+                type="button"
+                className="vw-profile-quick-action"
+                onClick={() => {
+                  closeOverlay();
+                  setActiveNav("pro");
+                }}
+              >
+                Manage Subscription
+              </button>
+              <button
+                type="button"
+                className="vw-profile-quick-action"
+                onClick={() => openAuthOverlay(isDemoAuthenticated ? "signin" : "signup")}
+              >
+                {isDemoAuthenticated ? "Account Access" : "Sign In / Sign Up"}
+              </button>
+            </section>
+
+            {isDemoAuthenticated && demoProfile && (
+              <section className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-4">
+                <p className="text-sm font-semibold text-[#09090B]">Workspace Role</p>
+                <p className="mt-1 text-sm text-[#3F3F46]">{demoProfile.workspaceRole}</p>
+                <button
+                  type="button"
+                  className="vw-btn-secondary mt-3"
+                  onClick={() => {
+                    setDemoProfile(null);
+                    openAuthOverlay("signin");
+                  }}
+                >
+                  Sign Out (Demo)
+                </button>
+              </section>
+            )}
+          </div>
+        </OverlayModal>
+      )}
+
+      {activeOverlay === "auth" && (
+        <OverlayModal
+          title={isDemoAuthenticated ? "Account Access" : "Sign In / Sign Up"}
+          subtitle="Demo-only flow for now. Authentication backend will be connected later."
+          onClose={closeOverlay}
+        >
+          <div className="space-y-4">
+            <div className="vw-auth-tabs" role="tablist" aria-label="Authentication mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={authMode === "signin"}
+                className={`vw-auth-tab ${authMode === "signin" ? "vw-auth-tab-active" : ""}`}
+                onClick={() => setAuthMode("signin")}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={authMode === "signup"}
+                className={`vw-auth-tab ${authMode === "signup" ? "vw-auth-tab-active" : ""}`}
+                onClick={() => setAuthMode("signup")}
+              >
+                Sign Up
+              </button>
+            </div>
+
+            <form className="vw-auth-form rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4" onSubmit={handleAuthSubmit}>
+              {authMode === "signup" && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="text-sm text-[#09090B]">
+                    <span className="block text-xs text-[#71717A]">Name</span>
+                    <input
+                      className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                      value={authName}
+                      onChange={(event) => setAuthName(event.target.value)}
+                      placeholder="Alex Rivera"
+                    />
+                  </label>
+                  <label className="text-sm text-[#09090B]">
+                    <span className="block text-xs text-[#71717A]">Workspace Role</span>
+                    <input
+                      className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                      value={authWorkspaceRole}
+                      onChange={(event) => setAuthWorkspaceRole(event.target.value)}
+                      placeholder="Engineering"
+                    />
+                  </label>
+                </div>
+              )}
+
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <label className="text-sm text-[#09090B]">
+                  <span className="block text-xs text-[#71717A]">Email</span>
+                  <input
+                    className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                    value={authEmail}
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                    placeholder="you@voicewave.app"
+                    type="email"
+                    required
+                  />
+                </label>
+                <label className="text-sm text-[#09090B]">
+                  <span className="block text-xs text-[#71717A]">Password</span>
+                  <input
+                    className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                    value={authPassword}
+                    onChange={(event) => setAuthPassword(event.target.value)}
+                    placeholder="********"
+                    type="password"
+                    required
+                  />
+                </label>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button type="submit" className="vw-btn-primary">
+                  {authMode === "signin" ? "Sign In" : "Create Account"}
+                </button>
+                <button type="button" className="vw-btn-secondary" onClick={continueAsGuest}>
+                  Continue as Guest
+                </button>
+              </div>
+            </form>
+
+            {isDemoAuthenticated && demoProfile && (
+              <section className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3 text-sm text-[#3F3F46]">
+                Signed in as <span className="font-semibold text-[#09090B]">{demoProfile.email}</span> on demo mode.
+              </section>
+            )}
           </div>
         </OverlayModal>
       )}

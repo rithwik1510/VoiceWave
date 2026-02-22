@@ -1,13 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  approveDictionaryEntry,
   canUseTauri,
+  getDictionaryQueue,
   loadSnapshot,
+  rejectDictionaryEntry,
   listenVoicewaveHotkey,
   listenVoicewaveMicLevel,
   listenVoicewaveState,
+  setPillReviewMode,
   showMainWindow
 } from "../lib/tauri";
-import type { VoiceWaveHudState } from "../types/voicewave";
+import type { DictionaryQueueItem, VoiceWaveHudState } from "../types/voicewave";
 
 type VisualState = "idle" | "listening" | "transcribing" | "inserted" | "error";
 
@@ -22,7 +26,44 @@ export function FloatingPill() {
   const [micLevel, setMicLevel] = useState(0);
   const [smoothedLevel, setSmoothedLevel] = useState(0);
   const [phaseTime, setPhaseTime] = useState(0);
+  const [reviewItem, setReviewItem] = useState<DictionaryQueueItem | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const previousRawStateRef = useRef<VoiceWaveHudState>("idle");
+  const reviewRequestRef = useRef(0);
+  const reviewWindowStartRef = useRef(0);
+  const reviewModeActive = Boolean(reviewItem);
   const visualState: VisualState = pushHeld && displayState === "idle" ? "listening" : displayState;
+
+  const resetReview = useCallback(() => {
+    reviewRequestRef.current += 1;
+    setReviewItem(null);
+    setReviewBusy(false);
+  }, []);
+
+  const loadReviewQueue = useCallback(async () => {
+    if (!canUseTauri()) {
+      return;
+    }
+    const requestId = reviewRequestRef.current + 1;
+    reviewRequestRef.current = requestId;
+    try {
+      const queue = await getDictionaryQueue(12);
+      if (reviewRequestRef.current !== requestId) {
+        return;
+      }
+      const windowStart = reviewWindowStartRef.current;
+      const candidate =
+        windowStart > 0
+          ? (queue.find((item) => item.createdAtUtcMs >= windowStart - 2500) ?? null)
+          : (queue[0] ?? null);
+      setReviewItem(candidate);
+    } catch {
+      if (reviewRequestRef.current !== requestId) {
+        return;
+      }
+      setReviewItem(null);
+    }
+  }, []);
 
   useEffect(() => {
     if (!canUseTauri()) {
@@ -92,6 +133,87 @@ export function FloatingPill() {
   }, [rawState]);
 
   useEffect(() => {
+    const previous = previousRawStateRef.current;
+    previousRawStateRef.current = rawState;
+
+    if (rawState === "listening" || rawState === "transcribing") {
+      resetReview();
+      return;
+    }
+
+    if (rawState === "inserted" && previous !== "inserted") {
+      reviewWindowStartRef.current = Date.now();
+      void loadReviewQueue();
+      const followUpTimer = window.setTimeout(() => {
+        void loadReviewQueue();
+      }, 420);
+      const lateTimer = window.setTimeout(() => {
+        void loadReviewQueue();
+      }, 980);
+      return () => {
+        window.clearTimeout(followUpTimer);
+        window.clearTimeout(lateTimer);
+      };
+    }
+  }, [loadReviewQueue, rawState, resetReview]);
+
+  useEffect(() => {
+    if (!canUseTauri()) {
+      return;
+    }
+    void setPillReviewMode(reviewModeActive);
+  }, [reviewModeActive]);
+
+  useEffect(
+    () => () => {
+      if (!canUseTauri()) {
+        return;
+      }
+      void setPillReviewMode(false);
+    },
+    []
+  );
+
+  const handleApprove = useCallback(async () => {
+    if (!reviewItem || reviewBusy) {
+      return;
+    }
+    const entryId = reviewItem.entryId;
+    setReviewBusy(true);
+    setReviewItem(null);
+    try {
+      await approveDictionaryEntry(entryId);
+    } catch {
+      // Keep review non-blocking in the floating pill.
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [reviewBusy, reviewItem]);
+
+  const handleDismiss = useCallback(async () => {
+    if (!reviewItem || reviewBusy) {
+      return;
+    }
+    const entryId = reviewItem.entryId;
+    setReviewBusy(true);
+    setReviewItem(null);
+    try {
+      await rejectDictionaryEntry(entryId);
+    } catch {
+      // Keep review non-blocking in the floating pill.
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [reviewBusy, reviewItem]);
+
+  const handleLater = useCallback(() => {
+    if (reviewBusy) {
+      return;
+    }
+    resetReview();
+  }, [resetReview, reviewBusy]);
+
+  useEffect(() => {
     let frame = 0;
     let lastFrame = 0;
     let current = 0;
@@ -145,16 +267,16 @@ export function FloatingPill() {
   }, [phaseTime, smoothedLevel, visualState]);
 
   return (
-    <div className={`vw-pill-shell vw-pill-state-${visualState}`} data-tauri-drag-region>
-      <button
-        type="button"
-        className="vw-pill-surface"
-        data-tauri-drag-region
+    <div className={`vw-pill-shell vw-pill-state-${visualState}${reviewModeActive ? " vw-pill-mode-review" : ""}`}>
+      <div
+        className={`vw-pill-surface${reviewModeActive ? " vw-pill-surface-review" : ""}`}
         onDoubleClick={() => {
           void showMainWindow();
         }}
+        {...(reviewModeActive ? {} : { "data-tauri-drag-region": "" })}
       >
         <div className="vw-pill-glow" />
+
         <div className="vw-pill-core">
           <div className="vw-pill-wave">
             {bars.map((bar) => (
@@ -167,7 +289,51 @@ export function FloatingPill() {
           </div>
           <div className="vw-pill-spinner" />
         </div>
-      </button>
+
+        <div className="vw-pill-review-panel" aria-hidden={!reviewModeActive}>
+          <div className="vw-pill-review-head" data-tauri-drag-region>
+            <p className="vw-pill-review-kicker">Dictionary Suggestion</p>
+            <button
+              type="button"
+              className="vw-pill-review-open"
+              onClick={() => {
+                void showMainWindow();
+              }}
+            >
+              Open
+            </button>
+          </div>
+          <div className="vw-pill-review-row">
+            <p className="vw-pill-review-term">Add "{reviewItem?.term ?? ""}"?</p>
+            <div className="vw-pill-review-actions">
+              <button
+                type="button"
+                className="vw-pill-action vw-pill-action-approve"
+                onClick={() => void handleApprove()}
+                disabled={reviewBusy}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="vw-pill-action vw-pill-action-dismiss"
+                onClick={() => void handleDismiss()}
+                disabled={reviewBusy}
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                className="vw-pill-action vw-pill-action-later"
+                onClick={handleLater}
+                disabled={reviewBusy}
+              >
+                Later
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

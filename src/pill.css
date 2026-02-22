@@ -36,8 +36,9 @@ body,
   padding: 0;
   border-radius: 999px;
   position: relative;
+  overflow: hidden;
   isolation: isolate;
-  background: linear-gradient(135deg, rgba(24, 24, 27, 0.92), rgba(39, 39, 42, 0.94));
+  background: linear-gradient(135deg, rgba(24, 24, 27, 0.94), rgba(39, 39, 42, 0.96));
   box-shadow:
     0 8px 18px rgba(0, 0, 0, 0.3),
     inset 0 0 0 1px rgba(228, 228, 231, 0.2),
@@ -45,8 +46,9 @@ body,
   backdrop-filter: blur(20px) saturate(140%);
   -webkit-backdrop-filter: blur(20px) saturate(140%);
   transition:
-    width 200ms cubic-bezier(0.2, 0.9, 0.25, 1),
-    height 200ms cubic-bezier(0.2, 0.9, 0.25, 1),
+    width 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 260ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 180ms ease,
     box-shadow 240ms ease;
   cursor: grab;
@@ -56,17 +58,38 @@ body,
   cursor: grabbing;
 }
 
+.vw-pill-shell.vw-pill-mode-review .vw-pill-surface {
+  width: 396px;
+  height: 92px;
+  border-radius: 26px;
+  box-shadow:
+    0 12px 24px rgba(0, 0, 0, 0.36),
+    inset 0 0 0 1px rgba(228, 228, 231, 0.22),
+    inset 0 -12px 18px rgba(9, 9, 11, 0.3);
+  cursor: default;
+}
+
 .vw-pill-glow {
   display: none;
 }
 
 .vw-pill-core {
-  position: relative;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
   display: grid;
   place-items: center;
   padding: 0;
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity 180ms ease,
+    transform 220ms ease;
+}
+
+.vw-pill-shell.vw-pill-mode-review .vw-pill-core {
+  opacity: 0;
+  transform: scale(0.88);
+  pointer-events: none;
 }
 
 .vw-pill-wave {
@@ -110,23 +133,133 @@ body,
     height 140ms ease;
 }
 
+.vw-pill-review-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  opacity: 0;
+  transform: translateY(4px) scale(0.98);
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    transform 220ms ease;
+}
+
+.vw-pill-shell.vw-pill-mode-review .vw-pill-review-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.vw-pill-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vw-pill-review-kicker {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(212, 212, 216, 0.9);
+}
+
+.vw-pill-review-open {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: rgba(214, 226, 235, 0.88);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vw-pill-review-open:hover {
+  color: #f4f4f5;
+}
+
+.vw-pill-review-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.vw-pill-review-term {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  color: #f4f4f5;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vw-pill-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vw-pill-action {
+  border-radius: 999px;
+  border: 1px solid rgba(228, 228, 231, 0.18);
+  background: rgba(39, 39, 42, 0.78);
+  color: #f4f4f5;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    opacity 140ms ease;
+}
+
+.vw-pill-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.vw-pill-action-approve {
+  border-color: rgba(163, 230, 53, 0.46);
+  background: linear-gradient(90deg, rgba(163, 230, 53, 0.2), rgba(56, 189, 248, 0.16));
+  color: #f8fafc;
+}
+
+.vw-pill-action-approve:hover:not(:disabled) {
+  border-color: rgba(163, 230, 53, 0.64);
+}
+
+.vw-pill-action-dismiss:hover:not(:disabled),
+.vw-pill-action-later:hover:not(:disabled) {
+  border-color: rgba(228, 228, 231, 0.32);
+  background: rgba(63, 63, 70, 0.78);
+}
+
 .vw-pill-state-idle .vw-pill-surface {
   width: 52px;
   height: 20px;
-  box-shadow:
-    0 8px 18px rgba(0, 0, 0, 0.3),
-    inset 0 0 0 1px rgba(228, 228, 231, 0.2),
-    inset 0 -6px 14px rgba(9, 9, 11, 0.25);
 }
 
-.vw-pill-state-idle .vw-pill-surface:hover,
-.vw-pill-state-idle .vw-pill-surface:focus-visible {
+.vw-pill-state-idle:not(.vw-pill-mode-review) .vw-pill-surface:hover,
+.vw-pill-state-idle:not(.vw-pill-mode-review) .vw-pill-surface:focus-visible {
   width: 90px;
   height: 32px;
   transform: translateY(-1px);
 }
 
-.vw-pill-state-listening .vw-pill-surface {
+.vw-pill-state-listening:not(.vw-pill-mode-review) .vw-pill-surface {
   width: 96px;
   height: 36px;
   box-shadow:
@@ -135,13 +268,13 @@ body,
     inset 0 -9px 18px rgba(9, 9, 11, 0.3);
 }
 
-.vw-pill-state-listening .vw-pill-wave {
+.vw-pill-state-listening:not(.vw-pill-mode-review) .vw-pill-wave {
   opacity: 1;
   width: 62px;
   transform: scale(1);
 }
 
-.vw-pill-state-transcribing .vw-pill-surface {
+.vw-pill-state-transcribing:not(.vw-pill-mode-review) .vw-pill-surface {
   width: 82px;
   height: 30px;
   box-shadow:
@@ -150,26 +283,26 @@ body,
     inset 0 -8px 16px rgba(9, 9, 11, 0.28);
 }
 
-.vw-pill-state-transcribing .vw-pill-wave {
+.vw-pill-state-transcribing:not(.vw-pill-mode-review) .vw-pill-wave {
   opacity: 0;
   width: 0;
 }
 
-.vw-pill-state-transcribing .vw-pill-spinner {
+.vw-pill-state-transcribing:not(.vw-pill-mode-review) .vw-pill-spinner {
   opacity: 1;
   width: 12px;
   height: 12px;
   animation: vw-pill-spin 0.8s linear infinite;
 }
 
-.vw-pill-state-inserted .vw-pill-surface,
-.vw-pill-state-error .vw-pill-surface {
+.vw-pill-state-inserted:not(.vw-pill-mode-review) .vw-pill-surface,
+.vw-pill-state-error:not(.vw-pill-mode-review) .vw-pill-surface {
   width: 68px;
   height: 24px;
 }
 
-.vw-pill-state-inserted .vw-pill-wave,
-.vw-pill-state-error .vw-pill-wave {
+.vw-pill-state-inserted:not(.vw-pill-mode-review) .vw-pill-wave,
+.vw-pill-state-error:not(.vw-pill-mode-review) .vw-pill-wave {
   width: 22px;
   opacity: 0.45;
 }
@@ -177,5 +310,14 @@ body,
 @keyframes vw-pill-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vw-pill-surface,
+  .vw-pill-core,
+  .vw-pill-review-panel,
+  .vw-pill-action {
+    transition: none;
   }
 }
