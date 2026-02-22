@@ -264,3 +264,284 @@ Status: 3 of 5 deployments pushed to `origin/main`.
 npm run build
 git status --short
 ```
+
+## Website Personalization Plan (2026-02-21, 5 Pushes, Do Not Push Today)
+
+Status: Prepared only. Do not push in this session.
+
+Important note:
+`voicewave-website/` is currently untracked in this repo, so stage only the files listed below and avoid dependency/build artifacts.
+
+Do not stage / do not push:
+
+```text
+voicewave-website/node_modules/
+voicewave-website/dist/
+voicewave-website/build.log
+voicewave-website/err.log
+```
+
+### Push 1 - Hero Foundation + Global Visual System
+
+Commit message:
+
+```text
+feat(website-home): establish hero gradients, viewport fill, and global visual tokens
+```
+
+Files:
+
+```text
+voicewave-website/src/index.css
+voicewave-website/src/components/Hero.tsx
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/index.css voicewave-website/src/components/Hero.tsx
+git commit -m "feat(website-home): establish hero gradients, viewport fill, and global visual tokens"
+```
+
+### Push 2 - Navigation Dock + Live Demo Structure
+
+Commit message:
+
+```text
+feat(website-nav-demo): implement glass bottom dock and refine live demo layout
+```
+
+Files:
+
+```text
+voicewave-website/src/components/Header.tsx
+voicewave-website/src/components/ScrollDemo.tsx
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/components/Header.tsx voicewave-website/src/components/ScrollDemo.tsx
+git commit -m "feat(website-nav-demo): implement glass bottom dock and refine live demo layout"
+```
+
+### Push 3 - Cross-Section Shape Consistency
+
+Commit message:
+
+```text
+refactor(website-ui): unify corner radius language across core sections
+```
+
+Files:
+
+```text
+voicewave-website/src/components/CapabilityDeepDive.tsx
+voicewave-website/src/components/Features.tsx
+voicewave-website/src/components/TrustProof.tsx
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/components/CapabilityDeepDive.tsx voicewave-website/src/components/Features.tsx voicewave-website/src/components/TrustProof.tsx
+git commit -m "refactor(website-ui): unify corner radius language across core sections"
+```
+
+### Push 4 - Brand Integration (App Logo + Footer Identity)
+
+Commit message:
+
+```text
+feat(website-brand): add app logo component and align footer brand identity
+```
+
+Files:
+
+```text
+voicewave-website/src/components/VoiceWaveLogo.tsx
+voicewave-website/src/components/Footer.tsx
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/components/VoiceWaveLogo.tsx voicewave-website/src/components/Footer.tsx
+git commit -m "feat(website-brand): add app logo component and align footer brand identity"
+```
+
+### Push 5 - CTA Motion + Visibility Fixes + Website Shell
+
+Commit message:
+
+```text
+fix(website-polish): finalize cta hover pop effects and brand text visibility
+```
+
+Files:
+
+```text
+voicewave-website/.gitignore
+voicewave-website/index.html
+voicewave-website/package.json
+voicewave-website/package-lock.json
+voicewave-website/eslint.config.js
+voicewave-website/tsconfig.json
+voicewave-website/tsconfig.app.json
+voicewave-website/tsconfig.node.json
+voicewave-website/vite.config.ts
+voicewave-website/src/main.tsx
+voicewave-website/src/App.tsx
+voicewave-website/src/components/Header.tsx
+github push.md
+```
+
+Commands:
+
+```bash
+git add voicewave-website/.gitignore voicewave-website/index.html voicewave-website/package.json voicewave-website/package-lock.json voicewave-website/eslint.config.js voicewave-website/tsconfig.json voicewave-website/tsconfig.app.json voicewave-website/tsconfig.node.json voicewave-website/vite.config.ts voicewave-website/src/main.tsx voicewave-website/src/App.tsx voicewave-website/src/components/Header.tsx "github push.md"
+git commit -m "fix(website-polish): finalize cta hover pop effects and brand text visibility"
+```
+
+### Final Push Sequence (Later, Manual)
+
+```bash
+git push origin main
+git push origin main
+git push origin main
+git push origin main
+git push origin main
+```
+
+## Website Visual Iteration Plan (2026-02-22, 5 Pushes, Do Not Push Today)
+
+Status: Prepared only. Do not push in this session.
+
+Do not stage / do not push:
+
+```text
+voicewave-website/node_modules/
+voicewave-website/dist/
+voicewave-website/build.log
+voicewave-website/err.log
+```
+
+### Push 1 - Global Atmosphere + Website Shell Layer
+
+Commit message:
+
+```text
+feat(website-foundation): expand global gradient atmosphere and unify shell backdrop
+```
+
+Files:
+
+```text
+voicewave-website/src/App.tsx
+voicewave-website/src/index.css
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/App.tsx voicewave-website/src/index.css
+git commit -m "feat(website-foundation): expand global gradient atmosphere and unify shell backdrop"
+```
+
+### Push 2 - Hero Layout + Primary CTA Polish
+
+Commit message:
+
+```text
+refactor(website-hero): rebalance viewport fill and enhance primary cta interaction
+```
+
+Files:
+
+```text
+voicewave-website/src/components/Hero.tsx
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/components/Hero.tsx
+git commit -m "refactor(website-hero): rebalance viewport fill and enhance primary cta interaction"
+```
+
+### Push 3 - Top Navigation Redesign + Dock Smoothness
+
+Commit message:
+
+```text
+feat(website-nav): redesign top bar with premium cta and smooth dock behavior
+```
+
+Files:
+
+```text
+voicewave-website/src/components/Header.tsx
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/components/Header.tsx
+git commit -m "feat(website-nav): redesign top bar with premium cta and smooth dock behavior"
+```
+
+### Push 4 - Section Continuity + Deep Dive Gradient Sync
+
+Commit message:
+
+```text
+feat(website-sections): sync deep-dive stack states with live section gradients
+```
+
+Files:
+
+```text
+voicewave-website/src/components/CapabilityDeepDive.tsx
+voicewave-website/src/components/Features.tsx
+voicewave-website/src/components/ScrollDemo.tsx
+voicewave-website/src/components/TrustProof.tsx
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/components/CapabilityDeepDive.tsx voicewave-website/src/components/Features.tsx voicewave-website/src/components/ScrollDemo.tsx voicewave-website/src/components/TrustProof.tsx
+git commit -m "feat(website-sections): sync deep-dive stack states with live section gradients"
+```
+
+### Push 5 - Final CTA Band + Footer Finish + Plan Update
+
+Commit message:
+
+```text
+refactor(website-footer): add final cta band polish and finalize visual pass notes
+```
+
+Files:
+
+```text
+voicewave-website/src/components/Footer.tsx
+github push.md
+```
+
+Commands:
+
+```bash
+git add voicewave-website/src/components/Footer.tsx "github push.md"
+git commit -m "refactor(website-footer): add final cta band polish and finalize visual pass notes"
+```
+
+### Final Push Sequence (Later, Manual)
+
+```bash
+git push origin main
+git push origin main
+git push origin main
+git push origin main
+git push origin main
+```
