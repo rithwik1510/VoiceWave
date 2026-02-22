@@ -2,6 +2,7 @@ import type React from "react";
 import { Cpu, Mic, Pause, Zap } from "lucide-react";
 import { MOCK_SESSIONS } from "../constants";
 import type { DictationState, ThemeConfig } from "../types";
+import { useEffect, useState } from "react";
 
 interface DashboardProps {
   theme: ThemeConfig;
@@ -17,8 +18,44 @@ interface DashboardProps {
 
 const WAVE_BARS = [18, 34, 26, 44, 30, 50, 22, 42, 28, 36, 24, 40];
 
+const STATUS_META: Record<
+  DictationState,
+  { title: string; hint: string; badge: string; modeLabel: string }
+> = {
+  idle: {
+    title: "Start Dictation",
+    hint: "Press and hold to talk. Release to transcribe.",
+    badge: "Ready",
+    modeLabel: "PUSH TO TALK"
+  },
+  listening: {
+    title: "Listening...",
+    hint: "Live capture active.",
+    badge: "Live",
+    modeLabel: "PUSH TO TALK"
+  },
+  transcribing: {
+    title: "Transcribing...",
+    hint: "Local decode in progress.",
+    badge: "Decoding",
+    modeLabel: "AUTO"
+  },
+  inserted: {
+    title: "Inserted",
+    hint: "Delivered to active app.",
+    badge: "Inserted",
+    modeLabel: "AUTO"
+  },
+  error: {
+    title: "Recovered",
+    hint: "Saved to history and clipboard.",
+    badge: "Fallback",
+    modeLabel: "AUTO"
+  }
+};
+
 function modelLabel(modelId: string): string {
-  if (modelId === "fw-small-en") {
+  if (modelId === "fw-small.en" || modelId === "fw-small-en") {
     return "FW SMALL.EN";
   }
   if (modelId === "fw-large-v3") {
@@ -39,11 +76,28 @@ export const Dashboard: React.FC<DashboardProps> = ({
   isPro = false
 }) => {
   const { colors, typography, shapes } = theme;
-  const isRecording = status === "listening" || status === "transcribing";
+  const [visualStatus, setVisualStatus] = useState<DictationState>(status);
+  useEffect(() => {
+    if (status !== "inserted") {
+      setVisualStatus(status);
+      return;
+    }
+    setVisualStatus("inserted");
+    const timeoutId = window.setTimeout(() => {
+      setVisualStatus("idle");
+    }, 1250);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [status]);
+
+  const isRecording = visualStatus === "listening" || visualStatus === "transcribing";
   const proIconGradient = "linear-gradient(135deg, rgba(56,189,248,0.2) 0%, rgba(163,230,53,0.2) 100%)";
   const idleHint = finalTranscript ?? partialTranscript ?? `Hold ${pushToTalkHotkey} to start capturing`;
   const hasFinal = Boolean(finalTranscript && finalTranscript.trim().length > 0);
   const nowLabel = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const statusMeta = STATUS_META[visualStatus];
+  const stateClass = `vw-home-state-${visualStatus}`;
 
   const transcriptRows = [
     ...(hasFinal ? [{ id: "latest", time: nowLabel, text: finalTranscript ?? "", latest: true }] : []),
@@ -69,7 +123,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
 
         <div
-          className={`flex items-center justify-end gap-6 px-6 py-3 mt-1 ${colors.surface} border ${colors.surfaceBorder} rounded-3xl shadow-sm ${
+          className={`flex items-center justify-end gap-6 px-6 py-3 mt-1 ${colors.surface} border ${colors.surfaceBorder} rounded-3xl shadow-sm vw-home-secondary-metrics ${
             isPro ? "vw-home-pro-metrics" : ""
           }`}
         >
@@ -103,16 +157,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div
                 className={`
                   p-8 flex flex-col md:flex-row md:items-center md:justify-between gap-5
-                  ${colors.surface} border border-[#E4E4E7] ${shapes.radius}
-                  ${isPro ? "vw-home-pro-panel vw-home-main-card vw-ring-inner" : ""}
+                  ${colors.surface} border border-[color:var(--vw-color-border)] ${shapes.radius}
+                  vw-home-main-card vw-home-state-card ${stateClass}
+                  ${isPro ? "vw-home-pro-panel vw-ring-inner" : ""}
                 `}
               >
                 <div>
                   <h3 className={`${typography.fontDisplay} text-2xl ${colors.textPrimary} mb-1`}>
-                    {status === "idle" ? "Start Dictation" : "Listening..."}
+                    {statusMeta.title}
                   </h3>
-                  <p className={`${colors.textSecondary} text-sm`}>Press and hold to talk. Release to transcribe.</p>
-                  <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[#71717A]">Model: {currentModel}</p>
+                  <p className={`${colors.textSecondary} text-sm`}>{statusMeta.hint}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <p className="text-xs uppercase tracking-[0.16em] text-[color:var(--vw-color-text-muted)]">Model: {currentModel}</p>
+                    <span className={`vw-home-state-badge ${stateClass}`}>{statusMeta.badge}</span>
+                  </div>
                 </div>
 
                 <button
@@ -150,6 +208,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     vw-home-mic-button h-20 w-20 shrink-0 flex items-center justify-center transition-all duration-300
                     ${isRecording ? colors.recording : colors.accent}
                     ${colors.accentFg} ${shapes.buttonShape}
+                    vw-home-mic-state ${stateClass}
                     ${isRecording ? "vw-home-mic-button-active" : ""}
                     ${isPro ? "vw-home-pro-mic" : ""}
                   `}
@@ -164,7 +223,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div className="space-y-3">
               <div className={isPro ? "vw-ring-shell vw-ring-shell-sm rounded-3xl" : ""}>
                 <div
-                  className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm ${
+                  className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm vw-home-secondary-card ${
                     isPro ? "vw-home-pro-sidecard vw-ring-inner" : ""
                   }`}
                 >
@@ -177,22 +236,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         <Cpu size={16} style={isPro ? { color: colors.accentBlue } : undefined} className={!isPro ? "text-[#18181B]" : undefined} />
                       </div>
                       <div>
-                        <p className="vw-section-heading text-sm font-semibold text-[#09090B] leading-none">Model</p>
-                        <p className="text-[11px] tracking-[0.14em] text-[#71717A] mt-1">
+                        <p className="vw-section-heading text-sm font-semibold text-[color:var(--vw-color-text-primary)] leading-none">Model</p>
+                        <p className="mt-1 text-[11px] tracking-[0.14em] text-[color:var(--vw-color-text-muted)]">
                           {modelLabel(currentModel)}
                         </p>
                       </div>
                     </div>
-                    <div
-                      className="h-2.5 w-2.5 rounded-full vw-status-dot"
-                    />
+                    <div className={`h-2.5 w-2.5 rounded-full vw-status-dot ${stateClass}`} />
                   </div>
                 </div>
               </div>
 
               <div className={isPro ? "vw-ring-shell vw-ring-shell-sm rounded-3xl" : ""}>
                 <div
-                  className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm ${
+                  className={`rounded-3xl border ${colors.surfaceBorder} ${colors.surface} px-4 py-3 shadow-sm vw-home-secondary-card ${
                     isPro ? "vw-home-pro-sidecard vw-ring-inner" : ""
                   }`}
                 >
@@ -205,18 +262,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         <Zap size={16} style={isPro ? { color: colors.accentLime } : undefined} className={!isPro ? "text-[#18181B]" : undefined} />
                       </div>
                       <div>
-                        <p className="vw-section-heading text-sm font-semibold text-[#09090B] leading-none">Mode</p>
-                        <p className="text-[11px] tracking-[0.14em] text-[#71717A] mt-1">PUSH TO TALK</p>
+                        <p className="vw-section-heading text-sm font-semibold text-[color:var(--vw-color-text-primary)] leading-none">Mode</p>
+                        <p className="mt-1 text-[11px] tracking-[0.14em] text-[color:var(--vw-color-text-muted)]">{statusMeta.modeLabel}</p>
                       </div>
                     </div>
                     <span
                       className={`rounded-xl border px-2 py-0.5 text-[10px] font-semibold ${
                         isPro
                           ? "border-[rgba(163,230,53,0.52)] bg-[rgba(163,230,53,0.14)] text-[#18181B]"
-                          : "border-[#D4D4D8] text-[#71717A]"
+                          : `vw-home-mode-chip ${stateClass}`
                       }`}
                     >
-                      AUTO
+                      {statusMeta.badge}
                     </span>
                   </div>
                 </div>
@@ -228,7 +285,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <section>
           <div
             className={`
-              w-full min-h-24 relative overflow-hidden transition-colors duration-200
+              w-full min-h-24 relative overflow-hidden transition-colors duration-200 vw-home-state-output ${stateClass}
               ${isRecording ? "bg-black shadow-xl" : `${colors.surface} border ${colors.surfaceBorder} shadow-sm`}
               ${isPro && !isRecording ? "vw-home-pro-output" : ""}
               ${isPro && !isRecording ? "vw-home-main-card" : ""}
@@ -261,11 +318,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       <section className="pt-3">
-        <p className="vw-section-heading mb-3 text-xs font-semibold tracking-[0.18em] text-[#71717A]">TODAY</p>
+        <p className="vw-section-heading mb-3 text-xs font-semibold tracking-[0.18em] text-[color:var(--vw-color-text-muted)]">TODAY</p>
         <div
-          className={`overflow-hidden rounded-3xl border ${colors.surfaceBorder} ${colors.surface} ${
-            isPro ? "vw-home-transcript-card" : ""
-          }`}
+          className={`overflow-hidden rounded-3xl border ${colors.surfaceBorder} ${colors.surface} vw-home-transcript-card`}
         >
           {transcriptRows.map((row, index) => (
             <div

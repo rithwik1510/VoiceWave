@@ -1,6 +1,6 @@
 import type React from "react";
-import { Bell, PanelLeftClose, PanelLeftOpen, UserCircle } from "lucide-react";
-import { useState } from "react";
+import { Bell, LogIn, PanelLeftClose, PanelLeftOpen, Settings, UserCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { NAV_ITEMS_BOTTOM, NAV_ITEMS_TOP } from "../constants";
 import type { ThemeConfig } from "../types";
 
@@ -14,6 +14,9 @@ interface LayoutProps {
   onUpgradeClick?: () => void;
   isPro?: boolean;
   showProTools?: boolean;
+  profileDisplayName?: string;
+  profileStatusLabel?: string;
+  isProfileAuthenticated?: boolean;
 }
 
 export const Layout: React.FC<LayoutProps> = ({
@@ -25,14 +28,47 @@ export const Layout: React.FC<LayoutProps> = ({
   isRecording,
   onUpgradeClick,
   isPro = false,
-  showProTools = false
+  showProTools = false,
+  profileDisplayName = "Workspace",
+  profileStatusLabel = "Guest mode",
+  isProfileAuthenticated = false
 }) => {
   const { colors, typography, shapes } = theme;
   const LogoComponent = theme.logo;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const topNavItems = NAV_ITEMS_TOP.filter(
     (item) => showProTools || item.id !== "pro-tools"
   );
+
+  useEffect(() => {
+    if (!profileMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!profileMenuRef.current) {
+        return;
+      }
+      if (!profileMenuRef.current.contains(event.target as Node)) {
+        setProfileMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setProfileMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [profileMenuOpen]);
 
   const NavButton = ({ item }: { item: { id: string; label: string; icon: React.ComponentType<any> } }) => {
     const isActive = activeNav === item.id || activePopupNav === item.id;
@@ -71,6 +107,11 @@ export const Layout: React.FC<LayoutProps> = ({
         />
       </button>
     );
+  };
+
+  const openWorkspacePanel = (panelId: string) => {
+    setProfileMenuOpen(false);
+    setActiveNav(panelId);
   };
 
   return (
@@ -253,13 +294,54 @@ export const Layout: React.FC<LayoutProps> = ({
             <button className="opacity-60 hover:opacity-100 transition-opacity" type="button">
               <Bell size={20} />
             </button>
-            <div className="flex items-center gap-3 cursor-pointer group">
-              <div className={`w-9 h-9 flex items-center justify-center border ${colors.bg} border-transparent rounded-full shadow-sm`}>
-                <UserCircle size={20} className="opacity-70" />
-              </div>
-              <div className="text-sm hidden sm:block">
-                <p className="leading-none font-medium group-hover:opacity-80">Workspace</p>
-              </div>
+            <div ref={profileMenuRef} className="relative">
+              <button
+                type="button"
+                className="flex items-center gap-3 rounded-full px-1.5 py-1 transition hover:bg-white/50"
+                onClick={() => setProfileMenuOpen((prev) => !prev)}
+                aria-haspopup="menu"
+                aria-expanded={profileMenuOpen}
+                aria-label="Open workspace menu"
+              >
+                <div className={`w-9 h-9 flex items-center justify-center border ${colors.bg} border-transparent rounded-full shadow-sm`}>
+                  <UserCircle size={20} className="opacity-70" />
+                </div>
+                <div className="text-sm hidden sm:block text-left">
+                  <p className="leading-none font-medium text-[#09090B]">{profileDisplayName}</p>
+                  <p className="mt-1 text-[11px] leading-none text-[#71717A]">{profileStatusLabel}</p>
+                </div>
+              </button>
+              {profileMenuOpen && (
+                <div className="vw-profile-menu" role="menu" aria-label="Workspace menu">
+                  <button
+                    type="button"
+                    className="vw-profile-menu-item"
+                    role="menuitem"
+                    onClick={() => openWorkspacePanel("profile")}
+                  >
+                    <UserCircle size={15} />
+                    Profile
+                  </button>
+                  <button
+                    type="button"
+                    className="vw-profile-menu-item"
+                    role="menuitem"
+                    onClick={() => openWorkspacePanel("settings")}
+                  >
+                    <Settings size={15} />
+                    Settings
+                  </button>
+                  <button
+                    type="button"
+                    className="vw-profile-menu-item"
+                    role="menuitem"
+                    onClick={() => openWorkspacePanel("auth")}
+                  >
+                    <LogIn size={15} />
+                    {isProfileAuthenticated ? "Account" : "Sign In"}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
