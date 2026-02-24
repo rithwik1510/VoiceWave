@@ -24,7 +24,7 @@ export default function WhereItWorks() {
     <section id="where-it-works" className="relative scroll-mt-28 overflow-hidden bg-transparent px-0 pb-10 pt-4 md:pb-14 md:pt-6">
       <div className="site-shell-tight relative z-10">
         <div className="mx-auto max-w-3xl text-center">
-          <p className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-[#71717A]">
+          <p className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-[#61758f]">
             Works Where You Write
           </p>
         </div>
