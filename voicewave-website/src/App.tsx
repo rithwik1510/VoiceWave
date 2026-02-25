@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import Header from './components/Header'
 import Hero from './components/Hero'
 import WhereItWorks from './components/WhereItWorks'
+import ComingSoonDots from './components/ComingSoonDots'
 import ScrollDemo from './components/ScrollDemo'
 import CapabilityDeepDive from './components/CapabilityDeepDive'
 import Features from './components/Features'
@@ -77,13 +78,17 @@ function App() {
     <div className="site-root min-h-screen w-full selection:bg-[#bfe8ff]/45 selection:text-[#071126]">
       <FloatingNav />
 
-      <section className="zone-a">
+      <section className="zone-a" data-dotted-ready="false" data-dotted-quality="desktop_high">
         <Header />
         <Hero />
       </section>
 
       <section className="bg-[#f7fbff] py-10 sm:py-14">
         <WhereItWorks />
+      </section>
+
+      <section className="coming-soon-band">
+        <ComingSoonDots />
       </section>
 
       <section className="bg-[#f7fbff] py-12 sm:py-16">

@@ -276,7 +276,7 @@ section[id] {
 }
 
 .hero-dotted-field.is-ready:not(.is-fallback) .hero-dotted-fallback {
-  opacity: 0;
+  opacity: 0.16;
 }
 
 .hero-copy-stack {
@@ -724,3 +724,4 @@ section[id] {
     scroll-behavior: auto !important;
   }
 }
+

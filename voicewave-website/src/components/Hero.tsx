@@ -98,7 +98,7 @@ export default function Hero() {
       ref={heroSectionRef}
       className="relative min-h-[96svh] overflow-hidden pb-20 pt-4 sm:pt-8 md:min-h-[102svh] md:pb-28 md:pt-10"
     >
-      <div className="hero-dotted-layer">
+      <div className="zone-hero-dotted-layer">
         <HeroDottedField theme="dark" safeZone={safeZone ?? undefined} topCutoffPx={topCutoffPx} />
       </div>
 
@@ -136,3 +136,4 @@ export default function Hero() {
     </section>
   )
 }
+
