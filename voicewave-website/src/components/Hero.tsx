@@ -43,11 +43,14 @@ export default function Hero() {
       }
 
       setSafeZone((previous) => {
+        const previousRadius = previous?.radius ?? 0
+        const nextRadius = nextSafeZone.radius ?? 0
+
         if (
           previous &&
           Math.abs(previous.centerX - nextSafeZone.centerX) < 0.5 &&
           Math.abs(previous.centerY - nextSafeZone.centerY) < 0.5 &&
-          Math.abs(previous.radius - nextSafeZone.radius) < 0.5
+          Math.abs(previousRadius - nextRadius) < 0.5
         ) {
           return previous
         }
