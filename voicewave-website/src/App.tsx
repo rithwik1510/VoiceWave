@@ -82,11 +82,11 @@ function App() {
         <Hero />
       </section>
 
-      <section className="bg-[#f7fbff] py-8 sm:py-10">
+      <section className="bg-[#f7fbff] py-10 sm:py-14">
         <WhereItWorks />
       </section>
 
-      <section className="bg-[#f7fbff] py-10 sm:py-14">
+      <section className="bg-[#f7fbff] py-12 sm:py-16">
         <ScrollDemo />
       </section>
 
