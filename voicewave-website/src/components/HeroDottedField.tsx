@@ -470,7 +470,7 @@ export default function HeroDottedField({
       const textureLoader = new THREE.TextureLoader()
       textureLoader.load(
         config.posterSource,
-        (loadedTexture) => {
+        (loadedTexture: THREE.Texture) => {
           if (destroyed) {
             loadedTexture.dispose()
             return
@@ -493,7 +493,7 @@ export default function HeroDottedField({
       if (config.enableMask) {
         textureLoader.load(
           config.maskSource,
-          (loadedTexture) => {
+          (loadedTexture: THREE.Texture) => {
             if (destroyed) {
               loadedTexture.dispose()
               return
