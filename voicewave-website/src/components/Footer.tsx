@@ -4,7 +4,7 @@ const footerLinks = ['GitHub', 'Documentation', 'Privacy']
 
 export default function Footer() {
   return (
-    <footer className="bottom-mirror-band relative overflow-hidden px-0 pb-20 pt-20 sm:pb-24 sm:pt-24">
+    <footer className="bottom-mirror-band relative overflow-hidden px-0 pb-12 pt-14 sm:pb-14 sm:pt-16">
       <div className="pointer-events-none absolute inset-0 z-0">
         <div className="absolute left-1/2 top-12 h-48 w-[min(1100px,94vw)] -translate-x-1/2 rounded-[2.25rem] bg-white/26 blur-2xl" />
         <div className="absolute inset-x-0 top-0 h-52 bg-gradient-to-b from-white/12 to-transparent" />
