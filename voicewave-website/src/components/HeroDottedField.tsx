@@ -24,7 +24,6 @@ type HeroDottedFieldProps = {
 }
 
 const MIN_CANVAS_SIZE = 64
-const VIDEO_READY_MIX_THRESHOLD = 0.32
 const POINTER_DELTA_CAP = 0.045
 const POINTER_DELTA_CAP_LOW_POWER = 0.03
 const POINTER_ACTIVE_CAP = 0.78
@@ -78,7 +77,6 @@ export default function HeroDottedField({
     let simulationAccumulator = 0
     let readyFired = false
     let videoMix = 0
-    let videoReadyTimestamp = 0
 
     const pointer = new THREE.Vector2(0.5, 0.72)
     const pointerDelta = new THREE.Vector2(0, 0)
@@ -564,6 +562,10 @@ export default function HeroDottedField({
         swapRenderTargets()
       }
 
+      // Mark ready as soon as the WebGL pipeline is alive; waiting for video mix causes reload flash.
+      window.clearTimeout(readyFallbackTimeoutId)
+      commitReady(true)
+
       interactionTarget = rootNode.closest('section') ?? rootNode
       if (!disableInteraction && !prefersReducedMotion) {
         interactionTarget.addEventListener('pointermove', pointerMoveHandler, { passive: true })
@@ -652,14 +654,6 @@ export default function HeroDottedField({
         const mixLerp = 1 - Math.exp(-deltaSeconds * (canUseVideo ? 4.8 : 3.2))
         videoMix = THREE.MathUtils.lerp(videoMix, targetVideoMix, mixLerp)
         displayMaterial.uniforms.uVideoMix.value = videoMix
-
-        if (!readyFired && canUseVideo && videoElement && videoElement.currentTime >= config.readyTimeSeconds) {
-          videoReadyTimestamp = timestampMs
-        }
-        if (!readyFired && videoReadyTimestamp > 0 && videoMix >= VIDEO_READY_MIX_THRESHOLD) {
-          window.clearTimeout(readyFallbackTimeoutId)
-          commitReady(true)
-        }
 
         applyLayoutUniforms()
         renderer.setRenderTarget(null)

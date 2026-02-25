@@ -266,17 +266,16 @@ section[id] {
 .hero-dotted-fallback {
   position: absolute;
   inset: 0;
-  opacity: 0.72;
-  transition: opacity 360ms ease;
+  opacity: 0.2;
+  transition: opacity 180ms ease;
   background:
     linear-gradient(180deg, rgba(5, 20, 66, 0.08) 4%, rgba(5, 20, 66, 0.04) 42%, rgba(5, 20, 66, 0.01) 70%, transparent 100%),
     radial-gradient(62rem 24rem at 12% 66%, rgba(114, 202, 255, 0.15), transparent 80%),
-    radial-gradient(62rem 24rem at 88% 66%, rgba(114, 202, 255, 0.15), transparent 80%),
-    radial-gradient(circle at 50% 72%, rgba(176, 230, 255, 0.52) 0.055rem, transparent 0.1rem) 0 0/0.9rem 0.9rem;
+    radial-gradient(62rem 24rem at 88% 66%, rgba(114, 202, 255, 0.15), transparent 80%);
 }
 
 .hero-dotted-field.is-ready:not(.is-fallback) .hero-dotted-fallback {
-  opacity: 0.16;
+  opacity: 0.14;
 }
 
 .hero-copy-stack {
