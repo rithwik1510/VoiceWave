@@ -152,6 +152,84 @@ section[id] {
   background: linear-gradient(180deg, rgba(247, 252, 255, 0) 0%, rgba(247, 252, 255, 0.1) 66%, #f7fbff 100%);
 }
 
+.hero-dotted-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.hero-dotted-layer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(66rem 26rem at calc(16% + (var(--site-drift-x) * 0.2)) calc(64% + (var(--site-drift-y) * 0.2)), rgba(94, 186, 255, 0.14), transparent 82%),
+    radial-gradient(66rem 26rem at calc(84% - (var(--site-drift-x) * 0.2)) calc(64% + (var(--site-drift-y) * 0.2)), rgba(94, 186, 255, 0.14), transparent 82%);
+}
+
+.hero-dotted-field {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0.97;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 84%, rgba(0, 0, 0, 0.7) 93%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 84%, rgba(0, 0, 0, 0.7) 93%, transparent 100%);
+}
+
+.hero-dotted-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.hero-dotted-canvas-element {
+  display: block;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 460ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hero-dotted-field.is-ready .hero-dotted-canvas-element {
+  opacity: 1;
+}
+
+.hero-dotted-fallback {
+  position: absolute;
+  inset: 0;
+  opacity: 0.82;
+  transition: opacity 360ms ease;
+  background:
+    linear-gradient(180deg, rgba(5, 20, 66, 0.08) 4%, rgba(5, 20, 66, 0.03) 36%, transparent 66%),
+    radial-gradient(88rem 28rem at 50% 72%, rgba(146, 217, 255, 0.24), rgba(58, 145, 244, 0.08) 56%, transparent 84%),
+    radial-gradient(62rem 24rem at 12% 66%, rgba(114, 202, 255, 0.17), transparent 80%),
+    radial-gradient(62rem 24rem at 88% 66%, rgba(114, 202, 255, 0.17), transparent 80%),
+    radial-gradient(circle at 50% 72%, rgba(176, 230, 255, 0.78) 0.06rem, transparent 0.1rem) 0 0/0.9rem 0.9rem;
+}
+
+.hero-dotted-field.is-ready:not(.is-fallback) .hero-dotted-fallback {
+  opacity: 0;
+}
+
+.hero-copy-stack {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  isolation: isolate;
+}
+
+.hero-title-copy {
+  text-shadow: 0 7px 26px rgba(3, 17, 58, 0.42), 0 1px 4px rgba(3, 17, 58, 0.32);
+}
+
+.hero-body-copy {
+  text-shadow: 0 5px 16px rgba(3, 17, 58, 0.34), 0 1px 2px rgba(3, 17, 58, 0.22);
+}
+
 .top-nav-link {
   position: relative;
   color: rgba(255, 255, 255, 0.78);
@@ -304,6 +382,37 @@ section[id] {
   box-shadow: 0 35px 70px -58px rgba(16, 24, 40, 0.45);
 }
 
+.demo-showcase {
+  position: relative;
+  border-color: #d6e5f8;
+  background:
+    radial-gradient(50rem 22rem at 12% 20%, rgba(126, 216, 255, 0.22), transparent 74%),
+    radial-gradient(58rem 24rem at 92% 84%, rgba(27, 142, 255, 0.2), transparent 76%),
+    linear-gradient(180deg, #ffffff 0%, #f5faff 100%);
+  box-shadow: 0 42px 84px -58px rgba(6, 40, 110, 0.48);
+}
+
+.demo-showcase-main {
+  position: relative;
+}
+
+.demo-showcase-main::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(48rem 20rem at 76% 18%, rgba(126, 216, 255, 0.2), transparent 76%),
+    radial-gradient(38rem 18rem at 30% 92%, rgba(27, 142, 255, 0.12), transparent 78%);
+  opacity: 0.8;
+}
+
+.demo-showcase-main > * {
+  position: relative;
+  z-index: 1;
+}
+
 .modules-gradient-layer {
   position: absolute;
   inset: -8% -6%;
@@ -342,25 +451,30 @@ section[id] {
   overflow: hidden;
 }
 
+.where-marquee-bleed {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+}
+
 .where-marquee-mask {
   overflow: hidden;
-  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 6%, #000 94%, transparent 100%);
-  mask-image: linear-gradient(to right, transparent 0%, #000 6%, #000 94%, transparent 100%);
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 .where-marquee-track {
   display: flex;
   width: max-content;
-  animation: where-marquee-scroll 46s linear infinite;
+  animation: where-marquee-scroll 34s linear infinite;
   will-change: transform;
 }
 
 .where-marquee-run {
   display: flex;
   align-items: center;
-  gap: clamp(1.45rem, 3vw, 2.8rem);
+  gap: clamp(1.7rem, 3.4vw, 3.25rem);
   margin: 0;
-  padding: 1.05rem clamp(0.95rem, 2.2vw, 1.7rem);
+  padding: 1.2rem clamp(1.2rem, 2.8vw, 2.4rem);
   list-style: none;
 }
 
@@ -369,7 +483,7 @@ section[id] {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  min-height: 2rem;
+  min-height: 2.45rem;
 }
 
 .where-marquee-item::after {
@@ -390,7 +504,7 @@ section[id] {
 
 .where-marquee-wordmark {
   color: rgba(28, 44, 68, 0.74);
-  font-size: clamp(1.06rem, 2vw, 1.52rem);
+  font-size: clamp(1.16rem, 2.25vw, 1.84rem);
   font-family: var(--font-body);
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -406,9 +520,9 @@ section[id] {
 
 .bottom-mirror-band {
   position: relative;
-  min-height: 112svh;
+  min-height: 86svh;
   background:
-    linear-gradient(180deg, #f8fcff 0%, #a8e8ff 20%, #68c9ff 38%, #2f93f4 56%, #0a3eb8 74%, #031a5a 86%, #01030e 95%, #000000 100%);
+    linear-gradient(180deg, #f8fcff 0%, #a8e8ff 22%, #68c9ff 42%, #2f93f4 61%, #0a3eb8 79%, #031a5a 92%, #020a28 100%);
 }
 
 .bottom-mirror-band::before {
@@ -419,7 +533,7 @@ section[id] {
   background:
     radial-gradient(68rem 32rem at calc(20% + var(--site-drift-x)) calc(24% + var(--site-drift-y)), rgba(160, 223, 255, 0.28), transparent 74%),
     radial-gradient(70rem 34rem at calc(80% - var(--site-drift-x)) calc(36% + var(--site-drift-y)), rgba(91, 153, 255, 0.22), transparent 74%),
-    linear-gradient(180deg, rgba(3, 18, 56, 0) 58%, rgba(2, 8, 26, 0.92) 100%);
+    linear-gradient(180deg, rgba(3, 18, 56, 0) 66%, rgba(2, 8, 26, 0.74) 100%);
 }
 
 @keyframes where-marquee-scroll {
@@ -436,6 +550,11 @@ section[id] {
   .site-shell,
   .site-shell-tight {
     width: min(100%, calc(100% - 1.25rem));
+  }
+
+  .hero-dotted-field {
+    inset: 0 -8% 0;
+    opacity: 0.92;
   }
 }
 
@@ -456,6 +575,14 @@ section[id] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .hero-dotted-canvas-element {
+    display: none;
+  }
+
+  .hero-dotted-fallback {
+    opacity: 0.8;
+  }
+
   .where-marquee-mask {
     -webkit-mask-image: none;
     mask-image: none;
@@ -482,6 +609,7 @@ section[id] {
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
