@@ -1,121 +1,243 @@
 # VoiceWave
 
-VoiceWave is a privacy-first desktop dictation app.
-The core speech-to-text engine for v1 is **whisper.cpp** (local, on-device, no cloud audio path).
+![VoiceWave hero](docs/assets/readme/hero-banner.svg)
 
-## Product Direction (Locked)
+VoiceWave is a privacy-first desktop dictation system built for low-latency local transcription and reliable text insertion.
 
-1. We use upstream whisper.cpp-compatible models (`tiny.en`, `base.en`, `small.en`, `medium.en`).
-2. We are not training or building a custom ASR model.
-3. v1 remains strict local-only.
-4. Current execution scope (2026-02-10): Windows-only implementation/validation; macOS validation is deferred until hardware is available.
+Current v1 runtime path is local-only (`whisper.cpp` through Rust) with a Windows-first execution scope in this branch.
 
-## Current Status (Honest)
+## Product At A Glance
 
-1. Phase 0: complete (planning/governance baseline).
-2. Phase 1: complete for Windows runtime integration.
-   - Microphone mode uses `whisper.cpp` via `whisper-rs`.
-   - Fixture mode remains for deterministic test/harness paths.
-3. Phase 2: implemented and validated in current Windows execution scope.
-4. Phase 3: implemented and validated for the Windows rescue baseline.
-   - Model manager/history/dictionary surfaces are wired.
-   - Hardware-tier recommendation artifact is published.
-   - Transcript sanitization removes non-user artifacts (for example `[BLANK_AUDIO]`) before insertion/history/dictionary ingestion.
-   - Microphone quality warning + one-click recovery actions are wired in UI.
-5. Formal phase closeout gates remain open where explicitly documented (for example full >= 30 minute battery evidence).
-6. Manual workflow acceptance in Notepad + VS Code + browser editor is required on target hardware before release packaging.
-7. Phase 4 hardening/readiness execution is complete on this branch (`npm run phase4:gate` passes).
-8. Phase 5 readiness pack is prepared; Phase 5 implementation has not started (awaiting explicit go-ahead).
-9. Phase 6: not started.
-10. Remaining pre-release items:
-   - Full manual acceptance checklist rows for Notepad + VS Code + browser dictation workflow still need to be completed on target hardware.
-   - 30-minute sustained battery gate is deferred to Phase VI pre-GA by documented marker (`docs/phase4/evidence/battery-deferment.md`).
-11. Pro monetization rollout is now implemented for Windows baseline:
-   - Encrypted local entitlement store with owner-device override.
-   - Pro nav and pricing UI (`~$4/mo~` and `$1.50/mo` launch offer).
-   - Real Pro-gated controls: format profiles, domain packs, code mode, app-aware profile target, advanced history search/tag/star/export.
-   - Free dictation path remains unchanged (local-only, no daily cap).
+| Area | Summary |
+| --- | --- |
+| Runtime | `Tauri 2` shell + `Rust` core + `React/Tailwind` frontend |
+| ASR | `whisper.cpp` runtime via `whisper-rs` (local models, no cloud audio path) |
+| UX Contract | Explicit state model: `idle -> listening -> transcribing -> inserted/error` |
+| Insertion Reliability | Direct insert -> clipboard fallback -> history fallback |
+| Platform Scope | Windows implementation/validation active since `2026-02-10` |
+
+## Core Capabilities
+
+| Icon | Capability | Technical Detail |
+| --- | --- | --- |
+| ![Local-only](docs/assets/readme/icon-local-only.svg) | Local-Only Privacy | Production path has no outbound audio transport and no cloud transcription rewrite path for v1. |
+| ![Runtime](docs/assets/readme/icon-runtime.svg) | Deterministic Runtime Flow | Audio capture, inference orchestration, insertion, and persistence are handled in Rust services behind Tauri commands/events. |
+| ![Insertion](docs/assets/readme/icon-insertion.svg) | Fallback-Safe Insertion | Insertion engine prioritizes direct insertion and degrades to clipboard/history fallback to preserve user text. |
+| ![Models](docs/assets/readme/icon-models.svg) | Verified Model Lifecycle | Model install/switch includes cataloging, checksum verification, and recommendation logic. |
+
+## Runtime Architecture
+
+![VoiceWave runtime pipeline](docs/assets/readme/runtime-pipeline.svg)
+
+Primary architecture boundary is defined in [docs/rfc/0001-system-architecture.md](docs/rfc/0001-system-architecture.md).
+
+Core modules:
+
+1. `desktop-shell` (Tauri host)
+1. `audio-pipeline` (capture, resample, buffering, VAD)
+1. `inference-worker` (whisper.cpp integration + cancellable jobs)
+1. `insertion-engine` (direct/clipboard/history reliability chain)
+1. `hotkey-manager` (global binding lifecycle)
+1. `model-manager` (catalog/download/checksum/health)
+1. `persistence` (local settings/history/stats)
+1. `diagnostics` (redacted export, opt-in)
+1. `experience-state` (shared state contract for UX)
+
+## Status Snapshot (Repository Baseline)
+
+As documented in this branch:
+
+1. Phase 0 complete.
+1. Phase 1 complete for Windows runtime integration.
+1. Phase 2 implemented and validated in Windows execution scope.
+1. Phase 3 implemented and validated for Windows rescue baseline.
+1. Phase 4 readiness gate complete (`npm run phase4:gate` passes).
+1. Phase 5 readiness pack prepared; implementation not started.
+1. Phase 6 not started.
+
+Open release blockers called out in current docs:
+
+1. Full manual acceptance checklist rows remain incomplete for Notepad, VS Code, and browser dictation workflow on target hardware.
+1. `>= 30` minute sustained battery evidence is deferred by marker and still required before GA.
+
+References:
+
+1. [docs/PHASE3_IMPLEMENTATION.md](docs/PHASE3_IMPLEMENTATION.md)
+1. [docs/PHASE4_READINESS.md](docs/PHASE4_READINESS.md)
+1. [docs/PHASE5_READINESS.md](docs/PHASE5_READINESS.md)
+1. [docs/phase3/artifacts/windows-manual-acceptance-2026-02-11.md](docs/phase3/artifacts/windows-manual-acceptance-2026-02-11.md)
 
 ## Stack
 
-1. Frontend: React + Tailwind + Vite
-2. Desktop shell: Tauri 2
-3. Core runtime: Rust
-4. ASR runtime target: whisper.cpp integration from Rust
+1. Frontend: `React 18` + `Tailwind` + `Vite`
+1. Desktop shell: `Tauri 2`
+1. Core runtime: `Rust`
+1. ASR runtime target: `whisper.cpp` via `whisper-rs`
+1. Local storage/ops: encrypted billing files + local runtime state/history artifacts
 
-## Run
+## Quick Start
 
-1. Install dependencies: `npm install`
-2. Frontend mode: `npm run dev`
-3. Tests: `npm run test -- --run`
-4. Frontend build: `npm run build`
-5. Phase I validation: `npm run phase1:validate`
-6. Phase I sustained battery/thermal run: `npm run phase1:battery`
-7. Phase II validation: `npm run phase2:validate`
-8. Phase III validation: `npm run phase3:validate`
-9. Phase IV readiness report: `npm run phase4:prep`
-10. Phase IV readiness gate (blocking): `npm run phase4:gate`
-11. Phase V readiness report: `npm run phase5:prep`
-12. Phase V readiness gate (blocking): `npm run phase5:gate`
-13. Phase V reliability report: `npm run phase5:reliability`
-14. Phase V reliability gate (blocking): `npm run phase5:reliability:gate`
-15. Native Tauri dev (after Rust + Tauri prerequisites): `npm run tauri:dev`
-16. In-app: open `Models` and install `tiny.en` or `base.en`, then use `Home` mic button.
+1. Install dependencies:
 
-## Source of Truth
+```powershell
+npm install
+```
 
-1. Product plan and corrected phase gates: `Idea.md`
-2. Phase recovery archive: `docs/PHASE_RECOVERY_PLAN.md`
-3. Shared agent rules and mistake log: `AGENTS.md`
-4. Agent kickoff context: `AGENT_START.md`
-5. Architecture RFC: `docs/rfc/0001-system-architecture.md`
-6. Test strategy: `docs/testing/test-strategy.md`
-7. Hardware tiers: `docs/testing/hardware-tiers.md`
-8. Phase status docs:
-   - `docs/PHASE1_IMPLEMENTATION.md`
-   - `docs/PHASE2_IMPLEMENTATION.md`
-   - `docs/PHASE3_IMPLEMENTATION.md`
-   - `docs/PHASE3_REMAINING.md`
-   - `docs/PHASE4_READINESS.md`
-   - `docs/PHASE5_READINESS.md`
-9. Monetization + entitlement behavior: `docs/monetization.md`
+1. Run frontend dev mode:
+
+```powershell
+npm run dev
+```
+
+1. Run tests:
+
+```powershell
+npm run test -- --run
+```
+
+1. Build frontend:
+
+```powershell
+npm run build
+```
+
+1. Run desktop app (requires Rust/Tauri prerequisites):
+
+```powershell
+npm run tauri:dev
+```
+
+1. In app: open `Models`, install `tiny.en` or `base.en`, then run dictation from `Home`.
+
+## Validation and Gates
+
+| Command | Purpose |
+| --- | --- |
+| `npm run phase1:validate` | Phase I validation suite |
+| `npm run phase1:battery` | Phase I battery/thermal run |
+| `npm run phase2:validate` | Phase II validation suite |
+| `npm run phase3:validate` | Phase III validation suite |
+| `npm run phase4:prep` | Phase IV readiness report |
+| `npm run phase4:gate` | Phase IV blocking gate |
+| `npm run phase5:prep` | Phase V readiness report |
+| `npm run phase5:gate` | Phase V blocking readiness gate |
+| `npm run phase5:reliability` | Phase V reliability evidence report |
+| `npm run phase5:reliability:gate` | Phase V blocking reliability gate |
+| `npm run phaseA:cpu` | CPU latency sweep |
+| `npm run phaseB:gpu:check` | GPU readiness check |
+| `npm run phaseB:gpu` | GPU latency sweep |
+| `npm run phaseB:fw` | Faster-whisper latency sweep |
+
+## Runtime Contract Surface (High-Level)
+
+Phase I baseline commands:
+
+1. `start_dictation(mode)`
+1. `cancel_dictation()`
+1. `load_settings()`
+1. `update_settings(settings)`
+1. `get_voicewave_snapshot()`
+
+Phase II additions include hotkey, permission, and insertion command surfaces.
+
+Phase III additions include model manager, benchmark/recommendation, history, and dictionary command surfaces.
+
+Phase V additions include diagnostics status and export command surfaces.
+
+See full contract list in [docs/rfc/0001-system-architecture.md](docs/rfc/0001-system-architecture.md).
+
+## Monetization and Entitlements
+
+Windows baseline monetization is implemented with local encrypted entitlement storage.
+
+Pricing baseline:
+
+1. Base: `~$4/mo~`
+1. Launch offer: `$1.50/mo` for first 3 months, then `$4/mo`
+
+Entitlement statuses:
+
+1. `free`
+1. `pro_active`
+1. `grace`
+1. `expired`
+1. `owner_override`
+
+Pro-gated features include advanced formatting profiles, domain packs, code mode, app-aware profiles, and advanced history controls.
+
+Reference: [docs/monetization.md](docs/monetization.md)
+
+## Privacy and Security Guardrails
+
+1. No outbound audio transport in production path.
+1. Local-only ASR and deterministic local post-processing in current monetization architecture.
+1. Model/update verification paths are documented in phase evidence.
+1. Diagnostics export is user-triggered and revocable.
+
+References:
+
+1. [docs/security/threat-model-v1.md](docs/security/threat-model-v1.md)
+1. [docs/risk/risk-register.md](docs/risk/risk-register.md)
+1. [docs/phase4/evidence/update-signing-verification.md](docs/phase4/evidence/update-signing-verification.md)
+
+## Latest Recorded Validation Evidence
+
+Latest summary currently documented in this branch: `2026-02-17`.
+
+1. `npm run test -- --run` recorded pass (`3` test files / `12` tests).
+1. `npm run build` recorded pass.
+1. `npm run phase3:validate` recorded pass.
+1. `npm run phase4:gate` recorded pass.
+
+Reference artifact trail:
+
+1. [docs/phase3/artifacts](docs/phase3/artifacts)
+1. [docs/phase4/artifacts](docs/phase4/artifacts)
+1. [docs/phase5/artifacts](docs/phase5/artifacts)
+1. [docs/testing/hardware-tier-recommendation-windows.json](docs/testing/hardware-tier-recommendation-windows.json)
 
 ## CI
 
-Workflow: `.github/workflows/ci.yml`
+Workflow: [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
-1. Docs formatting check (Prettier)
-2. Markdown lint
-3. Secrets scan (gitleaks)
-4. Phase 0 artifact integrity check
-5. Frontend tests and build
-6. Rust no-default-features tests
-7. Rust desktop-feature compile path (`--no-run`)
+Current CI baseline includes:
 
-## Local Verification
+1. Docs formatting checks
+1. Markdown lint
+1. Secrets scan
+1. Phase 0 artifact integrity checks
+1. Frontend tests and build
+1. Rust tests and compile paths
+
+## Repository Map
+
+```text
+src/                   # React app and UI runtime bridge
+src-tauri/             # Rust core runtime + Tauri shell
+voicewave-website/     # Marketing website
+docs/                  # RFCs, phase plans, evidence, security, testing
+scripts/               # Validation, readiness, benchmark, tauri utilities
+vendor/                # Local whisper-rs / whisper.cpp vendored deps
+```
+
+## Source of Truth Docs
+
+1. Product requirements: [docs/prd/v1-prd.md](docs/prd/v1-prd.md)
+1. Architecture RFC: [docs/rfc/0001-system-architecture.md](docs/rfc/0001-system-architecture.md)
+1. Test strategy: [docs/testing/test-strategy.md](docs/testing/test-strategy.md)
+1. Hardware tiers: [docs/testing/hardware-tiers.md](docs/testing/hardware-tiers.md)
+1. Phase recovery plan: [docs/PHASE_RECOVERY_PLAN.md](docs/PHASE_RECOVERY_PLAN.md)
+1. Implementation ledger: [Idea.md](Idea.md)
+1. Phase I implementation: [docs/PHASE1_IMPLEMENTATION.md](docs/PHASE1_IMPLEMENTATION.md)
+1. Phase II implementation: [docs/PHASE2_IMPLEMENTATION.md](docs/PHASE2_IMPLEMENTATION.md)
+1. Phase III implementation: [docs/PHASE3_IMPLEMENTATION.md](docs/PHASE3_IMPLEMENTATION.md)
+1. Phase III remaining: [docs/PHASE3_REMAINING.md](docs/PHASE3_REMAINING.md)
+1. Phase IV readiness: [docs/PHASE4_READINESS.md](docs/PHASE4_READINESS.md)
+1. Phase V readiness: [docs/PHASE5_READINESS.md](docs/PHASE5_READINESS.md)
+
+## Local Verification Utility
 
 ```powershell
 # Phase 0 artifact checks
 & "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -File .\scripts\ci\check-phase0-artifacts.ps1
 ```
-
-## Latest Validation Evidence (2026-02-17)
-
-1. `npm run test -- --run`
-   - Result: `3 passed` test files, `12 passed` tests.
-   - Output excerpt: `Test Files  3 passed (3)` / `Tests  12 passed (12)` / `Duration 2.73s`
-2. `npm run build`
-   - Result: Vite production build succeeded (`built`).
-   - Output excerpt: `built in 3.00s`
-3. `npm run phase3:validate`
-   - Result: script completed successfully, including no-space Windows strategy and Rust desktop compile path.
-   - Rust result: desktop compile and quality-guard test paths completed (with documented desktop-runtime fallback warnings in this environment).
-4. Hardware-tier recommendation evidence
-   - `docs/testing/hardware-tier-recommendation-windows.json`
-5. Local-state rescue utility
-   - `scripts/support/backup-reset-local-state.ps1`
-   - Usage and safety notes: `docs/troubleshooting/local-state-recovery.md`
-6. Phase IV readiness gate
-   - `npm run phase4:gate`
-   - Result: pass, including completed Phase IV evidence docs and approved battery deferment marker.
-
