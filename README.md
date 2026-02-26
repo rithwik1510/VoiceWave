@@ -6,7 +6,7 @@ VoiceWave is a privacy-first desktop dictation system built for low-latency loca
 
 Current v1 runtime path is local-only (`whisper.cpp` through Rust) with a Windows-first execution scope in this branch.
 
-## Product At A Glance
+## ![Overview](docs/assets/readme/section-overview.svg) Product At A Glance
 
 | Area | Summary |
 | --- | --- |
@@ -16,7 +16,7 @@ Current v1 runtime path is local-only (`whisper.cpp` through Rust) with a Window
 | Insertion Reliability | Direct insert -> clipboard fallback -> history fallback |
 | Platform Scope | Windows implementation/validation active since `2026-02-10` |
 
-## Core Capabilities
+## ![Capabilities](docs/assets/readme/section-capabilities.svg) Core Capabilities
 
 | Icon | Capability | Technical Detail |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ Current v1 runtime path is local-only (`whisper.cpp` through Rust) with a Window
 | ![Insertion](docs/assets/readme/icon-insertion.svg) | Fallback-Safe Insertion | Insertion engine prioritizes direct insertion and degrades to clipboard/history fallback to preserve user text. |
 | ![Models](docs/assets/readme/icon-models.svg) | Verified Model Lifecycle | Model install/switch includes cataloging, checksum verification, and recommendation logic. |
 
-## Runtime Architecture
+## ![Architecture](docs/assets/readme/section-architecture.svg) Runtime Architecture
 
 ![VoiceWave runtime pipeline](docs/assets/readme/runtime-pipeline.svg)
 
@@ -43,7 +43,7 @@ Core modules:
 1. `diagnostics` (redacted export, opt-in)
 1. `experience-state` (shared state contract for UX)
 
-## Status Snapshot (Repository Baseline)
+## ![Status](docs/assets/readme/section-status.svg) Status Snapshot (Repository Baseline)
 
 As documented in this branch:
 
@@ -67,7 +67,7 @@ References:
 1. [docs/PHASE5_READINESS.md](docs/PHASE5_READINESS.md)
 1. [docs/phase3/artifacts/windows-manual-acceptance-2026-02-11.md](docs/phase3/artifacts/windows-manual-acceptance-2026-02-11.md)
 
-## Stack
+## ![Stack](docs/assets/readme/section-stack.svg) Stack
 
 1. Frontend: `React 18` + `Tailwind` + `Vite`
 1. Desktop shell: `Tauri 2`
@@ -75,7 +75,7 @@ References:
 1. ASR runtime target: `whisper.cpp` via `whisper-rs`
 1. Local storage/ops: encrypted billing files + local runtime state/history artifacts
 
-## Quick Start
+## ![Quick Start](docs/assets/readme/section-quickstart.svg) Quick Start
 
 1. Install dependencies:
 
@@ -109,7 +109,7 @@ npm run tauri:dev
 
 1. In app: open `Models`, install `tiny.en` or `base.en`, then run dictation from `Home`.
 
-## Validation and Gates
+## ![Validation](docs/assets/readme/section-validation.svg) Validation and Gates
 
 | Command | Purpose |
 | --- | --- |
@@ -128,7 +128,7 @@ npm run tauri:dev
 | `npm run phaseB:gpu` | GPU latency sweep |
 | `npm run phaseB:fw` | Faster-whisper latency sweep |
 
-## Runtime Contract Surface (High-Level)
+## ![Contract](docs/assets/readme/section-contract.svg) Runtime Contract Surface (High-Level)
 
 Phase I baseline commands:
 
@@ -146,7 +146,7 @@ Phase V additions include diagnostics status and export command surfaces.
 
 See full contract list in [docs/rfc/0001-system-architecture.md](docs/rfc/0001-system-architecture.md).
 
-## Monetization and Entitlements
+## ![Monetization](docs/assets/readme/section-monetization.svg) Monetization and Entitlements
 
 Windows baseline monetization is implemented with local encrypted entitlement storage.
 
@@ -167,7 +167,7 @@ Pro-gated features include advanced formatting profiles, domain packs, code mode
 
 Reference: [docs/monetization.md](docs/monetization.md)
 
-## Privacy and Security Guardrails
+## ![Security](docs/assets/readme/section-security.svg) Privacy and Security Guardrails
 
 1. No outbound audio transport in production path.
 1. Local-only ASR and deterministic local post-processing in current monetization architecture.
@@ -180,7 +180,7 @@ References:
 1. [docs/risk/risk-register.md](docs/risk/risk-register.md)
 1. [docs/phase4/evidence/update-signing-verification.md](docs/phase4/evidence/update-signing-verification.md)
 
-## Latest Recorded Validation Evidence
+## ![Evidence](docs/assets/readme/section-evidence.svg) Latest Recorded Validation Evidence
 
 Latest summary currently documented in this branch: `2026-02-17`.
 
@@ -196,7 +196,7 @@ Reference artifact trail:
 1. [docs/phase5/artifacts](docs/phase5/artifacts)
 1. [docs/testing/hardware-tier-recommendation-windows.json](docs/testing/hardware-tier-recommendation-windows.json)
 
-## CI
+## ![CI](docs/assets/readme/section-ci.svg) CI
 
 Workflow: [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
@@ -209,7 +209,7 @@ Current CI baseline includes:
 1. Frontend tests and build
 1. Rust tests and compile paths
 
-## Repository Map
+## ![Repo](docs/assets/readme/section-repo.svg) Repository Map
 
 ```text
 src/                   # React app and UI runtime bridge
@@ -220,7 +220,7 @@ scripts/               # Validation, readiness, benchmark, tauri utilities
 vendor/                # Local whisper-rs / whisper.cpp vendored deps
 ```
 
-## Source of Truth Docs
+## ![Docs](docs/assets/readme/section-docs.svg) Source of Truth Docs
 
 1. Product requirements: [docs/prd/v1-prd.md](docs/prd/v1-prd.md)
 1. Architecture RFC: [docs/rfc/0001-system-architecture.md](docs/rfc/0001-system-architecture.md)
@@ -235,7 +235,7 @@ vendor/                # Local whisper-rs / whisper.cpp vendored deps
 1. Phase IV readiness: [docs/PHASE4_READINESS.md](docs/PHASE4_READINESS.md)
 1. Phase V readiness: [docs/PHASE5_READINESS.md](docs/PHASE5_READINESS.md)
 
-## Local Verification Utility
+## ![Verify](docs/assets/readme/section-verify.svg) Local Verification Utility
 
 ```powershell
 # Phase 0 artifact checks
