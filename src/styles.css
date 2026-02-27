@@ -682,9 +682,121 @@ body {
   );
 }
 
+.vw-model-gate-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.2rem;
+  background:
+    radial-gradient(620px 320px at 14% 0%, rgba(126, 216, 255, 0.22), transparent 74%),
+    radial-gradient(680px 360px at 88% 100%, rgba(27, 142, 255, 0.2), transparent 78%),
+    rgba(9, 9, 11, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.vw-model-gate-card {
+  width: min(560px, 100%);
+  border-radius: 1.35rem;
+  border: 1px solid rgba(125, 211, 252, 0.42);
+  background:
+    radial-gradient(220px 120px at 98% 0%, rgba(126, 216, 255, 0.16), transparent 72%),
+    #ffffff;
+  box-shadow:
+    0 24px 52px -32px rgba(2, 6, 23, 0.58),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  padding: 1rem;
+}
+
+.vw-model-gate-tabs {
+  margin-top: 0.85rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.vw-model-gate-tab {
+  position: relative;
+  display: flex;
+  min-height: 130px;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  background: linear-gradient(170deg, rgba(248, 250, 252, 0.92), rgba(241, 245, 249, 0.88));
+  padding: 0.75rem;
+  text-align: left;
+  transition:
+    border-color 170ms ease,
+    transform 190ms ease,
+    box-shadow 190ms ease;
+}
+
+.vw-model-gate-tab:hover {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.vw-model-gate-tab-active {
+  border-color: rgba(27, 142, 255, 0.52);
+  background: linear-gradient(
+    120deg,
+    rgba(10, 42, 140, 0.1) 6%,
+    rgba(27, 142, 255, 0.18) 54%,
+    rgba(126, 216, 255, 0.2) 100%
+  );
+  box-shadow: 0 12px 24px -18px rgba(27, 142, 255, 0.58);
+}
+
+.vw-model-gate-badge {
+  position: absolute;
+  top: 0.58rem;
+  left: 0.58rem;
+  border-radius: 999px;
+  border: 1px solid rgba(27, 142, 255, 0.4);
+  background: rgba(239, 246, 255, 0.95);
+  padding: 0.18rem 0.52rem;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+}
+
+.vw-model-gate-tab-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #09090b;
+}
+
+.vw-model-gate-tab-copy {
+  margin-top: 0.18rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #475569;
+}
+
+.vw-model-gate-meta {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 @media (max-width: 900px) {
   .vw-auth-tab {
     padding: 0.4rem 0.8rem;
+  }
+
+  .vw-model-gate-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .vw-model-gate-tab {
+    min-height: 106px;
   }
 }
 

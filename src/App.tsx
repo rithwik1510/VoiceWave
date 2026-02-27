@@ -42,6 +42,7 @@ import type {
 type OverlayPanel = "style" | "settings" | "help" | "profile" | "auth";
 type ProToolsMode = "default" | "coding" | "writing" | "study";
 type AuthMode = "signin" | "signup";
+type SetupModelChoice = "fw-small.en" | "fw-large-v3";
 
 interface DemoProfile {
   name: string;
@@ -333,6 +334,9 @@ function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const [setupModelChoice, setSetupModelChoice] = useState<SetupModelChoice>("fw-small.en");
+  const [setupModelPending, setSetupModelPending] = useState(false);
+  const [setupModelError, setSetupModelError] = useState<string | null>(null);
   const {
     activeState,
     approveDictionaryQueueEntry,
@@ -480,6 +484,21 @@ function App() {
     [cloudRecentSentences, cloudUserId, sessionHistory]
   );
   const activeDictionaryTerms = cloudUserId ? cloudDictionaryTerms : dictionaryTerms;
+  const hasInstalledModel = installedModels.length > 0;
+  const setupCatalog = useMemo(
+    () => modelCatalog.filter((row) => row.modelId === "fw-small.en" || row.modelId === "fw-large-v3"),
+    [modelCatalog]
+  );
+  const showModelSetupGate = tauriAvailable && !hasInstalledModel && setupCatalog.length > 0;
+  const selectedSetupCatalogRow = setupCatalog.find((row) => row.modelId === setupModelChoice) ?? null;
+  const selectedSetupStatus = modelStatuses[setupModelChoice] ?? null;
+
+  useEffect(() => {
+    if (!showModelSetupGate) {
+      return;
+    }
+    setSetupModelChoice("fw-small.en");
+  }, [showModelSetupGate]);
 
   useEffect(() => {
     if (proRequiredFeature) {
@@ -609,6 +628,24 @@ function App() {
     pressActiveRef.current = false;
     closeOverlay();
     setActiveNav(nextNav);
+  };
+
+  const handleSetupModelInstall = async () => {
+    setSetupModelError(null);
+    setSetupModelPending(true);
+    try {
+      await installModel(setupModelChoice);
+      await makeModelActive(setupModelChoice);
+      setActiveNav("home");
+    } catch (setupErr) {
+      if (setupErr instanceof Error && setupErr.message) {
+        setSetupModelError(setupErr.message);
+      } else {
+        setSetupModelError("Model installation failed. Please retry.");
+      }
+    } finally {
+      setSetupModelPending(false);
+    }
   };
 
   const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -2295,6 +2332,76 @@ function App() {
             </section>
           </div>
         </OverlayModal>
+      )}
+
+      {showModelSetupGate && (
+        <div className="vw-model-gate-backdrop">
+          <section className="vw-model-gate-card" role="dialog" aria-modal="true" aria-label="Enable Dictation">
+            <header>
+              <h3 className="vw-section-heading text-2xl font-semibold text-[#09090B]">Enable Dictation</h3>
+              <p className="mt-1 text-sm text-[#64748B]">Install a model to start transcription.</p>
+            </header>
+
+            <div className="vw-model-gate-tabs" role="tablist" aria-label="Model size selector">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={setupModelChoice === "fw-small.en"}
+                className={`vw-model-gate-tab ${setupModelChoice === "fw-small.en" ? "vw-model-gate-tab-active" : ""}`}
+                onClick={() => setSetupModelChoice("fw-small.en")}
+                disabled={setupModelPending}
+              >
+                <span className="vw-model-gate-badge">Recommended</span>
+                <span className="vw-model-gate-tab-title">Small</span>
+                <span className="vw-model-gate-tab-copy">Fast setup. Best for most devices.</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={setupModelChoice === "fw-large-v3"}
+                className={`vw-model-gate-tab ${setupModelChoice === "fw-large-v3" ? "vw-model-gate-tab-active" : ""}`}
+                onClick={() => setSetupModelChoice("fw-large-v3")}
+                disabled={setupModelPending}
+              >
+                <span className="vw-model-gate-tab-title">Large</span>
+                <span className="vw-model-gate-tab-copy">
+                  Higher quality. Use only on high-power devices with strong GPU.
+                </span>
+              </button>
+            </div>
+
+            <div className="vw-model-gate-meta">
+              <span className="vw-chip-accent">{selectedSetupCatalogRow?.displayName ?? setupModelChoice}</span>
+              {selectedSetupCatalogRow && (
+                <span className="vw-chip-accent">{formatBytes(selectedSetupCatalogRow.sizeBytes)}</span>
+              )}
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="vw-btn-primary"
+                onClick={() => void handleSetupModelInstall()}
+                disabled={setupModelPending || selectedSetupStatus?.state === "downloading"}
+              >
+                {setupModelPending
+                  ? "Starting Download..."
+                  : selectedSetupStatus?.state === "downloading"
+                    ? `Downloading ${selectedSetupStatus.progress}%`
+                    : setupModelChoice === "fw-small.en"
+                      ? "Download Small Model"
+                      : "Download Large Model"}
+              </button>
+            </div>
+
+            {(setupModelError || selectedSetupStatus?.message || displayError) && (
+              <section className="mt-4 rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-3 text-sm text-[#1E40AF]">
+                {setupModelError ?? selectedSetupStatus?.message ?? displayError}
+              </section>
+            )}
+          </section>
+        </div>
       )}
 
     </>
