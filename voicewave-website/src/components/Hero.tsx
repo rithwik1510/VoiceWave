@@ -126,7 +126,8 @@ export default function Hero() {
             href={windowsDownloadUrl}
             target="_blank"
             rel="noreferrer"
-            className="lime-cta mt-8 px-6 py-2.5"
+            download
+            className="lime-cta pointer-events-auto mt-8 px-6 py-2.5"
           >
             Download Setup
             <ArrowRight className="ml-2 h-3.5 w-3.5" />
