@@ -14,6 +14,11 @@ interface DashboardProps {
   finalTranscript: string | null;
   pushToTalkHotkey: string;
   isPro?: boolean;
+  recentSentences?: Array<{
+    id: string;
+    text: string;
+    createdAtUtcMs: number;
+  }>;
 }
 
 const WAVE_BARS = [18, 34, 26, 44, 30, 50, 22, 42, 28, 36, 24, 40];
@@ -73,7 +78,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   partialTranscript,
   finalTranscript,
   pushToTalkHotkey,
-  isPro = false
+  isPro = false,
+  recentSentences = []
 }) => {
   const { colors, typography, shapes } = theme;
   const [visualStatus, setVisualStatus] = useState<DictationState>(status);
@@ -92,21 +98,32 @@ export const Dashboard: React.FC<DashboardProps> = ({
   }, [status]);
 
   const isRecording = visualStatus === "listening" || visualStatus === "transcribing";
-  const proIconGradient = "linear-gradient(135deg, rgba(56,189,248,0.2) 0%, rgba(163,230,53,0.2) 100%)";
+  const proIconGradient = "linear-gradient(135deg, rgba(10,42,140,0.1) 8%, rgba(27,142,255,0.2) 54%, rgba(126,216,255,0.26) 84%, rgba(167,232,255,0.2) 100%)";
   const idleHint = finalTranscript ?? partialTranscript ?? `Hold ${pushToTalkHotkey} to start capturing`;
   const hasFinal = Boolean(finalTranscript && finalTranscript.trim().length > 0);
   const nowLabel = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const statusMeta = STATUS_META[visualStatus];
   const stateClass = `vw-home-state-${visualStatus}`;
 
+  const fallbackRows =
+    recentSentences.length === 0
+      ? MOCK_SESSIONS.map((session) => ({
+          id: session.id,
+          time: session.date,
+          text: session.preview,
+          latest: false
+        }))
+      : [];
+  const syncedRows = recentSentences.map((session) => ({
+    id: session.id,
+    time: new Date(session.createdAtUtcMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+    text: session.text,
+    latest: false
+  }));
   const transcriptRows = [
     ...(hasFinal ? [{ id: "latest", time: nowLabel, text: finalTranscript ?? "", latest: true }] : []),
-    ...MOCK_SESSIONS.map((session) => ({
-      id: session.id,
-      time: session.date,
-      text: session.preview,
-      latest: false
-    }))
+    ...syncedRows,
+    ...fallbackRows
   ];
 
   return (
@@ -259,7 +276,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         className="h-9 w-9 rounded-xl flex items-center justify-center"
                         style={{ backgroundImage: isPro ? proIconGradient : colors.accentGradientSoft }}
                       >
-                        <Zap size={16} style={isPro ? { color: colors.accentLime } : undefined} className={!isPro ? "text-[#18181B]" : undefined} />
+                        <Zap size={16} style={isPro ? { color: colors.accentCyan } : undefined} className={!isPro ? "text-[#18181B]" : undefined} />
                       </div>
                       <div>
                         <p className="vw-section-heading text-sm font-semibold text-[color:var(--vw-color-text-primary)] leading-none">Mode</p>
@@ -269,7 +286,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span
                       className={`rounded-xl border px-2 py-0.5 text-[10px] font-semibold ${
                         isPro
-                          ? "border-[rgba(163,230,53,0.52)] bg-[rgba(163,230,53,0.14)] text-[#18181B]"
+                          ? "border-[rgba(27,142,255,0.52)] bg-[rgba(27,142,255,0.14)] text-[#18181B]"
                           : `vw-home-mode-chip ${stateClass}`
                       }`}
                     >

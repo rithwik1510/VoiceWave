@@ -8,6 +8,22 @@ import {
   X
 } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  addCloudDictionaryTerm,
+  type CloudSentence,
+  deleteCloudDictionaryTerm,
+  ensureCloudProfile,
+  getCloudErrorMessage,
+  listCloudDictionaryTerms,
+  listRecentCloudSentences,
+  requestPasswordResetCloud,
+  saveCloudSentence,
+  signInCloud,
+  signOutCloud,
+  signUpCloud,
+  subscribeCloudAuth
+} from "./lib/cloudSync";
+import { firebaseEnabled } from "./lib/firebase";
 import { useVoiceWave } from "./hooks/useVoiceWave";
 import { THEMES } from "./prototype/constants";
 import { Dashboard } from "./prototype/components/Dashboard";
@@ -17,6 +33,7 @@ import type {
   AppProfileOverrides,
   CodeModeSettings,
   DomainPackId,
+  DictionaryTerm,
   FormatProfile,
   RetentionPolicy,
   VoiceWaveSettings
@@ -257,9 +274,10 @@ interface OverlayModalProps {
   subtitle: string;
   onClose: () => void;
   children: ReactNode;
+  maxWidthClassName?: string;
 }
 
-function OverlayModal({ title, subtitle, onClose, children }: OverlayModalProps) {
+function OverlayModal({ title, subtitle, onClose, children, maxWidthClassName = "max-w-3xl" }: OverlayModalProps) {
   return (
     <div
       className="vw-modal-backdrop"
@@ -269,7 +287,7 @@ function OverlayModal({ title, subtitle, onClose, children }: OverlayModalProps)
         }
       }}
     >
-      <section className="vw-modal-card max-w-3xl" role="dialog" aria-modal="true" aria-label={title}>
+      <section className={`vw-modal-card ${maxWidthClassName}`} role="dialog" aria-modal="true" aria-label={title}>
         <header className="vw-modal-header">
           <div>
             <h3 className="vw-section-heading text-xl font-semibold text-[#09090B]">{title}</h3>
@@ -299,11 +317,22 @@ function App() {
   const [modeApplyPending, setModeApplyPending] = useState<ProToolsMode | null>(null);
   const [benchmarkPanelOpen, setBenchmarkPanelOpen] = useState(false);
   const [demoProfile, setDemoProfile] = useState<DemoProfile | null>(null);
+  const [cloudUserId, setCloudUserId] = useState<string | null>(null);
+  const [cloudRecentSentences, setCloudRecentSentences] = useState<CloudSentence[]>([]);
+  const [cloudDictionaryTerms, setCloudDictionaryTerms] = useState<DictionaryTerm[]>([]);
   const [authMode, setAuthMode] = useState<AuthMode>("signin");
   const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authConfirmPassword, setAuthConfirmPassword] = useState("");
   const [authWorkspaceRole, setAuthWorkspaceRole] = useState("");
+  const [authShowPassword, setAuthShowPassword] = useState(false);
+  const [authShowConfirmPassword, setAuthShowConfirmPassword] = useState(false);
+  const [authRememberMe, setAuthRememberMe] = useState(true);
+  const [authPending, setAuthPending] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const {
     activeState,
     approveDictionaryQueueEntry,
@@ -395,6 +424,7 @@ function App() {
   const showOwnerUnlock = ownerTapCount >= 5;
   const pressActiveRef = useRef(false);
   const modeApplyInFlightRef = useRef(false);
+  const lastCloudSentenceRef = useRef<string | null>(null);
   const activeProToolsMode = useMemo(() => detectProToolsMode(settings), [settings]);
   const displayedProToolsMode = modeApplyPending ?? activeProToolsMode;
   const proStatusLabel = isOwnerOverride ? "Owner Pro (Device Override)" : isPro ? "Pro Active" : "Free";
@@ -433,8 +463,23 @@ function App() {
   const isDemoAuthenticated = Boolean(demoProfile);
   const profileDisplayName = demoProfile?.name ?? "Workspace";
   const profileStatusLabel = demoProfile
-    ? `${isPro ? "Pro" : "Free"} workspace`
+    ? `${isPro ? "Pro" : "Free"} workspace${cloudUserId ? " (cloud)" : ""}`
     : "Guest mode";
+  const recentSentences = useMemo(
+    () =>
+      cloudUserId
+        ? cloudRecentSentences
+        : [...sessionHistory]
+            .sort((left, right) => right.timestampUtcMs - left.timestampUtcMs)
+            .slice(0, 5)
+            .map((row) => ({
+              id: row.recordId,
+              text: row.preview,
+              createdAtUtcMs: row.timestampUtcMs
+            })),
+    [cloudRecentSentences, cloudUserId, sessionHistory]
+  );
+  const activeDictionaryTerms = cloudUserId ? cloudDictionaryTerms : dictionaryTerms;
 
   useEffect(() => {
     if (proRequiredFeature) {
@@ -453,6 +498,66 @@ function App() {
       setActiveNav("home");
     }
   }, [activeNav]);
+
+  useEffect(() => {
+    if (!firebaseEnabled) {
+      return;
+    }
+
+    const unsubscribe = subscribeCloudAuth((user) => {
+      if (!user) {
+        setDemoProfile(null);
+        setCloudUserId(null);
+        setCloudRecentSentences([]);
+        setCloudDictionaryTerms([]);
+        lastCloudSentenceRef.current = null;
+        return;
+      }
+
+      void (async () => {
+        try {
+          const [profile, recent, cloudTerms] = await Promise.all([
+            ensureCloudProfile(user, "Personal Workspace"),
+            listRecentCloudSentences(user.uid),
+            listCloudDictionaryTerms(user.uid)
+          ]);
+          setDemoProfile(profile);
+          setCloudUserId(user.uid);
+          setCloudRecentSentences(recent);
+          setCloudDictionaryTerms(cloudTerms);
+          setCloudSyncError(null);
+        } catch (cloudErr) {
+          setCloudSyncError(getCloudErrorMessage(cloudErr));
+        }
+      })();
+    });
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!cloudUserId || !firebaseEnabled) {
+      return;
+    }
+    const finalText = snapshot.lastFinal?.trim();
+    if (!finalText) {
+      return;
+    }
+    if (finalText === lastCloudSentenceRef.current) {
+      return;
+    }
+    lastCloudSentenceRef.current = finalText;
+
+    void (async () => {
+      try {
+        const recent = await saveCloudSentence(cloudUserId, finalText);
+        setCloudRecentSentences(recent);
+        setCloudSyncError(null);
+      } catch (cloudErr) {
+        setCloudSyncError(getCloudErrorMessage(cloudErr));
+      }
+    })();
+  }, [cloudUserId, snapshot.lastFinal]);
 
   const isOverlayNav = (value: string): value is OverlayPanel =>
     value === "style" || value === "settings" || value === "help" || value === "profile" || value === "auth";
@@ -506,12 +611,65 @@ function App() {
     setActiveNav(nextNav);
   };
 
-  const handleAuthSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setAuthError(null);
+    setAuthNotice(null);
     const normalizedEmail = authEmail.trim();
     if (!normalizedEmail) {
+      setAuthError("Please enter your email.");
       return;
     }
+    if (!authPassword.trim()) {
+      setAuthError("Please enter your password.");
+      return;
+    }
+    if (authMode === "signup") {
+      if (authPassword.length < 6) {
+        setAuthError("Password must be at least 6 characters.");
+        return;
+      }
+      if (authPassword !== authConfirmPassword) {
+        setAuthError("Password and confirm password do not match.");
+        return;
+      }
+    }
+
+    if (firebaseEnabled) {
+      setAuthPending(true);
+      try {
+        const profile =
+          authMode === "signup"
+            ? await signUpCloud({
+                email: normalizedEmail,
+                password: authPassword,
+                name: authName,
+                workspaceRole: authWorkspaceRole
+              })
+            : await signInCloud(normalizedEmail, authPassword);
+        const [recent, cloudTerms] = await Promise.all([
+          listRecentCloudSentences(profile.uid),
+          listCloudDictionaryTerms(profile.uid)
+        ]);
+        setDemoProfile({
+          name: profile.name,
+          email: profile.email,
+          workspaceRole: profile.workspaceRole
+        });
+        setCloudUserId(profile.uid);
+        setCloudRecentSentences(recent);
+        setCloudDictionaryTerms(cloudTerms);
+        setAuthPassword("");
+        setAuthConfirmPassword("");
+        setActiveOverlay("profile");
+      } catch (cloudErr) {
+        setAuthError(getCloudErrorMessage(cloudErr));
+      } finally {
+        setAuthPending(false);
+      }
+      return;
+    }
+
     const derivedName =
       authMode === "signup"
         ? authName.trim() || normalizedEmail.split("@")[0] || "VoiceWave User"
@@ -521,17 +679,78 @@ function App() {
       email: normalizedEmail,
       workspaceRole: authWorkspaceRole.trim() || "Personal Workspace"
     });
+    setCloudUserId(null);
+    setCloudRecentSentences([]);
+    setCloudDictionaryTerms([]);
     setAuthPassword("");
+    setAuthConfirmPassword("");
     setActiveOverlay("profile");
   };
 
   const continueAsGuest = () => {
+    setAuthError(null);
+    setAuthNotice(null);
     closeOverlay();
   };
 
   const openAuthOverlay = (mode: AuthMode) => {
     setAuthMode(mode);
+    setAuthError(null);
+    setAuthNotice(null);
+    setAuthShowPassword(false);
+    setAuthShowConfirmPassword(false);
     openOverlay("auth");
+  };
+
+  const handleSignOut = async () => {
+    setAuthError(null);
+    setAuthNotice(null);
+    if (firebaseEnabled && cloudUserId) {
+      setAuthPending(true);
+      try {
+        await signOutCloud();
+        setDemoProfile(null);
+        setCloudUserId(null);
+        setCloudRecentSentences([]);
+        setCloudDictionaryTerms([]);
+        openAuthOverlay("signin");
+      } catch (cloudErr) {
+        setAuthError(getCloudErrorMessage(cloudErr));
+      } finally {
+        setAuthPending(false);
+      }
+      return;
+    }
+
+    setDemoProfile(null);
+    setCloudUserId(null);
+    setCloudRecentSentences([]);
+    setCloudDictionaryTerms([]);
+    openAuthOverlay("signin");
+  };
+
+  const handleForgotPassword = async () => {
+    setAuthError(null);
+    setAuthNotice(null);
+    const normalizedEmail = authEmail.trim();
+    if (!normalizedEmail) {
+      setAuthError("Enter your email, then tap Forgot Password.");
+      return;
+    }
+    if (!firebaseEnabled) {
+      setAuthError("Password reset requires Firebase cloud auth to be enabled.");
+      return;
+    }
+
+    setAuthPending(true);
+    try {
+      await requestPasswordResetCloud(normalizedEmail);
+      setAuthNotice("Password reset email sent. Check your inbox.");
+    } catch (cloudErr) {
+      setAuthError(getCloudErrorMessage(cloudErr));
+    } finally {
+      setAuthPending(false);
+    }
   };
 
   const applyProToolsMode = async (mode: ProToolsMode) => {
@@ -592,8 +811,8 @@ function App() {
   const retentionOptions: RetentionPolicy[] = ["off", "days7", "days30", "forever"];
   const domainPackOptions: DomainPackId[] = ["coding", "student", "productivity"];
   const sortedDictionaryTerms = useMemo(
-    () => [...dictionaryTerms].sort((left, right) => right.createdAtUtcMs - left.createdAtUtcMs),
-    [dictionaryTerms]
+    () => [...activeDictionaryTerms].sort((left, right) => right.createdAtUtcMs - left.createdAtUtcMs),
+    [activeDictionaryTerms]
   );
   const sortedDictionaryQueue = useMemo(
     () => [...dictionaryQueue].sort((left, right) => right.createdAtUtcMs - left.createdAtUtcMs),
@@ -605,8 +824,62 @@ function App() {
     if (!normalized) {
       return;
     }
+    if (cloudUserId) {
+      void (async () => {
+        try {
+          const nextTerms = await addCloudDictionaryTerm(cloudUserId, normalized, "manual-add");
+          setCloudDictionaryTerms(nextTerms);
+          setCloudSyncError(null);
+        } catch (cloudErr) {
+          setCloudSyncError(getCloudErrorMessage(cloudErr));
+        }
+      })();
+      setDictionaryDraftTerm("");
+      return;
+    }
+
     void addDictionaryTerm(normalized);
     setDictionaryDraftTerm("");
+  };
+
+  const handleDeleteDictionaryTerm = (termId: string) => {
+    if (!cloudUserId) {
+      void deleteDictionaryTerm(termId);
+      return;
+    }
+
+    void (async () => {
+      try {
+        const nextTerms = await deleteCloudDictionaryTerm(cloudUserId, termId);
+        setCloudDictionaryTerms(nextTerms);
+        setCloudSyncError(null);
+      } catch (cloudErr) {
+        setCloudSyncError(getCloudErrorMessage(cloudErr));
+      }
+    })();
+  };
+
+  const handleApproveDictionaryQueueEntry = (entryId: string) => {
+    if (!cloudUserId) {
+      void approveDictionaryQueueEntry(entryId);
+      return;
+    }
+
+    const entry = dictionaryQueue.find((row) => row.entryId === entryId);
+    if (!entry) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        const nextTerms = await addCloudDictionaryTerm(cloudUserId, entry.term, "queue-approval");
+        setCloudDictionaryTerms(nextTerms);
+        await rejectDictionaryQueueEntry(entryId);
+        setCloudSyncError(null);
+      } catch (cloudErr) {
+        setCloudSyncError(getCloudErrorMessage(cloudErr));
+      }
+    })();
   };
 
   return (
@@ -641,6 +914,7 @@ function App() {
                 currentModel={settings.activeModel}
                 partialTranscript={snapshot.lastPartial}
                 finalTranscript={snapshot.lastFinal}
+                recentSentences={recentSentences}
                 pushToTalkHotkey={settings.pushToTalkHotkey}
                 isPro={isPro}
               />
@@ -658,7 +932,7 @@ function App() {
                       Keep fast local dictation in Free, unlock advanced formatting, domain packs, code mode, and power history tools in Pro.
                     </p>
                   </div>
-                  <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>{proStatusLabel}</span>
+                  <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-accent" : ""}`}>{proStatusLabel}</span>
                 </div>
 
                 <div className="vw-ring-shell vw-ring-shell-lg mt-4">
@@ -667,7 +941,7 @@ function App() {
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="vw-pro-subscription-kicker">Subscription Console</span>
-                          <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>
+                          <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-accent" : ""}`}>
                             {proStatusLabel}
                           </span>
                         </div>
@@ -719,7 +993,7 @@ function App() {
                       <div>
                         <h4 className="vw-section-heading text-lg font-semibold text-[#09090B]">Your Pro Toolkit</h4>
                       </div>
-                      <span className="vw-chip vw-chip-life">Pro Unlocked</span>
+                      <span className="vw-chip vw-chip-accent">Pro Unlocked</span>
                     </div>
 
                     <div className="vw-pro-minimal-grid mt-4">
@@ -739,7 +1013,7 @@ function App() {
 
                     <div className="vw-pro-chip-cloud mt-3">
                       {PRO_FEATURE_CHIPS.map((feature) => (
-                        <span key={feature} className="vw-chip vw-chip-life">
+                        <span key={feature} className="vw-chip vw-chip-accent">
                           {feature}
                         </span>
                       ))}
@@ -900,7 +1174,7 @@ function App() {
                             type="button"
                             className={
                               settings.activeModel === model.modelId
-                                ? "vw-btn-primary vw-life-button"
+                                ? "vw-btn-primary vw-accent-button"
                                 : "vw-btn-secondary"
                             }
                             onClick={() => void makeModelActive(model.modelId)}
@@ -1038,7 +1312,7 @@ function App() {
             <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold text-[#09090B]">Advanced History Tools</p>
-                <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
+                <span className={`vw-chip ${isPro ? "vw-chip-accent" : ""}`}>
                   {isPro ? "Pro Unlocked" : "Pro"}
                 </span>
               </div>
@@ -1176,15 +1450,48 @@ function App() {
                 Keep this compact: approved words live here, while new suggestions are reviewed in the floating pill.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <span className="vw-chip">Approved: {dictionaryTerms.length}</span>
+                <span className="vw-chip">Approved: {activeDictionaryTerms.length}</span>
                 <span className="vw-chip">Pending: {dictionaryQueue.length}</span>
+                <span className={`vw-chip ${cloudUserId ? "vw-chip-accent" : ""}`}>
+                  {cloudUserId ? "Synced Across Devices" : "Device Local"}
+                </span>
+              </div>
+
+              <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-[#09090B]">Recent Sentences</p>
+                  <span className="vw-chip">{cloudUserId ? "Cloud Sync" : "Local"}</span>
+                </div>
+                <p className="mt-1 text-xs text-[#71717A]">
+                  Showing your latest five sentences for quick dictionary review.
+                </p>
+                {recentSentences.length === 0 ? (
+                  <p className="mt-3 text-sm text-[#71717A]">No recent sentences yet.</p>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {recentSentences.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="rounded-xl border border-[#E4E4E7] bg-[#FAFAFA] px-3 py-2"
+                      >
+                        <p className="text-sm text-[#09090B]">{entry.text}</p>
+                        <p className="mt-1 text-[11px] text-[#A1A1AA]">{formatDate(entry.createdAtUtcMs)}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm font-semibold text-[#09090B]">Add Term</p>
-                  <span className="vw-chip">Manual</span>
+                  <span className="vw-chip">{cloudUserId ? "Cloud + Manual" : "Manual"}</span>
                 </div>
+                <p className="mt-1 text-xs text-[#71717A]">
+                  {cloudUserId
+                    ? "New approved terms are saved to your account and follow you to every install."
+                    : "Sign in to sync dictionary terms across devices."}
+                </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <input
                     value={dictionaryDraftTerm}
@@ -1207,7 +1514,7 @@ function App() {
               <div className="vw-surface-elevated mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm font-semibold text-[#09090B]">Domain Dictionaries (Pro)</p>
-                  <span className={`vw-chip ${isPro ? "vw-chip-life" : ""}`}>
+                  <span className={`vw-chip ${isPro ? "vw-chip-accent" : ""}`}>
                     {isPro ? "Unlocked" : "Pro"}
                   </span>
                 </div>
@@ -1218,7 +1525,7 @@ function App() {
                       <button
                         key={pack}
                         type="button"
-                        className={active ? "vw-btn-primary vw-life-button" : "vw-btn-secondary"}
+                        className={active ? "vw-btn-primary vw-accent-button" : "vw-btn-secondary"}
                         onClick={() => {
                           if (!isPro) {
                             setActiveNav("pro");
@@ -1239,7 +1546,9 @@ function App() {
 
               <div className="vw-surface-base mt-4 rounded-2xl border border-[#E4E4E7] bg-white px-4 py-3">
                 <div className="flex items-center justify-between gap-2">
-                  <h4 className="vw-section-heading text-sm font-semibold text-[#09090B]">Approved Terms</h4>
+                  <h4 className="vw-section-heading text-sm font-semibold text-[#09090B]">
+                    Approved Terms {cloudUserId ? "(Synced)" : ""}
+                  </h4>
                   <span className="text-xs text-[#71717A]">{sortedDictionaryTerms.length} total</span>
                 </div>
                 <div className="vw-list-stagger mt-3 max-h-[380px] space-y-2 overflow-y-auto pr-1">
@@ -1256,7 +1565,7 @@ function App() {
                         <button
                           type="button"
                           className="vw-btn-danger text-xs px-3 py-1"
-                          onClick={() => void deleteDictionaryTerm(term.termId)}
+                          onClick={() => handleDeleteDictionaryTerm(term.termId)}
                         >
                           Remove
                         </button>
@@ -1293,7 +1602,7 @@ function App() {
                           <button
                             type="button"
                             className="vw-btn-primary text-xs px-3 py-1"
-                            onClick={() => void approveDictionaryQueueEntry(item.entryId)}
+                            onClick={() => handleApproveDictionaryQueueEntry(item.entryId)}
                           >
                             Approve
                           </button>
@@ -1323,7 +1632,7 @@ function App() {
                       Pick one mode and VoiceWave reconfigures output behavior for that workflow.
                     </p>
                   </div>
-                  <span className="vw-chip vw-chip-life">Pro Active</span>
+                  <span className="vw-chip vw-chip-accent">Pro Active</span>
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -1405,6 +1714,11 @@ function App() {
                 View Pro Plans
               </button>
             )}
+          </div>
+        )}
+        {cloudSyncError && (
+          <div className="mt-3 rounded-2xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3 text-sm text-[#92400E]">
+            <p>Cloud sync warning: {cloudSyncError}</p>
           </div>
         )}
       </Layout>
@@ -1671,13 +1985,15 @@ function App() {
                     </p>
                   </div>
                 </div>
-                <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-life" : ""}`}>
+                <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-accent" : ""}`}>
                   {isPro ? "Pro Active" : "Free Plan"}
                 </span>
               </div>
               <p className="mt-3 text-xs text-[#71717A]">
                 {isDemoAuthenticated
-                  ? "Demo account is active locally. Backend and database connection will be wired later."
+                  ? cloudUserId
+                    ? "Cloud account is active. Recent sentences and dictionary terms sync automatically."
+                    : "Local account mode is active on this device."
                   : "Guest mode is enabled. You can keep using all core flows without signing in."}
               </p>
             </section>
@@ -1712,12 +2028,10 @@ function App() {
                 <button
                   type="button"
                   className="vw-btn-secondary mt-3"
-                  onClick={() => {
-                    setDemoProfile(null);
-                    openAuthOverlay("signin");
-                  }}
+                  onClick={() => void handleSignOut()}
+                  disabled={authPending}
                 >
-                  Sign Out (Demo)
+                  {authPending ? "Signing Out..." : "Sign Out"}
                 </button>
               </section>
             )}
@@ -1728,8 +2042,13 @@ function App() {
       {activeOverlay === "auth" && (
         <OverlayModal
           title={isDemoAuthenticated ? "Account Access" : "Sign In / Sign Up"}
-          subtitle="Demo-only flow for now. Authentication backend will be connected later."
+          subtitle={
+            firebaseEnabled
+              ? "Cloud sync is active."
+              : "Firebase is not configured. Authentication runs in local demo mode."
+          }
           onClose={closeOverlay}
+          maxWidthClassName="max-w-5xl"
         >
           <div className="space-y-4">
             <div className="vw-auth-tabs" role="tablist" aria-label="Authentication mode">
@@ -1738,7 +2057,11 @@ function App() {
                 role="tab"
                 aria-selected={authMode === "signin"}
                 className={`vw-auth-tab ${authMode === "signin" ? "vw-auth-tab-active" : ""}`}
-                onClick={() => setAuthMode("signin")}
+                onClick={() => {
+                  setAuthMode("signin");
+                  setAuthError(null);
+                  setAuthNotice(null);
+                }}
               >
                 Sign In
               </button>
@@ -1747,76 +2070,166 @@ function App() {
                 role="tab"
                 aria-selected={authMode === "signup"}
                 className={`vw-auth-tab ${authMode === "signup" ? "vw-auth-tab-active" : ""}`}
-                onClick={() => setAuthMode("signup")}
+                onClick={() => {
+                  setAuthMode("signup");
+                  setAuthError(null);
+                  setAuthNotice(null);
+                }}
               >
                 Sign Up
               </button>
             </div>
 
-            <form className="vw-auth-form rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4" onSubmit={handleAuthSubmit}>
-              {authMode === "signup" && (
-                <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-3">
+              <form className="vw-auth-form rounded-2xl border border-[#E4E4E7] bg-white px-4 py-4" onSubmit={handleAuthSubmit}>
+                {authMode === "signup" && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="text-sm text-[#09090B]">
+                      <span className="block text-xs text-[#71717A]">Name</span>
+                      <input
+                        className="vw-auth-input mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                        value={authName}
+                        onChange={(event) => setAuthName(event.target.value)}
+                        placeholder="Alex Rivera"
+                      />
+                    </label>
+                    <label className="text-sm text-[#09090B]">
+                      <span className="block text-xs text-[#71717A]">Workspace Role</span>
+                      <input
+                        className="vw-auth-input mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                        value={authWorkspaceRole}
+                        onChange={(event) => setAuthWorkspaceRole(event.target.value)}
+                        placeholder="Engineering"
+                      />
+                    </label>
+                  </div>
+                )}
+
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
                   <label className="text-sm text-[#09090B]">
-                    <span className="block text-xs text-[#71717A]">Name</span>
+                    <span className="block text-xs text-[#71717A]">Email</span>
                     <input
-                      className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
-                      value={authName}
-                      onChange={(event) => setAuthName(event.target.value)}
-                      placeholder="Alex Rivera"
+                      className="vw-auth-input mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                      value={authEmail}
+                      onChange={(event) => setAuthEmail(event.target.value)}
+                      placeholder="you@voicewave.app"
+                      type="email"
+                      required
                     />
                   </label>
                   <label className="text-sm text-[#09090B]">
-                    <span className="block text-xs text-[#71717A]">Workspace Role</span>
+                    <span className="block text-xs text-[#71717A]">Password</span>
                     <input
-                      className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
-                      value={authWorkspaceRole}
-                      onChange={(event) => setAuthWorkspaceRole(event.target.value)}
-                      placeholder="Engineering"
+                      className="vw-auth-input mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                      value={authPassword}
+                      onChange={(event) => setAuthPassword(event.target.value)}
+                      placeholder="********"
+                      type={authShowPassword ? "text" : "password"}
+                      required
                     />
                   </label>
                 </div>
+
+                {authMode === "signup" && (
+                  <div className="mt-3">
+                    <label className="text-sm text-[#09090B]">
+                      <span className="block text-xs text-[#71717A]">Confirm Password</span>
+                      <input
+                        className="vw-auth-input mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
+                        value={authConfirmPassword}
+                        onChange={(event) => setAuthConfirmPassword(event.target.value)}
+                        placeholder="********"
+                        type={authShowConfirmPassword ? "text" : "password"}
+                        required
+                      />
+                    </label>
+                  </div>
+                )}
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                  <button
+                    type="button"
+                    className="vw-auth-link"
+                    onClick={() => setAuthShowPassword((current) => !current)}
+                  >
+                    {authShowPassword ? "Hide Password" : "Show Password"}
+                  </button>
+                  {authMode === "signup" ? (
+                    <button
+                      type="button"
+                      className="vw-auth-link"
+                      onClick={() => setAuthShowConfirmPassword((current) => !current)}
+                    >
+                      {authShowConfirmPassword ? "Hide Confirm" : "Show Confirm"}
+                    </button>
+                  ) : (
+                    <button type="button" className="vw-auth-link" onClick={() => void handleForgotPassword()}>
+                      Forgot Password?
+                    </button>
+                  )}
+                </div>
+
+                <label className="mt-3 inline-flex items-center gap-2 text-xs text-[#52525B]">
+                  <input
+                    type="checkbox"
+                    checked={authRememberMe}
+                    onChange={(event) => setAuthRememberMe(event.target.checked)}
+                  />
+                  Keep me signed in
+                </label>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="submit" className="vw-btn-primary" disabled={authPending}>
+                    {authPending ? "Please wait..." : authMode === "signin" ? "Sign In" : "Create Account"}
+                  </button>
+                  <button type="button" className="vw-btn-secondary" onClick={continueAsGuest}>
+                    Continue as Guest
+                  </button>
+                </div>
+              </form>
+
+              {authNotice && (
+                <section className="rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] px-4 py-3 text-sm text-[#1E40AF]">
+                  {authNotice}
+                </section>
               )}
 
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <label className="text-sm text-[#09090B]">
-                  <span className="block text-xs text-[#71717A]">Email</span>
-                  <input
-                    className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
-                    value={authEmail}
-                    onChange={(event) => setAuthEmail(event.target.value)}
-                    placeholder="you@voicewave.app"
-                    type="email"
-                    required
-                  />
-                </label>
-                <label className="text-sm text-[#09090B]">
-                  <span className="block text-xs text-[#71717A]">Password</span>
-                  <input
-                    className="mt-1 w-full rounded-xl border border-[#E4E4E7] bg-white px-3 py-2 text-sm text-[#09090B]"
-                    value={authPassword}
-                    onChange={(event) => setAuthPassword(event.target.value)}
-                    placeholder="********"
-                    type="password"
-                    required
-                  />
-                </label>
-              </div>
+              {authError && (
+                <section className="rounded-2xl border border-[#FED7D7] bg-[#FFF5F5] px-4 py-3 text-sm text-[#9B2C2C]">
+                  {authError}
+                </section>
+              )}
 
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button type="submit" className="vw-btn-primary">
-                  {authMode === "signin" ? "Sign In" : "Create Account"}
-                </button>
-                <button type="button" className="vw-btn-secondary" onClick={continueAsGuest}>
-                  Continue as Guest
-                </button>
-              </div>
-            </form>
-
-            {isDemoAuthenticated && demoProfile && (
-              <section className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3 text-sm text-[#3F3F46]">
-                Signed in as <span className="font-semibold text-[#09090B]">{demoProfile.email}</span> on demo mode.
-              </section>
-            )}
+              {isDemoAuthenticated && demoProfile && (
+                <section className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3 text-sm text-[#3F3F46]">
+                  <p>
+                    Signed in as <span className="font-semibold text-[#09090B]">{demoProfile.email}</span>
+                    {cloudUserId ? " with cloud sync enabled." : " on local demo mode."}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="vw-btn-secondary"
+                      onClick={() => void handleSignOut()}
+                      disabled={authPending}
+                    >
+                      {authPending ? "Signing Out..." : "Sign Out"}
+                    </button>
+                    <button
+                      type="button"
+                      className="vw-btn-secondary"
+                      onClick={() => {
+                        setAuthMode("signin");
+                        setAuthError(null);
+                        setAuthNotice(null);
+                      }}
+                    >
+                      Switch Account
+                    </button>
+                  </div>
+                </section>
+              )}
+            </div>
           </div>
         </OverlayModal>
       )}
