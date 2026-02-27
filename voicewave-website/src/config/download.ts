@@ -1,5 +1,5 @@
 const fallbackDownloadUrl =
-  "https://github.com/rithwik1510/VoiceWave/releases/latest/download/VoiceWave%20Local%20Core_0.1.1_x64-setup.exe";
+  "https://github.com/rithwik1510/VoiceWave/releases/latest/download/VoiceWave.Local.Core_0.1.1_x64-setup.exe";
 
 function isHttpUrl(value: string | undefined): value is string {
   if (!value) {
