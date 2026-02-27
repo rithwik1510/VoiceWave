@@ -20,14 +20,22 @@
   --vw-pro-border: #d7dee6;
   --vw-pro-border-strong: #c7d7e5;
   --vw-pro-surface: #f8fbff;
-  --vw-pro-surface-alt: #f7faf4;
-  --vw-pro-accent: #38bdf8;
-  --vw-pro-cyan: #38bdf8;
-  --vw-pro-lime: #a3e635;
-  --vw-action-blue: #38bdf8;
-  --vw-action-blue-strong: #38bdf8;
-  --vw-life-green: #a3e635;
-  --vw-ai-gradient: linear-gradient(90deg, rgba(56, 189, 248, 0.96) 0%, rgba(163, 230, 53, 0.9) 100%);
+  --vw-pro-surface-alt: #f3f8ff;
+  --vw-accent-navy-950: #02030a;
+  --vw-accent-navy-900: #020b33;
+  --vw-accent-blue-700: #0032b8;
+  --vw-accent-blue-600: #1b8eff;
+  --vw-accent-cyan-500: #7ed8ff;
+  --vw-accent-cyan-400: #a7e8ff;
+  --vw-pro-accent: var(--vw-accent-blue-600);
+  --vw-pro-cyan: var(--vw-accent-cyan-500);
+  --vw-pro-blue: var(--vw-accent-blue-700);
+  --vw-action-blue: var(--vw-accent-blue-600);
+  --vw-action-blue-strong: var(--vw-accent-blue-700);
+  --vw-accent-cyan: var(--vw-accent-cyan-500);
+  --vw-cta-lime-top: #d9f99d;
+  --vw-cta-lime-bottom: #bef264;
+  --vw-ai-gradient: linear-gradient(110deg, #0a2a8c 8%, #1b8eff 48%, #6fd4ff 82%, #a7e8ff 100%);
   --vw-glass-bg: rgba(255, 255, 255, 0.5);
   --vw-glass-bg-strong: rgba(255, 255, 255, 0.64);
   --vw-glass-border: rgba(255, 255, 255, 0.62);
@@ -42,15 +50,15 @@
   --vw-state-idle-border: #d4dbe5;
   --vw-state-idle-accent: #94a3b8;
   --vw-state-idle-accent-soft: #cbd5e1;
-  --vw-state-listening-border: #7dd3fc;
-  --vw-state-listening-accent: #38bdf8;
-  --vw-state-listening-accent-soft: #93c5fd;
-  --vw-state-transcribing-border: #bef264;
-  --vw-state-transcribing-accent: #84cc16;
-  --vw-state-transcribing-accent-soft: #a3e635;
-  --vw-state-inserted-border: #86efac;
-  --vw-state-inserted-accent: #22c55e;
-  --vw-state-inserted-accent-soft: #86efac;
+  --vw-state-listening-border: #7ed8ff;
+  --vw-state-listening-accent: #1b8eff;
+  --vw-state-listening-accent-soft: #9fdfff;
+  --vw-state-transcribing-border: #5cb8ff;
+  --vw-state-transcribing-accent: #0032b8;
+  --vw-state-transcribing-accent-soft: #7ec7ff;
+  --vw-state-inserted-border: #2d69dd;
+  --vw-state-inserted-accent: #020b33;
+  --vw-state-inserted-accent-soft: #4f84e8;
   --vw-state-error-border: #fda4af;
   --vw-state-error-accent: #ef4444;
   --vw-state-error-accent-soft: #fdba74;
@@ -241,20 +249,16 @@ body {
 }
 
 .vw-btn-primary {
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(190, 242, 100, 0.82);
   border-radius: var(--vw-radius-sm);
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
   font-weight: 600;
-  color: #f8fafc;
-  background: linear-gradient(
-    180deg,
-    rgba(24, 24, 27, 0.96) 0%,
-    rgba(9, 9, 11, 0.98) 100%
-  );
+  color: #112012;
+  background: linear-gradient(180deg, var(--vw-cta-lime-top) 0%, var(--vw-cta-lime-bottom) 100%);
   box-shadow:
-    0 2px 7px rgba(9, 9, 11, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    0 10px 22px -13px rgba(190, 242, 100, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.65);
   backdrop-filter: blur(8px) saturate(118%);
   -webkit-backdrop-filter: blur(8px) saturate(118%);
   transition:
@@ -264,18 +268,15 @@ body {
 }
 
 .vw-btn-primary:hover {
-  background: linear-gradient(
-    180deg,
-    rgba(39, 39, 42, 0.96) 0%,
-    rgba(24, 24, 27, 0.98) 100%
-  );
+  border-color: rgba(190, 242, 100, 0.96);
+  background: linear-gradient(180deg, #e7fcb8 0%, #caf676 100%);
   box-shadow:
-    0 3px 9px rgba(9, 9, 11, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    0 13px 24px -14px rgba(190, 242, 100, 0.96),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .vw-btn-primary:focus-visible {
-  outline: 2px solid rgba(161, 161, 170, 0.44);
+  outline: 2px solid rgba(27, 142, 255, 0.52);
   outline-offset: 2px;
 }
 
@@ -309,14 +310,14 @@ body {
   border-radius: var(--vw-radius-sm);
 }
 
-.vw-chip-life {
-  border-color: rgba(163, 230, 53, 0.5) !important;
-  background: linear-gradient(90deg, rgba(163, 230, 53, 0.22), rgba(56, 189, 248, 0.1));
+.vw-chip-accent {
+  border-color: rgba(27, 142, 255, 0.42) !important;
+  background: linear-gradient(110deg, rgba(10, 42, 140, 0.08) 8%, rgba(27, 142, 255, 0.2) 52%, rgba(126, 216, 255, 0.24) 82%, rgba(167, 232, 255, 0.2) 100%);
   color: #18181b !important;
 }
 
 .vw-positive-stat {
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.96) 0%, rgba(163, 230, 53, 0.96) 100%);
+  background: linear-gradient(105deg, rgba(10, 42, 140, 0.86) 8%, rgba(27, 142, 255, 0.95) 48%, rgba(111, 212, 255, 0.96) 82%, rgba(167, 232, 255, 0.96) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -371,9 +372,9 @@ body {
   border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(120px 56px at 8% 0%, rgba(56, 189, 248, 0.12), transparent 72%),
-    radial-gradient(130px 64px at 93% 100%, rgba(163, 230, 53, 0.12), transparent 70%);
-  opacity: 0.74;
+    radial-gradient(128px 62px at 8% 0%, rgba(27, 142, 255, 0.09), transparent 72%),
+    radial-gradient(146px 74px at 93% 100%, rgba(126, 216, 255, 0.2), transparent 70%);
+  opacity: 0.52;
 }
 
 .vw-pro-glass-card > * {
@@ -383,45 +384,38 @@ body {
 
 .vw-pro-badge {
   border: 1px solid rgba(24, 24, 27, 0.08);
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.16), rgba(163, 230, 53, 0.15));
+  background: linear-gradient(108deg, rgba(10, 42, 140, 0.06) 8%, rgba(27, 142, 255, 0.14) 52%, rgba(126, 216, 255, 0.18) 84%, rgba(167, 232, 255, 0.16) 100%);
   color: #3f3f46;
 }
 
 .vw-pro-badge-active {
-  border: 1px solid rgba(163, 230, 53, 0.38);
-  background: linear-gradient(90deg, rgba(163, 230, 53, 0.26), rgba(56, 189, 248, 0.16));
+  border: 1px solid rgba(27, 142, 255, 0.4);
+  background: linear-gradient(108deg, rgba(10, 42, 140, 0.08) 8%, rgba(27, 142, 255, 0.2) 50%, rgba(126, 216, 255, 0.24) 84%, rgba(167, 232, 255, 0.2) 100%);
   color: #18181b;
 }
 
 .vw-action-button {
-  color: #18181b;
-  border: 1px solid rgba(255, 255, 255, 0.36);
+  color: #112012;
+  border: 1px solid rgba(190, 242, 100, 0.82);
   border-radius: var(--vw-radius-sm);
-  background: linear-gradient(
-    90deg,
-    rgba(56, 189, 248, 0.58) 0%,
-    rgba(163, 230, 53, 0.5) 100%
-  );
+  background: linear-gradient(180deg, var(--vw-cta-lime-top) 0%, var(--vw-cta-lime-bottom) 100%);
   box-shadow:
-    0 2px 8px rgba(56, 189, 248, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+    0 12px 24px -14px rgba(190, 242, 100, 0.92),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
   backdrop-filter: blur(10px) saturate(120%);
   -webkit-backdrop-filter: blur(10px) saturate(120%);
 }
 
 .vw-action-button:hover {
-  background: linear-gradient(
-    90deg,
-    rgba(56, 189, 248, 0.64) 0%,
-    rgba(163, 230, 53, 0.56) 100%
-  );
+  border-color: rgba(190, 242, 100, 0.95);
+  background: linear-gradient(180deg, #edfeca 0%, #d5f98e 100%);
   box-shadow:
-    0 3px 10px rgba(56, 189, 248, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.38);
+    0 14px 28px -14px rgba(190, 242, 100, 0.98),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56);
 }
 
 .vw-action-button:focus-visible {
-  outline: 2px solid rgba(56, 189, 248, 0.42);
+  outline: 2px solid rgba(27, 142, 255, 0.42);
   outline-offset: 2px;
 }
 
@@ -430,46 +424,51 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(56, 189, 248, 0.46) !important;
+  color: #f8fbff !important;
+  border: 1px solid rgba(27, 142, 255, 0.58) !important;
   border-radius: var(--vw-radius-sm) !important;
+  background: linear-gradient(
+    110deg,
+    rgba(10, 42, 140, 0.92) 6%,
+    rgba(27, 142, 255, 0.96) 54%,
+    rgba(126, 216, 255, 0.9) 100%
+  ) !important;
   background-clip: padding-box;
   box-shadow:
-    0 2px 8px rgba(56, 189, 248, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    0 10px 22px -12px rgba(27, 142, 255, 0.44),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26);
 }
 
 .vw-sidebar-pro-cta:hover {
-  border-color: rgba(56, 189, 248, 0.56) !important;
-  box-shadow:
-    0 3px 10px rgba(56, 189, 248, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.46);
-}
-
-.vw-life-button {
-  color: #18181b !important;
-  border: 1px solid rgba(163, 230, 53, 0.46) !important;
+  border-color: rgba(126, 216, 255, 0.72) !important;
   background: linear-gradient(
-    180deg,
-    rgba(163, 230, 53, 0.56) 0%,
-    rgba(163, 230, 53, 0.5) 100%
+    110deg,
+    rgba(10, 42, 140, 0.96) 4%,
+    rgba(27, 142, 255, 0.98) 56%,
+    rgba(126, 216, 255, 0.94) 100%
   ) !important;
   box-shadow:
-    0 2px 8px rgba(163, 230, 53, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+    0 12px 24px -12px rgba(27, 142, 255, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+}
+
+.vw-accent-button {
+  color: #112012 !important;
+  border: 1px solid rgba(190, 242, 100, 0.82) !important;
+  background: linear-gradient(180deg, var(--vw-cta-lime-top) 0%, var(--vw-cta-lime-bottom) 100%) !important;
+  box-shadow:
+    0 12px 24px -14px rgba(190, 242, 100, 0.92),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5) !important;
   backdrop-filter: blur(10px) saturate(120%);
   -webkit-backdrop-filter: blur(10px) saturate(120%);
 }
 
-.vw-life-button:hover {
-  border-color: rgba(163, 230, 53, 0.54) !important;
-  background: linear-gradient(
-    180deg,
-    rgba(163, 230, 53, 0.62) 0%,
-    rgba(163, 230, 53, 0.56) 100%
-  ) !important;
+.vw-accent-button:hover {
+  border-color: rgba(190, 242, 100, 0.95) !important;
+  background: linear-gradient(180deg, #edfeca 0%, #d5f98e 100%) !important;
   box-shadow:
-    0 3px 10px rgba(163, 230, 53, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.34) !important;
+    0 14px 28px -14px rgba(190, 242, 100, 0.98),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56) !important;
 }
 
 .vw-modal-backdrop {
@@ -531,7 +530,7 @@ body {
 .vw-profile-summary-card {
   background:
     radial-gradient(150px 80px at 8% 0%, rgba(56, 189, 248, 0.12), transparent 74%),
-    radial-gradient(150px 80px at 92% 100%, rgba(163, 230, 53, 0.12), transparent 74%),
+    radial-gradient(150px 80px at 92% 100%, rgba(126, 216, 255, 0.12), transparent 74%),
     #ffffff;
 }
 
@@ -543,7 +542,7 @@ body {
   justify-content: center;
   border-radius: 999px;
   border: 1px solid rgba(24, 24, 27, 0.1);
-  background: linear-gradient(135deg, rgba(56, 189, 248, 0.18), rgba(163, 230, 53, 0.2));
+  background: linear-gradient(135deg, rgba(10, 42, 140, 0.08), rgba(27, 142, 255, 0.18), rgba(126, 216, 255, 0.24), rgba(167, 232, 255, 0.2));
   font-size: 0.86rem;
   font-weight: 700;
   color: #09090b;
@@ -574,30 +573,119 @@ body {
   box-shadow: 0 8px 16px rgba(9, 9, 11, 0.08);
 }
 
+.vw-auth-layout {
+  display: block;
+}
+
+.vw-auth-sidebar {
+  display: none;
+}
+
 .vw-auth-tabs {
   display: inline-flex;
+  gap: 0.5rem;
   align-items: center;
   border-radius: 999px;
-  border: 1px solid #e4e4e7;
-  background: #fafafa;
+  border: 1px solid rgba(27, 142, 255, 0.3);
+  background: rgba(239, 246, 255, 0.62);
   padding: 0.22rem;
 }
 
 .vw-auth-tab {
-  border-radius: 999px;
-  padding: 0.35rem 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.9rem;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0.42rem 1rem;
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #71717a;
-  transition: all 160ms ease;
+  color: #475569;
+  transition:
+    border-color 170ms ease,
+    background-color 170ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.vw-auth-tab:hover {
+  color: #0f172a;
+}
+
+.vw-auth-tab-title {
+  font-size: inherit;
+}
+
+.vw-auth-tab-copy {
+  display: none;
 }
 
 .vw-auth-tab-active {
-  background: #ffffff;
-  color: #18181b;
-  box-shadow: 0 2px 8px rgba(9, 9, 11, 0.08);
+  border-color: rgba(27, 142, 255, 0.42);
+  background: linear-gradient(
+    110deg,
+    rgba(10, 42, 140, 0.1) 8%,
+    rgba(27, 142, 255, 0.25) 52%,
+    rgba(126, 216, 255, 0.24) 84%,
+    rgba(167, 232, 255, 0.18) 100%
+  );
+  box-shadow: 0 4px 12px rgba(10, 42, 140, 0.1);
+  color: #0f172a;
+}
+
+.vw-auth-form {
+  border-color: rgba(212, 212, 216, 0.95);
+  background:
+    radial-gradient(210px 120px at 100% 0%, rgba(126, 216, 255, 0.1), transparent 72%),
+    #ffffff;
+}
+
+.vw-auth-input {
+  transition:
+    border-color 170ms ease,
+    box-shadow 170ms ease;
+}
+
+.vw-auth-input:focus {
+  outline: none;
+  border-color: rgba(27, 142, 255, 0.8) !important;
+  box-shadow: 0 0 0 3px rgba(27, 142, 255, 0.14);
+}
+
+.vw-auth-link {
+  border: 1px solid rgba(27, 142, 255, 0.3);
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.88);
+  padding: 0.2rem 0.56rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+.vw-auth-link:hover {
+  border-color: rgba(27, 142, 255, 0.52);
+  background: rgba(219, 234, 254, 0.95);
+}
+
+.vw-auth-google-button {
+  border-color: rgba(27, 142, 255, 0.38);
+  background: linear-gradient(
+    110deg,
+    rgba(10, 42, 140, 0.04) 10%,
+    rgba(27, 142, 255, 0.16) 52%,
+    rgba(126, 216, 255, 0.2) 86%
+  );
+}
+
+@media (max-width: 900px) {
+  .vw-auth-tab {
+    padding: 0.4rem 0.8rem;
+  }
 }
 
 .vw-page-shell > * {
@@ -687,16 +775,16 @@ body {
 }
 
 .vw-pro-chip-active {
-  border-color: rgba(163, 230, 53, 0.5);
-  background: linear-gradient(90deg, rgba(163, 230, 53, 0.24), rgba(56, 189, 248, 0.12));
+  border-color: rgba(27, 142, 255, 0.46);
+  background: linear-gradient(110deg, rgba(10, 42, 140, 0.08) 8%, rgba(27, 142, 255, 0.22) 50%, rgba(126, 216, 255, 0.26) 84%, rgba(167, 232, 255, 0.2) 100%);
   color: #18181b;
 }
 
 .vw-pro-subscription-console {
   border-color: rgba(161, 161, 170, 0.32) !important;
   background:
-    radial-gradient(140px 70px at 8% 0%, rgba(56, 189, 248, 0.14), transparent 74%),
-    radial-gradient(150px 74px at 92% 100%, rgba(163, 230, 53, 0.14), transparent 74%),
+    radial-gradient(152px 76px at 8% 0%, rgba(27, 142, 255, 0.12), transparent 74%),
+    radial-gradient(162px 80px at 92% 100%, rgba(126, 216, 255, 0.22), transparent 74%),
     rgba(255, 255, 255, 0.985) !important;
   box-shadow:
     0 16px 28px rgba(9, 9, 11, 0.08),
@@ -715,8 +803,8 @@ body {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  border: 1px solid rgba(56, 189, 248, 0.42);
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.18), rgba(163, 230, 53, 0.16));
+  border: 1px solid rgba(27, 142, 255, 0.4);
+  background: linear-gradient(110deg, rgba(10, 42, 140, 0.08) 8%, rgba(27, 142, 255, 0.2) 48%, rgba(126, 216, 255, 0.24) 84%, rgba(167, 232, 255, 0.2) 100%);
   padding: 0.24rem 0.6rem;
   font-size: 0.64rem;
   font-weight: 700;
@@ -790,8 +878,8 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 0.8rem;
-  border: 1px solid rgba(56, 189, 248, 0.34);
-  background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(163, 230, 53, 0.16));
+  border: 1px solid rgba(27, 142, 255, 0.34);
+  background: linear-gradient(135deg, rgba(10, 42, 140, 0.08), rgba(27, 142, 255, 0.2), rgba(126, 216, 255, 0.24), rgba(167, 232, 255, 0.18));
   color: #18181b;
   margin-bottom: 0.45rem;
 }
@@ -811,9 +899,9 @@ body {
   color: #3f3f46;
 }
 
-.vw-pro-chip-cloud .vw-chip-life {
-  border-color: rgba(56, 189, 248, 0.32) !important;
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.12), rgba(163, 230, 53, 0.1));
+.vw-pro-chip-cloud .vw-chip-accent {
+  border-color: rgba(56, 189, 248, 0.34) !important;
+  background: linear-gradient(110deg, rgba(10, 42, 140, 0.06) 8%, rgba(27, 142, 255, 0.14) 48%, rgba(126, 216, 255, 0.19) 84%, rgba(167, 232, 255, 0.16) 100%);
   color: #18181b !important;
 }
 
@@ -867,29 +955,22 @@ body {
 }
 
 .vw-pro-ui .vw-btn-primary {
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: linear-gradient(
-    180deg,
-    rgba(24, 24, 27, 0.96) 0%,
-    rgba(9, 9, 11, 0.98) 100%
-  );
-  color: #f8fafc;
+  border: 1px solid rgba(190, 242, 100, 0.84);
+  background: linear-gradient(180deg, var(--vw-cta-lime-top) 0%, var(--vw-cta-lime-bottom) 100%);
+  color: #112012;
   box-shadow:
-    0 2px 7px rgba(9, 9, 11, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    0 12px 24px -14px rgba(190, 242, 100, 0.92),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
   backdrop-filter: blur(8px) saturate(118%);
   -webkit-backdrop-filter: blur(8px) saturate(118%);
 }
 
 .vw-pro-ui .vw-btn-primary:hover {
-  background: linear-gradient(
-    180deg,
-    rgba(39, 39, 42, 0.96) 0%,
-    rgba(24, 24, 27, 0.98) 100%
-  );
+  border-color: rgba(190, 242, 100, 0.96);
+  background: linear-gradient(180deg, #edfeca 0%, #d5f98e 100%);
   box-shadow:
-    0 3px 9px rgba(9, 9, 11, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    0 14px 28px -14px rgba(190, 242, 100, 0.98),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56);
 }
 
 .vw-ring-shell {
@@ -901,7 +982,7 @@ body {
   --vw-ring-speed: 20s;
   padding: var(--vw-ring-size);
   border-radius: var(--vw-ring-radius);
-  background: linear-gradient(180deg, rgba(229, 248, 255, 0.68) 0%, rgba(238, 250, 228, 0.62) 100%);
+  background: linear-gradient(180deg, rgba(229, 242, 255, 0.68) 0%, rgba(231, 246, 255, 0.62) 100%);
 }
 
 .vw-ring-shell-lg {
@@ -928,13 +1009,13 @@ body {
   border-radius: inherit;
   pointer-events: none;
   background: conic-gradient(
-    from 0deg,
-    rgba(56, 189, 248, 0.3) 0deg,
-    rgba(56, 189, 248, 0.3) 248deg,
-    rgba(56, 189, 248, 0.94) 300deg,
-    rgba(163, 230, 53, 0.94) 332deg,
-    rgba(56, 189, 248, 0.86) 352deg,
-    rgba(56, 189, 248, 0.3) 360deg
+    from 8deg,
+    rgba(10, 42, 140, 0.2) 0deg,
+    rgba(27, 142, 255, 0.84) 132deg,
+    rgba(126, 216, 255, 0.9) 236deg,
+    rgba(167, 232, 255, 0.82) 302deg,
+    rgba(27, 142, 255, 0.8) 342deg,
+    rgba(10, 42, 140, 0.2) 360deg
   );
   transform-origin: center;
   animation: vw-accent-border-flow var(--vw-ring-speed) linear infinite;
@@ -1011,10 +1092,10 @@ body {
 
 .vw-home-pro-mic {
   box-shadow:
-    0 0 0 2px rgba(56, 189, 248, 0.34),
-    0 0 0 6px rgba(56, 189, 248, 0.18),
-    0 0 0 10px rgba(163, 230, 53, 0.12),
-    0 12px 24px rgba(56, 189, 248, 0.24);
+    0 0 0 2px rgba(27, 142, 255, 0.34),
+    0 0 0 6px rgba(27, 142, 255, 0.18),
+    0 0 0 10px rgba(126, 216, 255, 0.12),
+    0 12px 24px rgba(27, 142, 255, 0.24);
 }
 
 .vw-home-mic-button {
@@ -1027,8 +1108,8 @@ body {
 
 .vw-home-mic-button-active {
   box-shadow:
-    0 0 0 3px rgba(56, 189, 248, 0.35),
-    0 0 0 6px rgba(163, 230, 53, 0.18),
+    0 0 0 3px rgba(27, 142, 255, 0.35),
+    0 0 0 6px rgba(126, 216, 255, 0.18),
     0 10px 22px rgba(9, 9, 11, 0.2) !important;
 }
 
@@ -1130,8 +1211,8 @@ body {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  border: 1px solid rgba(163, 230, 53, 0.42);
-  background: linear-gradient(90deg, rgba(163, 230, 53, 0.2), rgba(56, 189, 248, 0.11));
+  border: 1px solid rgba(27, 142, 255, 0.4);
+  background: linear-gradient(92deg, rgba(10, 42, 140, 0.08), rgba(27, 142, 255, 0.2), rgba(126, 216, 255, 0.24), rgba(167, 232, 255, 0.2));
   padding: 0.3rem 0.66rem;
   font-size: 0.68rem;
   font-weight: 700;
@@ -1162,9 +1243,9 @@ body {
   border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(120px 56px at 8% 0%, rgba(56, 189, 248, 0.12), transparent 74%),
-    radial-gradient(122px 60px at 94% 100%, rgba(163, 230, 53, 0.12), transparent 74%);
-  opacity: 0.2;
+    radial-gradient(138px 66px at 8% 0%, rgba(27, 142, 255, 0.14), transparent 74%),
+    radial-gradient(150px 74px at 94% 100%, rgba(126, 216, 255, 0.18), transparent 74%);
+  opacity: 0.26;
 }
 
 .vw-home-pro-metrics > * {
@@ -1217,9 +1298,9 @@ body {
   border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(132px 60px at 8% 0%, rgba(56, 189, 248, 0.12), transparent 74%),
-    radial-gradient(138px 64px at 94% 100%, rgba(163, 230, 53, 0.12), transparent 74%);
-  opacity: 0.2;
+    radial-gradient(146px 68px at 8% 0%, rgba(27, 142, 255, 0.14), transparent 74%),
+    radial-gradient(158px 74px at 94% 100%, rgba(126, 216, 255, 0.18), transparent 74%);
+  opacity: 0.26;
 }
 
 .vw-home-pro-output > * {
@@ -1275,22 +1356,22 @@ aside[data-sidebar-collapsed="false"] .vw-sidebar-pro-panel {
 }
 
 .vw-pro-mode-card-active {
-  border-color: rgba(163, 230, 53, 0.44);
+  border-color: rgba(27, 142, 255, 0.44);
   background: linear-gradient(
     180deg,
     rgba(255, 255, 255, 0.72) 0%,
-    rgba(247, 250, 244, 0.62) 100%
+    rgba(244, 248, 255, 0.62) 100%
   );
   backdrop-filter: blur(12px) saturate(142%);
   -webkit-backdrop-filter: blur(12px) saturate(142%);
   box-shadow:
     0 10px 22px rgba(9, 9, 11, 0.1),
-    inset 0 0 0 1px rgba(163, 230, 53, 0.18);
+    inset 0 0 0 1px rgba(27, 142, 255, 0.18);
 }
 
 .vw-pro-ui .vw-mode-status-chip-active {
-  border-color: rgba(163, 230, 53, 0.46);
-  background: linear-gradient(90deg, rgba(163, 230, 53, 0.24), rgba(56, 189, 248, 0.12));
+  border-color: rgba(27, 142, 255, 0.42);
+  background: linear-gradient(92deg, rgba(27, 142, 255, 0.2), rgba(126, 216, 255, 0.22), rgba(167, 232, 255, 0.14));
   color: #18181b;
 }
 
@@ -1309,14 +1390,14 @@ aside[data-sidebar-collapsed="false"] .vw-sidebar-pro-panel {
 
 .vw-home-row-latest {
   border-left: 2px solid var(--vw-pro-cyan);
-  background: linear-gradient(90deg, rgba(56, 189, 248, 0.05) 0%, rgba(163, 230, 53, 0.03) 100%);
+  background: linear-gradient(92deg, rgba(27, 142, 255, 0.08) 0%, rgba(126, 216, 255, 0.06) 66%, rgba(167, 232, 255, 0.05) 100%);
 }
 
 .vw-status-dot {
-  background: var(--vw-state-accent, var(--vw-life-green));
+  background: var(--vw-state-accent, var(--vw-accent-cyan));
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--vw-state-accent, var(--vw-life-green)) 40%, transparent),
-    0 0 8px color-mix(in srgb, var(--vw-state-accent, var(--vw-life-green)) 30%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--vw-state-accent, var(--vw-accent-cyan)) 40%, transparent),
+    0 0 8px color-mix(in srgb, var(--vw-state-accent, var(--vw-accent-cyan)) 30%, transparent);
 }
 
 @media (min-width: 980px) {
