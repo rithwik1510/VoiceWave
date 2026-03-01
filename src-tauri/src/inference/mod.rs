@@ -1,3 +1,4 @@
+mod audio_pipeline;
 mod backend;
 mod executor;
 mod faster_whisper;
@@ -9,13 +10,16 @@ pub use policy::RuntimeDecodePolicy;
 
 use crate::settings::DecodeMode;
 use backend::{
-    context_params_for_backend, note_gpu_runtime_failure, preferred_backend_for_model, RuntimeBackend,
+    context_params_for_backend, note_gpu_runtime_failure, preferred_backend_for_model,
+    RuntimeBackend,
 };
 use faster_whisper::FasterWhisperRequestOverrides;
 use std::{
     collections::HashSet,
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
@@ -26,6 +30,7 @@ pub struct DecodeTelemetry {
     pub model_init_ms: u64,
     pub audio_condition_ms: u64,
     pub decode_compute_ms: u64,
+    pub audio_pipeline_version: String,
     pub runtime_cache_hit: bool,
     pub backend_requested: String,
     pub backend_used: String,
@@ -37,6 +42,44 @@ pub struct DecodeTelemetry {
     pub fw_low_coherence: bool,
     pub fw_retry_used: bool,
     pub fw_literal_retry_used: bool,
+    pub fw_shadow_candidate_version: Option<String>,
+    pub fw_shadow_quality_delta: Option<f32>,
+    pub fw_shadow_candidate_avg_logprob: Option<f32>,
+    pub fw_shadow_candidate_no_speech_prob: Option<f32>,
+    pub fw_shadow_candidate_retry_used: Option<bool>,
+    pub fw_shadow_candidate_low_coherence: Option<bool>,
+    pub fw_shadow_candidate_decode_compute_ms: Option<u64>,
+    pub fw_shadow_candidate_won: Option<bool>,
+    pub audio_pipeline_fallback_engaged: bool,
+    pub audio_pipeline_fallback_remaining: u32,
+}
+
+fn debug_fw_gpu_log(hypothesis_id: &str, location: &str, message: &str, kvs: &[(&str, String)]) {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let mut data_pairs = String::new();
+    for (i, (k, v)) in kvs.iter().enumerate() {
+        if i > 0 {
+            data_pairs.push(',');
+        }
+        data_pairs.push_str(&format!("\"{}\":\"{}\"", k, v));
+    }
+
+    let payload = format!(
+        "{{\"sessionId\":\"c0db10\",\"runId\":\"gpu-debug\",\"hypothesisId\":\"{}\",\"location\":\"{}\",\"message\":\"{}\",\"data\":{{{}}},\"timestamp\":{}}}",
+        hypothesis_id, location, message, data_pairs, ts
+    );
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(".cursor/debug-c0db10.log")
+    {
+        let _ = writeln!(file, "{}", payload);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +515,18 @@ pub fn faster_whisper_runtime_model_id(model_id: &str) -> Option<&'static str> {
     }
 }
 
+pub fn note_audio_pipeline_decode_success(version: &str) {
+    match version {
+        "v2" => audio_pipeline::note_decode_success(audio_pipeline::AudioPipelineVersion::V2),
+        "v1" => audio_pipeline::note_decode_success(audio_pipeline::AudioPipelineVersion::V1),
+        _ => {}
+    }
+}
+
+pub fn note_audio_pipeline_decode_hard_failure() {
+    audio_pipeline::note_decode_hard_failure(audio_pipeline::AudioPipelineVersion::V2);
+}
+
 #[derive(Debug, Clone)]
 pub struct FasterWhisperPrefetchResult {
     pub model_init_ms: u64,
@@ -482,12 +537,11 @@ pub struct FasterWhisperPrefetchResult {
 pub async fn prefetch_faster_whisper_model(
     model_id: &str,
 ) -> Result<FasterWhisperPrefetchResult, InferenceError> {
-    let runtime_model = faster_whisper_runtime_model_id(model_id).ok_or_else(|| {
-        InferenceError::DecodeFailed {
+    let runtime_model =
+        faster_whisper_runtime_model_id(model_id).ok_or_else(|| InferenceError::DecodeFailed {
             model_id: model_id.to_string(),
             reason: "unsupported faster-whisper model id".to_string(),
-        }
-    })?;
+        })?;
     let prefetch = faster_whisper::prefetch_model(runtime_model).await?;
     let cache_hint = faster_whisper::cache_hint_for_model(runtime_model);
     Ok(FasterWhisperPrefetchResult {
@@ -553,8 +607,9 @@ async fn transcribe_with_faster_whisper(
         });
     }
     let condition_started = Instant::now();
-    let conditioned_samples = condition_audio_for_decode(&samples);
+    let baseline_processed = audio_pipeline::process_for_faster_whisper_primary(&samples);
     let audio_condition_ms = condition_started.elapsed().as_millis() as u64;
+    let conditioned_samples = baseline_processed.samples;
     if conditioned_samples.is_empty() {
         return Err(InferenceError::DecodeFailed {
             model_id,
@@ -562,25 +617,191 @@ async fn transcribe_with_faster_whisper(
         });
     }
 
-    let runtime_model = faster_whisper_runtime_model_id(&model_id).ok_or_else(|| {
-        InferenceError::DecodeFailed {
+    let runtime_model =
+        faster_whisper_runtime_model_id(&model_id).ok_or_else(|| InferenceError::DecodeFailed {
             model_id: model_id.clone(),
             reason: "unsupported faster-whisper model id".to_string(),
+        })?;
+    let audio_duration_ms = ((conditioned_samples.len() as f64 / 16_000.0) * 1000.0).round() as u64;
+    let baseline_run = run_faster_whisper_decode_with_conditioned(
+        &conditioned_samples,
+        runtime_model,
+        &model_id,
+        decode_mode,
+        terminology_hint.as_deref(),
+        audio_duration_ms,
+        &cancel_token,
+    )
+    .await?;
+
+    debug_fw_gpu_log(
+        "GPU_H2",
+        "src-tauri/src/inference/mod.rs:596",
+        "fw decode complete",
+        &[
+            (
+                "backendRequested",
+                baseline_run.final_decode.backend_requested.clone(),
+            ),
+            (
+                "backendUsed",
+                baseline_run.final_decode.backend_used.clone(),
+            ),
+            (
+                "backendFallback",
+                baseline_run.final_decode.backend_fallback.to_string(),
+            ),
+            ("modelInitMs", baseline_run.total_model_init_ms.to_string()),
+            (
+                "decodeComputeMs",
+                baseline_run.total_decode_compute_ms.to_string(),
+            ),
+            ("audioMs", audio_duration_ms.to_string()),
+        ],
+    );
+
+    let mut shadow_candidate_version = None;
+    let mut shadow_quality_delta = None;
+    let mut shadow_candidate_avg_logprob = None;
+    let mut shadow_candidate_no_speech_prob = None;
+    let mut shadow_candidate_retry_used = None;
+    let mut shadow_candidate_low_coherence = None;
+    let mut shadow_candidate_decode_compute_ms = None;
+    let mut shadow_candidate_won = None;
+    if let Some(candidate_processed) =
+        audio_pipeline::maybe_shadow_for_active(&samples, baseline_processed.version)
+    {
+        if !candidate_processed.samples.is_empty() && !cancel_token.is_cancelled() {
+            if let Ok(candidate_run) = run_faster_whisper_decode_with_conditioned(
+                &candidate_processed.samples,
+                runtime_model,
+                &model_id,
+                decode_mode,
+                terminology_hint.as_deref(),
+                audio_duration_ms,
+                &cancel_token,
+            )
+            .await
+            {
+                let baseline_quality = fw_decode_quality_score(
+                    baseline_run.final_decode.avg_logprob,
+                    baseline_run.final_decode.no_speech_prob,
+                    baseline_run.low_coherence,
+                    baseline_run.retry_used,
+                );
+                let candidate_quality = fw_decode_quality_score(
+                    candidate_run.final_decode.avg_logprob,
+                    candidate_run.final_decode.no_speech_prob,
+                    candidate_run.low_coherence,
+                    candidate_run.retry_used,
+                );
+                let quality_delta = candidate_quality - baseline_quality;
+                let latency_budget = (baseline_run.total_decode_compute_ms as f32) * 1.08;
+                let latency_ok = (candidate_run.total_decode_compute_ms as f32) <= latency_budget;
+                let no_speech_ok = candidate_run.final_decode.no_speech_prob
+                    <= baseline_run.final_decode.no_speech_prob + 0.03;
+                shadow_candidate_version = Some(candidate_processed.version.as_str().to_string());
+                shadow_quality_delta = Some(quality_delta);
+                shadow_candidate_avg_logprob = Some(candidate_run.final_decode.avg_logprob);
+                shadow_candidate_no_speech_prob = Some(candidate_run.final_decode.no_speech_prob);
+                shadow_candidate_retry_used = Some(candidate_run.retry_used);
+                shadow_candidate_low_coherence = Some(candidate_run.low_coherence);
+                shadow_candidate_decode_compute_ms = Some(candidate_run.total_decode_compute_ms);
+                shadow_candidate_won = Some(quality_delta >= 0.02 && latency_ok && no_speech_ok);
+            }
         }
-    })?;
-    let audio_duration_ms =
-        ((conditioned_samples.len() as f64 / 16_000.0) * 1000.0).round() as u64;
+    }
+
+    Ok(WhisperDecodeOutput {
+        text: baseline_run.final_decode.text,
+        telemetry: DecodeTelemetry {
+            model_init_ms: baseline_run.total_model_init_ms,
+            audio_condition_ms,
+            decode_compute_ms: baseline_run.total_decode_compute_ms,
+            audio_pipeline_version: baseline_processed.version.as_str().to_string(),
+            runtime_cache_hit: baseline_run.runtime_cache_hit,
+            backend_requested: if baseline_run
+                .final_decode
+                .backend_requested
+                .trim()
+                .is_empty()
+            {
+                "cpu".to_string()
+            } else {
+                baseline_run.final_decode.backend_requested
+            },
+            backend_used: if baseline_run.final_decode.backend_used.trim().is_empty() {
+                "cpu".to_string()
+            } else {
+                baseline_run.final_decode.backend_used
+            },
+            backend_fallback: baseline_run.final_decode.backend_fallback,
+            fw_segment_count: Some(baseline_run.final_decode.segment_count),
+            fw_avg_logprob: Some(baseline_run.final_decode.avg_logprob),
+            fw_no_speech_prob: Some(baseline_run.final_decode.no_speech_prob),
+            fw_compression_ratio: Some(baseline_run.final_decode.compression_ratio),
+            fw_low_coherence: baseline_run.low_coherence,
+            fw_retry_used: baseline_run.retry_used,
+            fw_literal_retry_used: baseline_run.literal_retry_used,
+            fw_shadow_candidate_version: shadow_candidate_version,
+            fw_shadow_quality_delta: shadow_quality_delta,
+            fw_shadow_candidate_avg_logprob: shadow_candidate_avg_logprob,
+            fw_shadow_candidate_no_speech_prob: shadow_candidate_no_speech_prob,
+            fw_shadow_candidate_retry_used: shadow_candidate_retry_used,
+            fw_shadow_candidate_low_coherence: shadow_candidate_low_coherence,
+            fw_shadow_candidate_decode_compute_ms: shadow_candidate_decode_compute_ms,
+            fw_shadow_candidate_won: shadow_candidate_won,
+            audio_pipeline_fallback_engaged: baseline_processed.version
+                == audio_pipeline::AudioPipelineVersion::V1,
+            audio_pipeline_fallback_remaining: audio_pipeline::fallback_remaining_utterances(),
+        },
+    })
+}
+
+struct FasterWhisperRunResult {
+    final_decode: faster_whisper::FasterWhisperDecodeOutput,
+    total_model_init_ms: u64,
+    total_decode_compute_ms: u64,
+    runtime_cache_hit: bool,
+    low_coherence: bool,
+    retry_used: bool,
+    literal_retry_used: bool,
+}
+
+async fn run_faster_whisper_decode_with_conditioned(
+    conditioned_samples: &[f32],
+    runtime_model: &str,
+    frontend_model_id: &str,
+    decode_mode: DecodeMode,
+    terminology_hint: Option<&str>,
+    audio_duration_ms: u64,
+    cancel_token: &CancellationToken,
+) -> Result<FasterWhisperRunResult, InferenceError> {
     let primary_mode = if should_use_fast_first_primary(decode_mode, audio_duration_ms) {
         DecodeMode::Fast
     } else {
         decode_mode
     };
+
+    debug_fw_gpu_log(
+        "GPU_H1",
+        "src-tauri/src/inference/mod.rs:573",
+        "fw primary decode start",
+        &[
+            ("modelId", runtime_model.to_string()),
+            ("frontendModelId", frontend_model_id.to_string()),
+            ("primaryMode", format!("{:?}", primary_mode)),
+            ("requestedMode", format!("{:?}", decode_mode)),
+            ("audioMs", audio_duration_ms.to_string()),
+        ],
+    );
+
     let primary = faster_whisper::transcribe_samples_with_overrides(
-        &conditioned_samples,
+        conditioned_samples,
         runtime_model,
         primary_mode,
-        fw_primary_overrides(primary_mode, terminology_hint.as_deref(), audio_duration_ms),
-        &cancel_token,
+        fw_primary_overrides(primary_mode, terminology_hint, audio_duration_ms),
+        cancel_token,
     )
     .await?;
     if cancel_token.is_cancelled() {
@@ -592,8 +813,7 @@ async fn transcribe_with_faster_whisper(
     let mut total_decode_compute_ms = primary.decode_compute_ms;
     let mut runtime_cache_hit = primary.runtime_cache_hit;
     let low_coherence = fw_decode_is_low_coherence(&primary, audio_duration_ms);
-    let substitution_suspected =
-        fw_decode_looks_common_substitution(&primary, audio_duration_ms);
+    let substitution_suspected = fw_decode_looks_common_substitution(&primary, audio_duration_ms);
     let needs_retry = fw_decode_needs_retry(&primary, audio_duration_ms)
         || (low_coherence && (primary.avg_logprob < -0.82 || substitution_suspected));
     let mut retry_used = false;
@@ -607,16 +827,16 @@ async fn transcribe_with_faster_whisper(
         };
         let retry_overrides = if low_coherence {
             literal_retry_used = true;
-            fw_literal_retry_overrides(retry_mode, terminology_hint.as_deref())
+            fw_literal_retry_overrides(retry_mode, terminology_hint)
         } else {
             FasterWhisperRequestOverrides::default()
         };
         let retry = faster_whisper::transcribe_samples_with_overrides(
-            &conditioned_samples,
+            conditioned_samples,
             runtime_model,
             retry_mode,
             retry_overrides,
-            &cancel_token,
+            cancel_token,
         )
         .await?;
         if cancel_token.is_cancelled() {
@@ -631,40 +851,31 @@ async fn transcribe_with_faster_whisper(
         }
     }
 
-    if final_decode.backend_fallback
-        && final_decode.backend_requested.eq_ignore_ascii_case("cuda")
-        && final_decode.backend_used.eq_ignore_ascii_case("cpu")
-    {
-        let _ = note_gpu_runtime_failure();
-    }
-
-    Ok(WhisperDecodeOutput {
-        text: final_decode.text,
-        telemetry: DecodeTelemetry {
-            model_init_ms: total_model_init_ms,
-            audio_condition_ms,
-            decode_compute_ms: total_decode_compute_ms,
-            runtime_cache_hit,
-            backend_requested: if final_decode.backend_requested.trim().is_empty() {
-                "cpu".to_string()
-            } else {
-                final_decode.backend_requested
-            },
-            backend_used: if final_decode.backend_used.trim().is_empty() {
-                "cpu".to_string()
-            } else {
-                final_decode.backend_used
-            },
-            backend_fallback: final_decode.backend_fallback,
-            fw_segment_count: Some(final_decode.segment_count),
-            fw_avg_logprob: Some(final_decode.avg_logprob),
-            fw_no_speech_prob: Some(final_decode.no_speech_prob),
-            fw_compression_ratio: Some(final_decode.compression_ratio),
-            fw_low_coherence: low_coherence,
-            fw_retry_used: retry_used,
-            fw_literal_retry_used: literal_retry_used,
-        },
+    Ok(FasterWhisperRunResult {
+        final_decode,
+        total_model_init_ms,
+        total_decode_compute_ms,
+        runtime_cache_hit,
+        low_coherence,
+        retry_used,
+        literal_retry_used,
     })
+}
+
+fn fw_decode_quality_score(
+    avg_logprob: f32,
+    no_speech_prob: f32,
+    low_coherence: bool,
+    retry_used: bool,
+) -> f32 {
+    let logprob_score = ((avg_logprob + 1.5) / 1.5).clamp(0.0, 1.0);
+    let no_speech_score = (1.0 - no_speech_prob).clamp(0.0, 1.0);
+    let coherence_score = if low_coherence { 0.0 } else { 1.0 };
+    let retry_score = if retry_used { 0.0 } else { 1.0 };
+    (0.35 * logprob_score)
+        + (0.25 * no_speech_score)
+        + (0.20 * coherence_score)
+        + (0.20 * retry_score)
 }
 
 fn stronger_decode_mode(mode: DecodeMode) -> Option<DecodeMode> {
@@ -687,7 +898,15 @@ fn fast_first_enabled() -> bool {
 fn should_use_fast_first_primary(decode_mode: DecodeMode, audio_duration_ms: u64) -> bool {
     fast_first_enabled()
         && decode_mode == DecodeMode::Balanced
-        && audio_duration_ms <= 3_800
+        && audio_duration_ms <= fast_first_primary_max_audio_ms()
+}
+
+fn fast_first_primary_max_audio_ms() -> u64 {
+    std::env::var("VOICEWAVE_FW_FAST_FIRST_MAX_AUDIO_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.clamp(1_200, 10_000))
+        .unwrap_or(3_200)
 }
 
 fn fw_decode_needs_retry(
@@ -801,7 +1020,9 @@ fn fw_confidence_score(decode: &faster_whisper::FasterWhisperDecodeOutput) -> f3
 }
 
 fn word_count(text: &str) -> usize {
-    text.split_whitespace().filter(|token| !token.is_empty()).count()
+    text.split_whitespace()
+        .filter(|token| !token.is_empty())
+        .count()
 }
 
 fn tokenized_words(text: &str) -> Vec<String> {
@@ -882,8 +1103,7 @@ fn fw_primary_overrides(
     terminology_hint: Option<&str>,
     audio_duration_ms: u64,
 ) -> FasterWhisperRequestOverrides {
-    let without_timestamps =
-        fw_without_timestamps_enabled() && decode_mode != DecodeMode::Quality;
+    let without_timestamps = fw_without_timestamps_enabled() && decode_mode != DecodeMode::Quality;
     if decode_mode == DecodeMode::Fast && audio_duration_ms <= 3_200 {
         // For short utterances, skip prompt tokens on the fast-primary pass.
         return FasterWhisperRequestOverrides {
@@ -891,9 +1111,8 @@ fn fw_primary_overrides(
             ..FasterWhisperRequestOverrides::default()
         };
     }
-    let mut prompt = String::from(
-        "Transcribe verbatim. Preserve technical terms and uncommon words exactly.",
-    );
+    let mut prompt =
+        String::from("Transcribe verbatim. Preserve technical terms and uncommon words exactly.");
     if let Some(hint) = terminology_hint {
         if !hint.trim().is_empty() {
             prompt.push_str(" Technical terms: ");
@@ -941,8 +1160,7 @@ fn fw_literal_retry_overrides(
     if prompt.chars().count() > 420 {
         prompt = prompt.chars().take(420).collect();
     }
-    let without_timestamps =
-        fw_without_timestamps_enabled() && retry_mode != DecodeMode::Quality;
+    let without_timestamps = fw_without_timestamps_enabled() && retry_mode != DecodeMode::Quality;
     FasterWhisperRequestOverrides {
         beam_size: Some(beam_size),
         best_of: Some(best_of),
@@ -1009,7 +1227,8 @@ pub(crate) fn decode_with_context(
     backend_fallback: bool,
 ) -> Result<WhisperDecodeOutput, InferenceError> {
     let condition_started = Instant::now();
-    let conditioned_samples = condition_audio_for_decode(samples);
+    let processed_audio = audio_pipeline::process_for_active(samples);
+    let conditioned_samples = processed_audio.samples;
     let audio_condition_ms = condition_started.elapsed().as_millis() as u64;
     if conditioned_samples.is_empty() {
         return Err(InferenceError::DecodeFailed {
@@ -1053,8 +1272,7 @@ pub(crate) fn decode_with_context(
             .clamp(1, profile.thread_cap) as i32,
     );
     let token_for_abort = cancel_token.clone();
-    let abort_callback: Box<dyn FnMut() -> bool> =
-        Box::new(move || token_for_abort.is_cancelled());
+    let abort_callback: Box<dyn FnMut() -> bool> = Box::new(move || token_for_abort.is_cancelled());
     params.set_abort_callback_safe::<_, Box<dyn FnMut() -> bool>>(Some(abort_callback));
 
     let mut state = ctx
@@ -1102,6 +1320,7 @@ pub(crate) fn decode_with_context(
             model_init_ms,
             audio_condition_ms,
             decode_compute_ms: decode_started.elapsed().as_millis() as u64,
+            audio_pipeline_version: processed_audio.version.as_str().to_string(),
             runtime_cache_hit,
             backend_requested: backend_requested.as_str().to_string(),
             backend_used: backend_used.as_str().to_string(),
@@ -1113,6 +1332,16 @@ pub(crate) fn decode_with_context(
             fw_low_coherence: false,
             fw_retry_used: false,
             fw_literal_retry_used: false,
+            fw_shadow_candidate_version: None,
+            fw_shadow_quality_delta: None,
+            fw_shadow_candidate_avg_logprob: None,
+            fw_shadow_candidate_no_speech_prob: None,
+            fw_shadow_candidate_retry_used: None,
+            fw_shadow_candidate_low_coherence: None,
+            fw_shadow_candidate_decode_compute_ms: None,
+            fw_shadow_candidate_won: None,
+            audio_pipeline_fallback_engaged: false,
+            audio_pipeline_fallback_remaining: 0,
         },
     })
 }
@@ -1204,11 +1433,12 @@ pub(crate) fn validate_model_artifact(model_path: &Path) -> Result<(), Inference
 }
 
 pub(crate) fn model_artifact_fingerprint(model_path: &Path) -> Result<String, InferenceError> {
-    let metadata = std::fs::metadata(model_path).map_err(|err| InferenceError::ModelLoadFailed {
-        model_id: "unknown".to_string(),
-        path: model_path.to_string_lossy().to_string(),
-        reason: format!("failed to read metadata: {err}"),
-    })?;
+    let metadata =
+        std::fs::metadata(model_path).map_err(|err| InferenceError::ModelLoadFailed {
+            model_id: "unknown".to_string(),
+            path: model_path.to_string_lossy().to_string(),
+            reason: format!("failed to read metadata: {err}"),
+        })?;
     let modified_secs = metadata
         .modified()
         .ok()
@@ -1229,13 +1459,11 @@ pub(crate) fn decode_profile_version(model_id: &str, decode_mode: DecodeMode) ->
     };
     format!(
         "{strategy}:{}:{}:{}:{}",
-        profile.partial_delay_ms,
-        profile.no_speech_thold,
-        profile.thread_cap,
-        profile.no_context
+        profile.partial_delay_ms, profile.no_speech_thold, profile.thread_cap, profile.no_context
     )
 }
 
+#[cfg(test)]
 fn condition_audio_for_decode(samples: &[f32]) -> Vec<f32> {
     const FRAME_SIZE: usize = 320;
     const MIN_EDGE_RMS: f32 = 0.002;
@@ -1265,7 +1493,10 @@ fn condition_audio_for_decode(samples: &[f32]) -> Vec<f32> {
     };
 
     let mean = working.iter().copied().sum::<f32>() / working.len() as f32;
-    let mut centered = working.iter().map(|sample| sample - mean).collect::<Vec<f32>>();
+    let mut centered = working
+        .iter()
+        .map(|sample| sample - mean)
+        .collect::<Vec<f32>>();
     high_pass_filter_in_place(&mut centered, 90.0, 16_000.0);
     attenuate_low_noise_frames(&mut centered);
 
@@ -1289,6 +1520,7 @@ fn condition_audio_for_decode(samples: &[f32]) -> Vec<f32> {
     centered
 }
 
+#[cfg(test)]
 fn high_pass_filter_in_place(samples: &mut [f32], cutoff_hz: f32, sample_rate_hz: f32) {
     if samples.len() < 2 || cutoff_hz <= 0.0 || sample_rate_hz <= 0.0 {
         return;
@@ -1307,11 +1539,15 @@ fn high_pass_filter_in_place(samples: &mut [f32], cutoff_hz: f32, sample_rate_hz
     }
 }
 
+#[cfg(test)]
 fn attenuate_low_noise_frames(samples: &mut [f32]) {
     if samples.is_empty() {
         return;
     }
-    let mut abs_values = samples.iter().map(|sample| sample.abs()).collect::<Vec<f32>>();
+    let mut abs_values = samples
+        .iter()
+        .map(|sample| sample.abs())
+        .collect::<Vec<f32>>();
     abs_values.sort_by(|a, b| a.total_cmp(b));
     let q1_idx = ((abs_values.len() - 1) as f32 * 0.25).round() as usize;
     let noise_floor = abs_values[q1_idx];
@@ -1327,6 +1563,7 @@ fn attenuate_low_noise_frames(samples: &mut [f32]) {
     }
 }
 
+#[cfg(test)]
 fn trim_low_energy_edges(samples: &[f32], frame_size: usize, threshold: f32) -> Vec<f32> {
     if samples.is_empty() || frame_size == 0 {
         return Vec::new();
@@ -1361,6 +1598,7 @@ fn trim_low_energy_edges(samples: &[f32], frame_size: usize, threshold: f32) -> 
     samples[start..end].to_vec()
 }
 
+#[cfg(test)]
 fn rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -1461,7 +1699,9 @@ mod tests {
     fn runtime_constructor_tracks_model_path() {
         let worker = InferenceWorker::new_runtime("small.en", "C:\\models\\small.en.gguf");
         assert_eq!(
-            worker.model_path().map(|path| path.to_string_lossy().to_string()),
+            worker
+                .model_path()
+                .map(|path| path.to_string_lossy().to_string()),
             Some("C:\\models\\small.en.gguf".to_string())
         );
     }
@@ -1500,7 +1740,10 @@ mod tests {
     #[test]
     fn fast_mode_uses_greedy_strategy() {
         let profile = decode_profile_for_mode("small.en", DecodeMode::Fast);
-        assert!(matches!(profile.strategy, DecodeStrategy::Greedy { best_of: 1 }));
+        assert!(matches!(
+            profile.strategy,
+            DecodeStrategy::Greedy { best_of: 1 }
+        ));
         assert!(profile.no_context);
     }
 
@@ -1552,10 +1795,8 @@ mod tests {
 
     #[test]
     fn fw_literal_retry_profile_is_prompted_and_context_free() {
-        let profile = fw_literal_retry_overrides(
-            DecodeMode::Balanced,
-            Some("Kubernetes protobuf gRPC"),
-        );
+        let profile =
+            fw_literal_retry_overrides(DecodeMode::Balanced, Some("Kubernetes protobuf gRPC"));
         assert_eq!(profile.condition_on_previous_text, Some(false));
         assert_eq!(profile.temperature, Some(0.0));
         assert!(profile
@@ -1576,11 +1817,8 @@ mod tests {
 
     #[test]
     fn fw_primary_profile_includes_technical_hint_prompt() {
-        let profile = fw_primary_overrides(
-            DecodeMode::Balanced,
-            Some("TypeScript ESLint Vite"),
-            4_000,
-        );
+        let profile =
+            fw_primary_overrides(DecodeMode::Balanced, Some("TypeScript ESLint Vite"), 4_000);
         assert!(profile
             .initial_prompt
             .as_deref()
@@ -1595,7 +1833,10 @@ mod tests {
 
     #[test]
     fn stronger_mode_escalates_until_quality() {
-        assert_eq!(stronger_decode_mode(DecodeMode::Fast), Some(DecodeMode::Balanced));
+        assert_eq!(
+            stronger_decode_mode(DecodeMode::Fast),
+            Some(DecodeMode::Balanced)
+        );
         assert_eq!(
             stronger_decode_mode(DecodeMode::Balanced),
             Some(DecodeMode::Quality)
@@ -1606,8 +1847,8 @@ mod tests {
     #[test]
     fn fw_fast_first_applies_to_balanced_short_utterances() {
         assert!(should_use_fast_first_primary(DecodeMode::Balanced, 2_200));
-        assert!(should_use_fast_first_primary(DecodeMode::Balanced, 3_800));
-        assert!(!should_use_fast_first_primary(DecodeMode::Balanced, 3_900));
+        assert!(should_use_fast_first_primary(DecodeMode::Balanced, 3_200));
+        assert!(!should_use_fast_first_primary(DecodeMode::Balanced, 3_300));
     }
 
     #[test]
@@ -1616,4 +1857,10 @@ mod tests {
         assert!(!should_use_fast_first_primary(DecodeMode::Quality, 2_000));
     }
 
+    #[test]
+    fn fw_quality_score_rewards_confident_non_retry_decode() {
+        let strong = fw_decode_quality_score(-0.45, 0.12, false, false);
+        let weak = fw_decode_quality_score(-1.25, 0.72, true, true);
+        assert!(strong > weak);
+    }
 }
