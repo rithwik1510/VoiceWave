@@ -14,6 +14,8 @@ pub struct LatencyMetricRecord {
     pub timestamp_utc_ms: u64,
     pub capture_ms: u64,
     pub release_to_transcribing_ms: u64,
+    #[serde(default)]
+    pub effective_release_watchdog_ms: u64,
     pub decode_ms: u64,
     pub post_ms: u64,
     pub insert_ms: u64,
@@ -54,6 +56,40 @@ pub struct LatencyMetricRecord {
     pub fw_retry_used: bool,
     #[serde(default)]
     pub fw_literal_retry_used: bool,
+    #[serde(default)]
+    pub audio_pipeline_version: String,
+    #[serde(default)]
+    pub fw_avg_logprob: Option<f32>,
+    #[serde(default)]
+    pub fw_no_speech_prob: Option<f32>,
+    #[serde(default)]
+    pub fw_compression_ratio: Option<f32>,
+    #[serde(default)]
+    pub fw_shadow_candidate_version: Option<String>,
+    #[serde(default)]
+    pub fw_shadow_quality_delta: Option<f32>,
+    #[serde(default)]
+    pub fw_shadow_candidate_avg_logprob: Option<f32>,
+    #[serde(default)]
+    pub fw_shadow_candidate_no_speech_prob: Option<f32>,
+    #[serde(default)]
+    pub fw_shadow_candidate_retry_used: Option<bool>,
+    #[serde(default)]
+    pub fw_shadow_candidate_low_coherence: Option<bool>,
+    #[serde(default)]
+    pub fw_shadow_candidate_decode_compute_ms: Option<u64>,
+    #[serde(default)]
+    pub fw_shadow_candidate_won: Option<bool>,
+    #[serde(default)]
+    pub audio_pipeline_fallback_engaged: bool,
+    #[serde(default)]
+    pub audio_pipeline_fallback_remaining: u32,
+    #[serde(default)]
+    pub warm_start_hit: bool,
+    #[serde(default)]
+    pub worker_reused: bool,
+    #[serde(default)]
+    pub correction_candidates_count: u32,
     #[serde(default)]
     pub insertion_method: Option<String>,
     #[serde(default)]
@@ -318,7 +354,10 @@ impl DiagnosticsManager {
     }
 }
 
-fn aggregate_metrics(records: &[LatencyMetricRecord], watchdog_recovery_count: u64) -> DiagnosticsAggregate {
+fn aggregate_metrics(
+    records: &[LatencyMetricRecord],
+    watchdog_recovery_count: u64,
+) -> DiagnosticsAggregate {
     let mut total_values = records.iter().map(|row| row.total_ms).collect::<Vec<_>>();
     total_values.sort_unstable();
     let mut release_values = records
@@ -386,6 +425,7 @@ mod tests {
                 timestamp_utc_ms: 1,
                 capture_ms: 10,
                 release_to_transcribing_ms: 20,
+                effective_release_watchdog_ms: 300,
                 decode_ms: 30,
                 post_ms: 10,
                 insert_ms: 5,
@@ -417,6 +457,23 @@ mod tests {
                 fw_low_coherence: false,
                 fw_retry_used: false,
                 fw_literal_retry_used: false,
+                audio_pipeline_version: "v1".to_string(),
+                fw_avg_logprob: Some(-0.42),
+                fw_no_speech_prob: Some(0.18),
+                fw_compression_ratio: Some(1.3),
+                fw_shadow_candidate_version: None,
+                fw_shadow_quality_delta: None,
+                fw_shadow_candidate_avg_logprob: None,
+                fw_shadow_candidate_no_speech_prob: None,
+                fw_shadow_candidate_retry_used: None,
+                fw_shadow_candidate_low_coherence: None,
+                fw_shadow_candidate_decode_compute_ms: None,
+                fw_shadow_candidate_won: None,
+                audio_pipeline_fallback_engaged: false,
+                audio_pipeline_fallback_remaining: 0,
+                warm_start_hit: false,
+                worker_reused: false,
+                correction_candidates_count: 0,
                 insertion_method: Some("direct".to_string()),
                 insertion_target_class: Some("editor".to_string()),
                 success: true,
@@ -426,6 +483,7 @@ mod tests {
                 timestamp_utc_ms: 2,
                 capture_ms: 15,
                 release_to_transcribing_ms: 40,
+                effective_release_watchdog_ms: 300,
                 decode_ms: 50,
                 post_ms: 12,
                 insert_ms: 6,
@@ -457,6 +515,23 @@ mod tests {
                 fw_low_coherence: false,
                 fw_retry_used: true,
                 fw_literal_retry_used: false,
+                audio_pipeline_version: "v1".to_string(),
+                fw_avg_logprob: Some(-0.78),
+                fw_no_speech_prob: Some(0.33),
+                fw_compression_ratio: Some(1.8),
+                fw_shadow_candidate_version: None,
+                fw_shadow_quality_delta: None,
+                fw_shadow_candidate_avg_logprob: None,
+                fw_shadow_candidate_no_speech_prob: None,
+                fw_shadow_candidate_retry_used: None,
+                fw_shadow_candidate_low_coherence: None,
+                fw_shadow_candidate_decode_compute_ms: None,
+                fw_shadow_candidate_won: None,
+                audio_pipeline_fallback_engaged: false,
+                audio_pipeline_fallback_remaining: 0,
+                warm_start_hit: true,
+                worker_reused: true,
+                correction_candidates_count: 1,
                 insertion_method: Some("clipboardPaste".to_string()),
                 insertion_target_class: Some("browser".to_string()),
                 success: true,
@@ -466,7 +541,9 @@ mod tests {
         let aggregate = aggregate_metrics(&rows, 1);
         assert_eq!(aggregate.total_sessions, 2);
         assert!(aggregate.p95_total_ms >= aggregate.p50_total_ms);
-        assert!(aggregate.p95_release_to_transcribing_ms >= aggregate.p50_release_to_transcribing_ms);
+        assert!(
+            aggregate.p95_release_to_transcribing_ms >= aggregate.p50_release_to_transcribing_ms
+        );
     }
 
     #[test]
@@ -496,6 +573,7 @@ mod tests {
                 timestamp_utc_ms: 10,
                 capture_ms: 5,
                 release_to_transcribing_ms: 20,
+                effective_release_watchdog_ms: 300,
                 decode_ms: 100,
                 post_ms: 10,
                 insert_ms: 4,
@@ -527,6 +605,23 @@ mod tests {
                 fw_low_coherence: true,
                 fw_retry_used: true,
                 fw_literal_retry_used: false,
+                audio_pipeline_version: "v1".to_string(),
+                fw_avg_logprob: Some(-0.92),
+                fw_no_speech_prob: Some(0.44),
+                fw_compression_ratio: Some(2.0),
+                fw_shadow_candidate_version: None,
+                fw_shadow_quality_delta: None,
+                fw_shadow_candidate_avg_logprob: None,
+                fw_shadow_candidate_no_speech_prob: None,
+                fw_shadow_candidate_retry_used: None,
+                fw_shadow_candidate_low_coherence: None,
+                fw_shadow_candidate_decode_compute_ms: None,
+                fw_shadow_candidate_won: None,
+                audio_pipeline_fallback_engaged: false,
+                audio_pipeline_fallback_remaining: 0,
+                warm_start_hit: true,
+                worker_reused: true,
+                correction_candidates_count: 2,
                 insertion_method: Some("historyFallback".to_string()),
                 insertion_target_class: Some("unknown".to_string()),
                 success: false,
@@ -536,6 +631,7 @@ mod tests {
                 timestamp_utc_ms: 20,
                 capture_ms: 5,
                 release_to_transcribing_ms: 15,
+                effective_release_watchdog_ms: 300,
                 decode_ms: 80,
                 post_ms: 10,
                 insert_ms: 4,
@@ -567,6 +663,23 @@ mod tests {
                 fw_low_coherence: false,
                 fw_retry_used: false,
                 fw_literal_retry_used: false,
+                audio_pipeline_version: "v1".to_string(),
+                fw_avg_logprob: Some(-0.40),
+                fw_no_speech_prob: Some(0.2),
+                fw_compression_ratio: Some(1.2),
+                fw_shadow_candidate_version: None,
+                fw_shadow_quality_delta: None,
+                fw_shadow_candidate_avg_logprob: None,
+                fw_shadow_candidate_no_speech_prob: None,
+                fw_shadow_candidate_retry_used: None,
+                fw_shadow_candidate_low_coherence: None,
+                fw_shadow_candidate_decode_compute_ms: None,
+                fw_shadow_candidate_won: None,
+                audio_pipeline_fallback_engaged: false,
+                audio_pipeline_fallback_remaining: 0,
+                warm_start_hit: true,
+                worker_reused: true,
+                correction_candidates_count: 0,
                 insertion_method: Some("direct".to_string()),
                 insertion_target_class: Some("editor".to_string()),
                 success: true,

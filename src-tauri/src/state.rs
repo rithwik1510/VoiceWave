@@ -21,6 +21,7 @@ use crate::{
     hotkey::{HotkeyAction, HotkeyConfig, HotkeyError, HotkeyManager, HotkeyPhase, HotkeySnapshot},
     inference::{
         cpu_runtime_pool_enabled, ensure_faster_whisper_ready, is_faster_whisper_model,
+        note_audio_pipeline_decode_hard_failure, note_audio_pipeline_decode_success,
         prefetch_faster_whisper_model, prewarm_runtime, InferenceError, InferenceWorker,
         RuntimeDecodePolicy,
     },
@@ -48,16 +49,16 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
+    sync::mpsc::RecvTimeoutError,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
     },
-    sync::mpsc::RecvTimeoutError,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
@@ -102,6 +103,7 @@ struct LatencyBreakdownEvent {
     session_id: u64,
     capture_ms: u64,
     release_to_transcribing_ms: u64,
+    effective_release_watchdog_ms: u64,
     watchdog_recovered: bool,
     segments_captured: u32,
     release_stop_detected_at_utc_ms: u64,
@@ -133,6 +135,23 @@ struct LatencyBreakdownEvent {
     fw_low_coherence: bool,
     fw_retry_used: bool,
     fw_literal_retry_used: bool,
+    audio_pipeline_version: String,
+    fw_avg_logprob: Option<f32>,
+    fw_no_speech_prob: Option<f32>,
+    fw_compression_ratio: Option<f32>,
+    fw_shadow_candidate_version: Option<String>,
+    fw_shadow_quality_delta: Option<f32>,
+    fw_shadow_candidate_avg_logprob: Option<f32>,
+    fw_shadow_candidate_no_speech_prob: Option<f32>,
+    fw_shadow_candidate_retry_used: Option<bool>,
+    fw_shadow_candidate_low_coherence: Option<bool>,
+    fw_shadow_candidate_decode_compute_ms: Option<u64>,
+    fw_shadow_candidate_won: Option<bool>,
+    audio_pipeline_fallback_engaged: bool,
+    audio_pipeline_fallback_remaining: u32,
+    warm_start_hit: bool,
+    worker_reused: bool,
+    correction_candidates_count: u32,
     insertion_method: String,
     insertion_target_class: String,
 }
@@ -207,6 +226,8 @@ const MAX_MAX_UTTERANCE_MS: u64 = 30_000;
 const MIN_RELEASE_TAIL_MS: u64 = 120;
 const MAX_RELEASE_TAIL_MS: u64 = 1_500;
 const RELEASE_WATCHDOG_MS: u64 = 300;
+const RELEASE_WATCHDOG_FAST_MS: u64 = 220;
+const RELEASE_WATCHDOG_FAST_MIN_AUDIO_MS: u64 = 900;
 const SHORT_UTTERANCE_MAX_MS: u64 = 8_000;
 const MEDIUM_UTTERANCE_MAX_MS: u64 = 16_000;
 const INCREMENTAL_DECODE_CADENCE_MS: u64 = 220;
@@ -215,6 +236,9 @@ const INCREMENTAL_WINDOW_MS: u64 = 1_400;
 const INCREMENTAL_WINDOW_OVERLAP_MS: u64 = 280;
 const FINALIZE_LOOKBACK_MS: u64 = 1_200;
 const FW_MIN_DECODE_AUDIO_MS_DEFAULT: u64 = 280;
+const FINAL_DECODE_TIMEOUT_MS_DEFAULT: u64 = 45_000;
+const FINAL_DECODE_TIMEOUT_MS_MIN: u64 = 8_000;
+const FINAL_DECODE_TIMEOUT_MS_MAX: u64 = 240_000;
 const TRANSCRIPT_OVERLAP_TOKENS: usize = 8;
 const BENCHMARK_RELIABILITY_WINDOW: usize = 40;
 const CORRECTION_SESSION_WINDOW_MS: u64 = 15_000;
@@ -274,7 +298,11 @@ fn tokenize_correction_terms(text: &str) -> Vec<String> {
                 .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_' || *ch == '.')
                 .collect::<String>()
         })
-        .map(|token| token.trim_matches(|ch: char| ch == '-' || ch == '_' || ch == '.').to_string())
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| ch == '-' || ch == '_' || ch == '.')
+                .to_string()
+        })
         .filter(|token| token.len() >= 2)
         .collect()
 }
@@ -384,7 +412,10 @@ fn derive_correction_candidates(previous: &str, current: &str) -> Vec<String> {
         return Vec::new();
     }
 
-    let shared = curr_set.iter().filter(|token| prev_set.contains(*token)).count();
+    let shared = curr_set
+        .iter()
+        .filter(|token| prev_set.contains(*token))
+        .count();
     let min_len = prev_set.len().min(curr_set.len());
     if min_len == 0 {
         return Vec::new();
@@ -554,6 +585,23 @@ fn fw_min_decode_audio_ms() -> u64 {
         .unwrap_or(FW_MIN_DECODE_AUDIO_MS_DEFAULT)
 }
 
+fn final_decode_timeout(sample_count: usize, sample_rate: u32) -> Duration {
+    if let Ok(value) = std::env::var("VOICEWAVE_FINAL_DECODE_TIMEOUT_MS") {
+        if let Ok(parsed) = value.trim().parse::<u64>() {
+            return Duration::from_millis(
+                parsed.clamp(FINAL_DECODE_TIMEOUT_MS_MIN, FINAL_DECODE_TIMEOUT_MS_MAX),
+            );
+        }
+    }
+
+    let audio_ms = sample_count_to_ms(sample_count, sample_rate);
+    let adaptive = audio_ms
+        .saturating_mul(7)
+        .saturating_add(4_000)
+        .max(FINAL_DECODE_TIMEOUT_MS_DEFAULT);
+    Duration::from_millis(adaptive.clamp(FINAL_DECODE_TIMEOUT_MS_MIN, FINAL_DECODE_TIMEOUT_MS_MAX))
+}
+
 fn play_hotkey_phase_cue(action: &HotkeyAction, phase: &HotkeyPhase) {
     let _ = (action, phase);
     #[cfg(target_os = "windows")]
@@ -616,8 +664,31 @@ pub fn release_watchdog_threshold_ms() -> u64 {
     RELEASE_WATCHDOG_MS
 }
 
-pub fn release_watchdog_recovered(release_to_transcribing_ms: u64) -> bool {
-    release_to_transcribing_ms > RELEASE_WATCHDOG_MS
+fn effective_release_watchdog_threshold_ms(
+    audio_quality: AudioQualityBand,
+    captured_audio_ms: u64,
+) -> u64 {
+    let base_ms = std::env::var("VOICEWAVE_RELEASE_WATCHDOG_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.clamp(180, 600))
+        .unwrap_or(RELEASE_WATCHDOG_MS);
+    let fast_ms = std::env::var("VOICEWAVE_RELEASE_WATCHDOG_FAST_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.clamp(160, base_ms))
+        .unwrap_or(RELEASE_WATCHDOG_FAST_MS);
+    if audio_quality == AudioQualityBand::Good
+        && captured_audio_ms >= RELEASE_WATCHDOG_FAST_MIN_AUDIO_MS
+    {
+        fast_ms
+    } else {
+        base_ms
+    }
+}
+
+pub fn release_watchdog_recovered(release_to_transcribing_ms: u64, threshold_ms: u64) -> bool {
+    release_to_transcribing_ms > threshold_ms
 }
 
 fn incremental_pre_release_decode_enabled() -> bool {
@@ -840,7 +911,11 @@ impl VoiceWaveController {
             push_to_talk: settings.push_to_talk_hotkey.clone(),
         })?;
 
-        if cpu_runtime_pool_enabled() && !is_faster_whisper_model(&settings.active_model) {
+        if is_faster_whisper_model(&settings.active_model) {
+            tauri::async_runtime::spawn(async {
+                let _ = ensure_faster_whisper_ready().await;
+            });
+        } else if cpu_runtime_pool_enabled() {
             let model_path = {
                 let manager = self.model_manager.lock().await;
                 manager
@@ -1020,13 +1095,8 @@ impl VoiceWaveController {
             }
         }
         if let Err(err) = run_result {
-            self.set_session_state(
-                session_id,
-                DictationLifecycleState::Error,
-                None,
-                None,
-            )
-            .await;
+            self.set_session_state(session_id, DictationLifecycleState::Error, None, None)
+                .await;
             self.update_state(
                 &app,
                 VoiceWaveHudState::Error,
@@ -1096,10 +1166,7 @@ impl VoiceWaveController {
         self.hotkey_manager.lock().await.snapshot()
     }
 
-    pub async fn ensure_hotkey_runtime_monitor(
-        self: Arc<Self>,
-        app: AppHandle,
-    ) {
+    pub async fn ensure_hotkey_runtime_monitor(self: Arc<Self>, app: AppHandle) {
         let mut slot = self.hotkey_runtime_monitor.lock().await;
         if slot.is_some() {
             return;
@@ -1111,7 +1178,9 @@ impl VoiceWaveController {
 
         let controller = self.clone();
         tauri::async_runtime::spawn(async move {
-            eprintln!("voicewave: global hotkey runtime monitor started (Windows key-state polling)");
+            eprintln!(
+                "voicewave: global hotkey runtime monitor started (Windows key-state polling)"
+            );
             const PUSH_PRESS_CONFIRM_SAMPLES: u8 = 2;
             const PUSH_RELEASE_CONFIRM_SAMPLES: u8 = 3;
             let mut toggle_was_down = false;
@@ -1264,16 +1333,12 @@ impl VoiceWaveController {
     ) -> Result<DiagnosticsExportResult, ControllerError> {
         let settings = self.settings.lock().await.clone();
         let watchdog_recovery_count = self.watchdog_recovery_count.load(Ordering::Relaxed);
-        let result = self
-            .diagnostics_manager
-            .lock()
-            .await
-            .export_bundle(
-                settings.diagnostics_opt_in,
-                env!("CARGO_PKG_VERSION"),
-                &settings,
-                watchdog_recovery_count,
-            )?;
+        let result = self.diagnostics_manager.lock().await.export_bundle(
+            settings.diagnostics_opt_in,
+            env!("CARGO_PKG_VERSION"),
+            &settings,
+            watchdog_recovery_count,
+        )?;
         Ok(result)
     }
 
@@ -1444,8 +1509,7 @@ impl VoiceWaveController {
             }
         };
 
-        let report =
-            analyze_captured_segments(&segments, self.audio.target_sample_rate, threshold);
+        let report = analyze_captured_segments(&segments, self.audio.target_sample_rate, threshold);
         let _ = app.emit("voicewave://audio-quality", report.clone());
 
         let quality = match report.quality {
@@ -1493,11 +1557,11 @@ impl VoiceWaveController {
             self.update_state(
                 &app,
                 VoiceWaveHudState::Inserted,
-                result.message
-                    .clone()
-                    .or(Some("Insertion fallback used. Transcript preserved.".to_string())),
+                result.message.clone().or(Some(
+                    "Insertion fallback used. Transcript preserved.".to_string(),
+                )),
             )
-                .await;
+            .await;
         }
         let _ = app.emit("voicewave://insertion", result.clone());
 
@@ -1574,9 +1638,7 @@ impl VoiceWaveController {
                     manager.is_action_pressed(HotkeyAction::PushToTalk)
                 };
                 if still_pressed {
-                    eprintln!(
-                        "voicewave: ignored push-to-talk release (key still down)"
-                    );
+                    eprintln!("voicewave: ignored push-to-talk release (key still down)");
                     return Ok(());
                 }
                 if self.active_push_session_ready_for_release().await {
@@ -1639,17 +1701,19 @@ impl VoiceWaveController {
             self.emit_model_status(&app, &preparing);
 
             ensure_faster_whisper_ready().await.map_err(|err| {
-                ControllerError::Runtime(format!(
-                    "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1 first."
-                ))
-            })?;
+                        ControllerError::Runtime(format!(
+                            "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-gpu.ps1 first."
+                        ))
+                    })?;
             let prefetching = ModelStatus {
                 model_id: model_id.clone(),
                 state: ModelStatusState::Downloading,
                 progress: 65,
                 active: active_model == model_id,
                 installed: false,
-                message: Some("Downloading Faster-Whisper model weights to local cache...".to_string()),
+                message: Some(
+                    "Downloading Faster-Whisper model weights to local cache...".to_string(),
+                ),
                 installed_model: None,
                 downloaded_bytes: Some(0),
                 total_bytes: Some(100),
@@ -1660,11 +1724,13 @@ impl VoiceWaveController {
                 .await
                 .insert(model_id.clone(), prefetching.clone());
             self.emit_model_status(&app, &prefetching);
-            let prefetch = prefetch_faster_whisper_model(&model_id).await.map_err(|err| {
-                ControllerError::Runtime(format!(
+            let prefetch = prefetch_faster_whisper_model(&model_id)
+                .await
+                .map_err(|err| {
+                    ControllerError::Runtime(format!(
                     "Faster-Whisper model prefetch failed: {err}. Check internet access and retry."
                 ))
-            })?;
+                })?;
             let installed = {
                 let mut manager = self.model_manager.lock().await;
                 manager.install_faster_whisper_model(&model_id, &prefetch.cache_hint_path)?
@@ -1680,7 +1746,7 @@ impl VoiceWaveController {
                         "Faster-Whisper model ready (cache hit: {}, init {} ms).",
                         prefetch.runtime_cache_hit, prefetch.model_init_ms
                     )
-                        .to_string(),
+                    .to_string(),
                 ),
                 installed_model: Some(installed),
                 downloaded_bytes: Some(100),
@@ -1739,7 +1805,10 @@ impl VoiceWaveController {
                 .unwrap_or(ModelStatus {
                     model_id: model_id.clone(),
                     state: ModelStatusState::Failed,
-                    progress: latest_progress.as_ref().map(|row| row.progress).unwrap_or(0),
+                    progress: latest_progress
+                        .as_ref()
+                        .map(|row| row.progress)
+                        .unwrap_or(0),
                     active: active_model == model_id,
                     installed: false,
                     message: Some(err.to_string()),
@@ -1832,7 +1901,8 @@ impl VoiceWaveController {
                 resumable: false,
             });
         status.state = ModelStatusState::Cancelled;
-        status.message = Some("Cancellation requested. Resume will continue from checkpoint.".to_string());
+        status.message =
+            Some("Cancellation requested. Resume will continue from checkpoint.".to_string());
         status.resumable = true;
         self.model_statuses
             .lock()
@@ -1907,7 +1977,9 @@ impl VoiceWaveController {
         model_id: String,
     ) -> Result<ModelStatus, ControllerError> {
         if is_faster_whisper_model(&model_id) {
-            return self.download_model(app, ModelDownloadRequest { model_id }).await;
+            return self
+                .download_model(app, ModelDownloadRequest { model_id })
+                .await;
         }
         if let Some(pause_flag) = self
             .model_download_pauses
@@ -1918,7 +1990,8 @@ impl VoiceWaveController {
         {
             pause_flag.store(false, Ordering::Relaxed);
         }
-        self.download_model(app, ModelDownloadRequest { model_id }).await
+        self.download_model(app, ModelDownloadRequest { model_id })
+            .await
     }
 
     pub async fn set_active_model(
@@ -1943,10 +2016,16 @@ impl VoiceWaveController {
         let state = self.snapshot.lock().await.state.clone();
         self.emit_state(&app, state, Some("Active model updated.".to_string()));
 
-        if cpu_runtime_pool_enabled() && !is_faster_whisper_model(&model_id) {
+        if is_faster_whisper_model(&model_id) {
+            tauri::async_runtime::spawn(async {
+                let _ = ensure_faster_whisper_ready().await;
+            });
+        } else if cpu_runtime_pool_enabled() {
             let model_path = {
                 let manager = self.model_manager.lock().await;
-                manager.get_installed(&model_id).map(|row| row.file_path.clone())
+                manager
+                    .get_installed(&model_id)
+                    .map(|row| row.file_path.clone())
             };
             if let Some(path) = model_path {
                 prewarm_runtime(model_id.clone(), path, DecodeMode::Balanced);
@@ -2009,10 +2088,7 @@ impl VoiceWaveController {
                     (
                         model_id.clone(),
                         diagnostics
-                            .summarize_model_reliability(
-                                model_id,
-                                BENCHMARK_RELIABILITY_WINDOW,
-                            ),
+                            .summarize_model_reliability(model_id, BENCHMARK_RELIABILITY_WINDOW),
                     )
                 })
                 .collect::<HashMap<_, _>>()
@@ -2040,7 +2116,12 @@ impl VoiceWaveController {
 
         for model_id in model_ids {
             let worker = self
-                .build_inference_worker(&model_id, DictationMode::Microphone, DecodeMode::Balanced)
+                .build_inference_worker(
+                    &model_id,
+                    DictationMode::Microphone,
+                    DecodeMode::Balanced,
+                    false,
+                )
                 .await?;
             // Warm once so benchmark reflects realistic repeated dictation behavior.
             let warmup_token = CancellationToken::new();
@@ -2059,7 +2140,10 @@ impl VoiceWaveController {
                     .await;
                 let elapsed = started.elapsed().as_millis() as u64;
                 latencies.push(elapsed);
-                rtfs.push(crate::inference::estimate_rtf(elapsed, merged_samples.len()));
+                rtfs.push(crate::inference::estimate_rtf(
+                    elapsed,
+                    merged_samples.len(),
+                ));
                 if let Ok(output) = result {
                     let is_usable = output
                         .transcript
@@ -2085,7 +2169,9 @@ impl VoiceWaveController {
             } else {
                 (successful_runs as f32 / runs as f32) * 100.0
             };
-            let observed = reliability_by_model.get(&model_id).and_then(|row| row.as_ref());
+            let observed = reliability_by_model
+                .get(&model_id)
+                .and_then(|row| row.as_ref());
 
             rows.push(benchmark::BenchmarkRow {
                 model_id,
@@ -2149,13 +2235,17 @@ impl VoiceWaveController {
         starred: Option<bool>,
     ) -> Result<Vec<SessionHistoryRecord>, ControllerError> {
         self.ensure_pro_feature("advanced_history").await?;
-        Ok(self.history_manager.lock().await.get_records(SessionHistoryQuery {
-            limit: Some(100),
-            include_failed: Some(true),
-            search_query: Some(query),
-            tags,
-            starred,
-        }))
+        Ok(self
+            .history_manager
+            .lock()
+            .await
+            .get_records(SessionHistoryQuery {
+                limit: Some(100),
+                include_failed: Some(true),
+                search_query: Some(query),
+                tags,
+                starred,
+            }))
     }
 
     pub async fn tag_session(
@@ -2330,10 +2420,15 @@ impl VoiceWaveController {
         let incremental_enabled = mode == DictationMode::Microphone
             && incremental_pre_release_decode_enabled()
             && !use_faster_whisper;
+        let fw_ready_task = if mode == DictationMode::Microphone && use_faster_whisper {
+            Some(tokio::spawn(async { ensure_faster_whisper_ready().await }))
+        } else {
+            None
+        };
 
         let draft_worker = if incremental_enabled {
             Some(
-                self.build_inference_worker(&settings.active_model, mode, DecodeMode::Fast)
+                self.build_inference_worker(&settings.active_model, mode, DecodeMode::Fast, false)
                     .await?,
             )
         } else {
@@ -2435,8 +2530,13 @@ impl VoiceWaveController {
                         if let Some(task) = incremental_task.take() {
                             task.abort();
                         }
-                        self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
-                            .await;
+                        self.set_session_state(
+                            session_id,
+                            DictationLifecycleState::Idle,
+                            None,
+                            None,
+                        )
+                        .await;
                         self.update_state(
                             &app,
                             VoiceWaveHudState::Idle,
@@ -2450,8 +2550,13 @@ impl VoiceWaveController {
                         if let Some(task) = incremental_task.take() {
                             task.abort();
                         }
-                        self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
-                            .await;
+                        self.set_session_state(
+                            session_id,
+                            DictationLifecycleState::Idle,
+                            None,
+                            None,
+                        )
+                        .await;
                         self.update_state(
                             &app,
                             VoiceWaveHudState::Idle,
@@ -2546,10 +2651,9 @@ impl VoiceWaveController {
         let mut effective_decode_mode = policy_selected_mode;
         let mut decode_policy_reasons = vec![match mode {
             DictationMode::Fixture => "fixture-settings".to_string(),
-            DictationMode::Microphone => format!(
-                "runtime-policy:{}",
-                decode_mode_key(policy_selected_mode)
-            ),
+            DictationMode::Microphone => {
+                format!("runtime-policy:{}", decode_mode_key(policy_selected_mode))
+            }
         }];
         if mode == DictationMode::Microphone && !use_faster_whisper {
             // Keep legacy whisper.cpp path conservative: never go below Balanced.
@@ -2575,16 +2679,12 @@ impl VoiceWaveController {
             let pre_floor = effective_decode_mode;
             effective_decode_mode = floor_decode_mode(effective_decode_mode, decode_floor);
             if effective_decode_mode != pre_floor {
-                decode_policy_reasons.push(format!(
-                    "fw-audio-floor:{}",
-                    decode_mode_key(decode_floor)
-                ));
+                decode_policy_reasons
+                    .push(format!("fw-audio-floor:{}", decode_mode_key(decode_floor)));
             }
             let short_utterance_fast_lane =
                 captured_audio_ms <= 3_200 && audio_quality.quality != AudioQualityBand::Poor;
-            if decode_floor == DecodeMode::Fast
-                && effective_decode_mode == DecodeMode::Balanced
-            {
+            if decode_floor == DecodeMode::Fast && effective_decode_mode == DecodeMode::Balanced {
                 // Fast-first for clean audio; inference layer will auto-retry with stronger mode
                 // when confidence is weak so quality is protected.
                 effective_decode_mode = DecodeMode::Fast;
@@ -2596,8 +2696,31 @@ impl VoiceWaveController {
             }
         }
         let decode_policy_reason = decode_policy_reasons.join("|");
+        let mut fw_runtime_ready = false;
+        if let Some(task) = fw_ready_task {
+            match task.await {
+                Ok(Ok(())) => {
+                    fw_runtime_ready = true;
+                }
+                Ok(Err(err)) => {
+                    return Err(ControllerError::Runtime(format!(
+                        "Faster-Whisper runtime warmup failed: {err}"
+                    )));
+                }
+                Err(err) => {
+                    return Err(ControllerError::Runtime(format!(
+                        "Faster-Whisper warmup join failure: {err}"
+                    )));
+                }
+            }
+        }
         let final_worker = self
-            .build_inference_worker(&settings.active_model, mode, effective_decode_mode)
+            .build_inference_worker(
+                &settings.active_model,
+                mode,
+                effective_decode_mode,
+                fw_runtime_ready,
+            )
             .await?;
         let cap_hit = mode == DictationMode::Microphone
             && !stop_flag.load(Ordering::Relaxed)
@@ -2616,7 +2739,10 @@ impl VoiceWaveController {
             .session_release_elapsed_ms(session_id, transcribing_started)
             .await
             .unwrap_or(0);
-        let watchdog_recovered = release_watchdog_recovered(release_to_transcribing_ms);
+        let effective_release_watchdog_ms =
+            effective_release_watchdog_threshold_ms(audio_quality.quality, captured_audio_ms);
+        let watchdog_recovered =
+            release_watchdog_recovered(release_to_transcribing_ms, effective_release_watchdog_ms);
         if watchdog_recovered {
             self.watchdog_recovery_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -2625,8 +2751,13 @@ impl VoiceWaveController {
         } else {
             ""
         };
-        self.set_session_state(session_id, DictationLifecycleState::Transcribing, None, None)
-            .await;
+        self.set_session_state(
+            session_id,
+            DictationLifecycleState::Transcribing,
+            None,
+            None,
+        )
+        .await;
         self.update_state(
             &app,
             VoiceWaveHudState::Transcribing,
@@ -2644,8 +2775,9 @@ impl VoiceWaveController {
         }
 
         let decode_started = Instant::now();
-        let source_samples = merged_samples.clone();
-        let lookback_samples = ms_to_sample_count(FINALIZE_LOOKBACK_MS, self.audio.target_sample_rate);
+        let source_samples = merged_samples;
+        let lookback_samples =
+            ms_to_sample_count(FINALIZE_LOOKBACK_MS, self.audio.target_sample_rate);
         let has_committed_draft = !use_faster_whisper && !preview.committed_draft.trim().is_empty();
         let mut tail_start = 0usize;
         if has_committed_draft && preview.last_committed_sample > 0 {
@@ -2654,24 +2786,22 @@ impl VoiceWaveController {
                 .saturating_sub(lookback_samples)
                 .min(source_samples.len());
         }
-        let mut finalize_samples = if use_faster_whisper {
-            source_samples.clone()
-        } else if tail_start < source_samples.len() {
+        let mut finalize_samples = if tail_start < source_samples.len() {
             source_samples[tail_start..].to_vec()
         } else {
             Vec::new()
         };
-        if finalize_samples.is_empty() {
+        if !use_faster_whisper && finalize_samples.is_empty() {
             finalize_samples = source_samples.clone();
             tail_start = 0;
         }
-        if finalize_samples.is_empty() {
-            finalize_samples = merged_samples.clone();
+        if !use_faster_whisper && finalize_samples.is_empty() {
+            finalize_samples = source_samples.clone();
             tail_start = 0;
         }
         if mode == DictationMode::Microphone && use_faster_whisper {
             let finalize_audio_ms =
-                sample_count_to_ms(finalize_samples.len(), self.audio.target_sample_rate);
+                sample_count_to_ms(source_samples.len(), self.audio.target_sample_rate);
             if finalize_audio_ms < fw_min_decode_audio_ms() {
                 self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
                     .await;
@@ -2687,15 +2817,30 @@ impl VoiceWaveController {
                 return Ok(());
             }
         }
-        let finalize_tail_audio_ms =
-            sample_count_to_ms(source_samples.len().saturating_sub(tail_start), self.audio.target_sample_rate);
+        let finalize_tail_audio_ms = sample_count_to_ms(
+            source_samples.len().saturating_sub(tail_start),
+            self.audio.target_sample_rate,
+        );
         let finalize_started = Instant::now();
-        let finalize_output = match final_worker
-            .transcribe_segment(&finalize_samples, &cancel_token, |_text, _is_final, _elapsed_ms| {})
-            .await
-        {
-            Ok(text) => text,
-            Err(InferenceError::Cancelled) => {
+        let finalize_samples_ref: &[f32] = if use_faster_whisper {
+            &source_samples
+        } else {
+            &finalize_samples
+        };
+        let finalize_timeout =
+            final_decode_timeout(finalize_samples_ref.len(), self.audio.target_sample_rate);
+        let finalize_result = timeout(
+            finalize_timeout,
+            final_worker.transcribe_segment(
+                finalize_samples_ref,
+                &cancel_token,
+                |_text, _is_final, _elapsed_ms| {},
+            ),
+        )
+        .await;
+        let finalize_output = match finalize_result {
+            Ok(Ok(text)) => text,
+            Ok(Err(InferenceError::Cancelled)) => {
                 self.set_session_state(session_id, DictationLifecycleState::Idle, None, None)
                     .await;
                 self.update_state(
@@ -2706,22 +2851,45 @@ impl VoiceWaveController {
                 .await;
                 return Ok(());
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 if mode == DictationMode::Microphone {
                     self.decode_policy
                         .lock()
                         .await
                         .record_failure(finalize_started.elapsed().as_millis() as u64);
+                    if use_faster_whisper {
+                        note_audio_pipeline_decode_hard_failure();
+                    }
                 }
                 return Err(ControllerError::Runtime(format!(
                     "Inference failed for model '{}': {err}",
                     final_worker.active_model()
-                )))
+                )));
+            }
+            Err(_) => {
+                cancel_token.cancel();
+                if mode == DictationMode::Microphone {
+                    self.decode_policy
+                        .lock()
+                        .await
+                        .record_failure(finalize_started.elapsed().as_millis() as u64);
+                    if use_faster_whisper {
+                        note_audio_pipeline_decode_hard_failure();
+                    }
+                }
+                return Err(ControllerError::Runtime(format!(
+                    "Inference timed out after {} ms for model '{}'.",
+                    finalize_timeout.as_millis(),
+                    final_worker.active_model()
+                )));
             }
         };
         let release_finalize_ms = finalize_started.elapsed().as_millis() as u64;
         let decode_ms = decode_started.elapsed().as_millis() as u64;
         let decode_telemetry = finalize_output.telemetry;
+        if mode == DictationMode::Microphone && use_faster_whisper {
+            note_audio_pipeline_decode_success(&decode_telemetry.audio_pipeline_version);
+        }
         let raw_decode_transcript = finalize_output.transcript.unwrap_or_default();
         let finalize_text = sanitize_user_transcript(&raw_decode_transcript);
         let merged_transcript = if has_committed_draft {
@@ -2779,10 +2947,10 @@ impl VoiceWaveController {
                 return Ok(());
             }
             if mode == DictationMode::Microphone {
-                self.decode_policy
-                    .lock()
-                    .await
-                    .record_failure(decode_ms);
+                self.decode_policy.lock().await.record_failure(decode_ms);
+                if use_faster_whisper {
+                    note_audio_pipeline_decode_hard_failure();
+                }
             }
             return Err(ControllerError::Runtime(
                 "Inference finished without final transcript.".to_string(),
@@ -2894,6 +3062,7 @@ impl VoiceWaveController {
                 session_id,
                 capture_ms,
                 release_to_transcribing_ms,
+                effective_release_watchdog_ms,
                 watchdog_recovered,
                 segments_captured,
                 release_stop_detected_at_utc_ms,
@@ -2925,51 +3094,100 @@ impl VoiceWaveController {
                 fw_low_coherence: decode_telemetry.fw_low_coherence,
                 fw_retry_used: decode_telemetry.fw_retry_used,
                 fw_literal_retry_used: decode_telemetry.fw_literal_retry_used,
+                audio_pipeline_version: decode_telemetry.audio_pipeline_version.clone(),
+                fw_avg_logprob: decode_telemetry.fw_avg_logprob,
+                fw_no_speech_prob: decode_telemetry.fw_no_speech_prob,
+                fw_compression_ratio: decode_telemetry.fw_compression_ratio,
+                fw_shadow_candidate_version: decode_telemetry.fw_shadow_candidate_version.clone(),
+                fw_shadow_quality_delta: decode_telemetry.fw_shadow_quality_delta,
+                fw_shadow_candidate_avg_logprob: decode_telemetry.fw_shadow_candidate_avg_logprob,
+                fw_shadow_candidate_no_speech_prob: decode_telemetry
+                    .fw_shadow_candidate_no_speech_prob,
+                fw_shadow_candidate_retry_used: decode_telemetry.fw_shadow_candidate_retry_used,
+                fw_shadow_candidate_low_coherence: decode_telemetry
+                    .fw_shadow_candidate_low_coherence,
+                fw_shadow_candidate_decode_compute_ms: decode_telemetry
+                    .fw_shadow_candidate_decode_compute_ms,
+                fw_shadow_candidate_won: decode_telemetry.fw_shadow_candidate_won,
+                audio_pipeline_fallback_engaged: decode_telemetry.audio_pipeline_fallback_engaged,
+                audio_pipeline_fallback_remaining: decode_telemetry
+                    .audio_pipeline_fallback_remaining,
+                warm_start_hit: decode_telemetry.runtime_cache_hit,
+                worker_reused: decode_telemetry.runtime_cache_hit,
+                correction_candidates_count: correction_candidates.len() as u32,
                 insertion_method: insertion_method.clone(),
                 insertion_target_class: insertion_target_class.clone(),
             },
         );
         if settings.diagnostics_opt_in {
-            let _ = self.diagnostics_manager.lock().await.record_latency(LatencyMetricRecord {
-                session_id,
-                timestamp_utc_ms: now_utc_ms(),
-                capture_ms,
-                release_to_transcribing_ms,
-                watchdog_recovered,
-                segments_captured,
-                release_stop_detected_at_utc_ms,
-                model_init_ms: decode_telemetry.model_init_ms,
-                audio_condition_ms: decode_telemetry.audio_condition_ms,
-                decode_compute_ms: decode_telemetry.decode_compute_ms,
-                runtime_cache_hit: decode_telemetry.runtime_cache_hit,
-                backend_requested: decode_telemetry.backend_requested,
-                backend_used: decode_telemetry.backend_used,
-                backend_fallback: decode_telemetry.backend_fallback,
-                hold_to_first_draft_ms: preview.hold_to_first_draft_ms,
-                incremental_decode_ms: preview.incremental_decode_ms,
-                release_finalize_ms,
-                incremental_windows_decoded: preview.incremental_windows_decoded,
-                finalize_tail_audio_ms,
-                asr_integrity_percent,
-                asr_raw_word_count,
-                asr_final_word_count,
-                decode_ms,
-                post_ms,
-                insert_ms,
-                total_ms,
-                release_to_inserted_ms,
-                audio_duration_ms,
-                model_id: final_worker.active_model().to_string(),
-                decode_mode: final_worker.decode_mode(),
-                decode_policy_mode_selected: Some(policy_selected_mode),
-                decode_policy_reason: Some(decode_policy_reason),
-                fw_low_coherence: decode_telemetry.fw_low_coherence,
-                fw_retry_used: decode_telemetry.fw_retry_used,
-                fw_literal_retry_used: decode_telemetry.fw_literal_retry_used,
-                insertion_method: Some(insertion_method),
-                insertion_target_class: Some(insertion_target_class),
-                success: insertion_success,
-            });
+            let _ = self
+                .diagnostics_manager
+                .lock()
+                .await
+                .record_latency(LatencyMetricRecord {
+                    session_id,
+                    timestamp_utc_ms: now_utc_ms(),
+                    capture_ms,
+                    release_to_transcribing_ms,
+                    effective_release_watchdog_ms,
+                    watchdog_recovered,
+                    segments_captured,
+                    release_stop_detected_at_utc_ms,
+                    model_init_ms: decode_telemetry.model_init_ms,
+                    audio_condition_ms: decode_telemetry.audio_condition_ms,
+                    decode_compute_ms: decode_telemetry.decode_compute_ms,
+                    runtime_cache_hit: decode_telemetry.runtime_cache_hit,
+                    backend_requested: decode_telemetry.backend_requested,
+                    backend_used: decode_telemetry.backend_used,
+                    backend_fallback: decode_telemetry.backend_fallback,
+                    hold_to_first_draft_ms: preview.hold_to_first_draft_ms,
+                    incremental_decode_ms: preview.incremental_decode_ms,
+                    release_finalize_ms,
+                    incremental_windows_decoded: preview.incremental_windows_decoded,
+                    finalize_tail_audio_ms,
+                    asr_integrity_percent,
+                    asr_raw_word_count,
+                    asr_final_word_count,
+                    decode_ms,
+                    post_ms,
+                    insert_ms,
+                    total_ms,
+                    release_to_inserted_ms,
+                    audio_duration_ms,
+                    model_id: final_worker.active_model().to_string(),
+                    decode_mode: final_worker.decode_mode(),
+                    decode_policy_mode_selected: Some(policy_selected_mode),
+                    decode_policy_reason: Some(decode_policy_reason),
+                    fw_low_coherence: decode_telemetry.fw_low_coherence,
+                    fw_retry_used: decode_telemetry.fw_retry_used,
+                    fw_literal_retry_used: decode_telemetry.fw_literal_retry_used,
+                    audio_pipeline_version: decode_telemetry.audio_pipeline_version,
+                    fw_avg_logprob: decode_telemetry.fw_avg_logprob,
+                    fw_no_speech_prob: decode_telemetry.fw_no_speech_prob,
+                    fw_compression_ratio: decode_telemetry.fw_compression_ratio,
+                    fw_shadow_candidate_version: decode_telemetry.fw_shadow_candidate_version,
+                    fw_shadow_quality_delta: decode_telemetry.fw_shadow_quality_delta,
+                    fw_shadow_candidate_avg_logprob: decode_telemetry
+                        .fw_shadow_candidate_avg_logprob,
+                    fw_shadow_candidate_no_speech_prob: decode_telemetry
+                        .fw_shadow_candidate_no_speech_prob,
+                    fw_shadow_candidate_retry_used: decode_telemetry.fw_shadow_candidate_retry_used,
+                    fw_shadow_candidate_low_coherence: decode_telemetry
+                        .fw_shadow_candidate_low_coherence,
+                    fw_shadow_candidate_decode_compute_ms: decode_telemetry
+                        .fw_shadow_candidate_decode_compute_ms,
+                    fw_shadow_candidate_won: decode_telemetry.fw_shadow_candidate_won,
+                    audio_pipeline_fallback_engaged: decode_telemetry
+                        .audio_pipeline_fallback_engaged,
+                    audio_pipeline_fallback_remaining: decode_telemetry
+                        .audio_pipeline_fallback_remaining,
+                    warm_start_hit: decode_telemetry.runtime_cache_hit,
+                    worker_reused: decode_telemetry.runtime_cache_hit,
+                    correction_candidates_count: correction_candidates.len() as u32,
+                    insertion_method: Some(insertion_method),
+                    insertion_target_class: Some(insertion_target_class),
+                    success: insertion_success,
+                });
         }
 
         // Keep non-critical persistence off the hot path so release->final latency stays low.
@@ -2986,14 +3204,10 @@ impl VoiceWaveController {
             {
                 eprintln!("history record failed: {err}");
             }
-            if let Err(err) = dictionary_manager
-                .lock()
-                .await
-                .queue_correction_candidates(
-                    &correction_candidates_for_dictionary,
-                    &transcript_for_dictionary_preview,
-                )
-            {
+            if let Err(err) = dictionary_manager.lock().await.queue_correction_candidates(
+                &correction_candidates_for_dictionary,
+                &transcript_for_dictionary_preview,
+            ) {
                 eprintln!("dictionary ingest failed: {err}");
             }
         });
@@ -3115,16 +3329,19 @@ impl VoiceWaveController {
         model_id: &str,
         mode: DictationMode,
         decode_mode: DecodeMode,
+        assume_fw_ready: bool,
     ) -> Result<InferenceWorker, ControllerError> {
         match mode {
             DictationMode::Fixture => Ok(InferenceWorker::new_fixture(model_id.to_string())),
             DictationMode::Microphone => {
                 if is_faster_whisper_model(model_id) {
-                    ensure_faster_whisper_ready().await.map_err(|err| {
-                        ControllerError::Runtime(format!(
-                            "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1."
-                        ))
-                    })?;
+                    if !assume_fw_ready {
+                        ensure_faster_whisper_ready().await.map_err(|err| {
+                            ControllerError::Runtime(format!(
+                                "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-gpu.ps1."
+                            ))
+                        })?;
+                    }
                     let hint = {
                         let manager = self.dictionary_manager.lock().await;
                         let mut terms = manager
@@ -3186,7 +3403,11 @@ fn spawn_incremental_decode_job(
     tokio::spawn(async move {
         let started = Instant::now();
         let transcript = match worker
-            .transcribe_segment(&window.samples, &cancel_token, |_text, _is_final, _elapsed_ms| {})
+            .transcribe_segment(
+                &window.samples,
+                &cancel_token,
+                |_text, _is_final, _elapsed_ms| {},
+            )
             .await
         {
             Ok(output) => output.transcript,
@@ -3279,7 +3500,9 @@ async fn run_incremental_preview_decode(
         }
 
         if inflight.as_ref().is_some_and(|handle| handle.is_finished()) {
-            let handle = inflight.take().expect("inflight decode handle should exist");
+            let handle = inflight
+                .take()
+                .expect("inflight decode handle should exist");
             match handle.await {
                 Ok(result) => {
                     incremental_windows_decoded = incremental_windows_decoded.saturating_add(1);
@@ -3294,8 +3517,7 @@ async fn run_incremental_preview_decode(
                             );
                             last_committed_sample = result.window.end_sample;
                             if hold_to_first_draft_ms == 0 {
-                                hold_to_first_draft_ms =
-                                    flow_started.elapsed().as_millis() as u64;
+                                hold_to_first_draft_ms = flow_started.elapsed().as_millis() as u64;
                             }
                             let _ = app.emit(
                                 "voicewave://transcript",
@@ -3394,10 +3616,7 @@ mod tests {
     fn vad_threshold_is_clamped_to_safe_range() {
         assert_eq!(clamp_vad_threshold(0.0), MIN_VAD_THRESHOLD);
         assert_eq!(clamp_vad_threshold(0.5), MAX_VAD_THRESHOLD);
-        assert_eq!(
-            clamp_vad_threshold(f32::NAN),
-            RECOMMENDED_VAD_THRESHOLD
-        );
+        assert_eq!(clamp_vad_threshold(f32::NAN), RECOMMENDED_VAD_THRESHOLD);
     }
 
     #[test]
@@ -3460,20 +3679,34 @@ mod tests {
         );
         assert_eq!(classify_insertion_target(Some("VS Code")), "editor");
         assert_eq!(classify_insertion_target(Some("Slack")), "collab");
-        assert_eq!(classify_insertion_target(Some("Some Desktop App")), "desktop");
+        assert_eq!(
+            classify_insertion_target(Some("Some Desktop App")),
+            "desktop"
+        );
     }
 
     #[test]
     fn decode_mode_floor_never_drops_below_requested_floor() {
-        assert_eq!(floor_decode_mode(DecodeMode::Fast, DecodeMode::Balanced), DecodeMode::Balanced);
-        assert_eq!(floor_decode_mode(DecodeMode::Balanced, DecodeMode::Quality), DecodeMode::Quality);
-        assert_eq!(floor_decode_mode(DecodeMode::Quality, DecodeMode::Balanced), DecodeMode::Quality);
+        assert_eq!(
+            floor_decode_mode(DecodeMode::Fast, DecodeMode::Balanced),
+            DecodeMode::Balanced
+        );
+        assert_eq!(
+            floor_decode_mode(DecodeMode::Balanced, DecodeMode::Quality),
+            DecodeMode::Quality
+        );
+        assert_eq!(
+            floor_decode_mode(DecodeMode::Quality, DecodeMode::Balanced),
+            DecodeMode::Quality
+        );
     }
 
     #[test]
     fn low_quality_input_detection_flags_hands_free_patterns() {
         assert!(is_likely_low_quality_input_name("Headset (WH-1000XM4)"));
-        assert!(is_likely_low_quality_input_name("Bluetooth headset AG Audio"));
+        assert!(is_likely_low_quality_input_name(
+            "Bluetooth headset AG Audio"
+        ));
         assert!(!is_likely_low_quality_input_name("USB Microphone Array"));
     }
 
