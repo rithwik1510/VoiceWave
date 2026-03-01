@@ -239,6 +239,9 @@ const MODIFIER_TOKENS = [
   "WIN",
   "WINDOWS"
 ];
+const AGENT_DEBUG_INGEST_URL = "http://127.0.0.1:7699/ingest/e16a906a-0c4b-4fc5-af3e-3101124f2a4d";
+const AGENT_DEBUG_ENABLED =
+  import.meta.env.DEV || import.meta.env.VITE_ENABLE_AGENT_DEBUG_LOGS === "true";
 
 export interface MicQualityWarning {
   currentDevice: string;
@@ -328,6 +331,20 @@ function comboMatchesKeyboardEvent(event: KeyboardEvent, combo: string): boolean
   }
 
   return event.key.toUpperCase() === main;
+}
+
+function sendAgentDebugLog(payload: Record<string, unknown>): void {
+  if (!AGENT_DEBUG_ENABLED) {
+    return;
+  }
+  fetch(AGENT_DEBUG_INGEST_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Debug-Session-Id": "c0db10"
+    },
+    body: JSON.stringify(payload)
+  }).catch(() => {});
 }
 
 function clampVadThreshold(value: number): number {
@@ -508,6 +525,27 @@ export function useVoiceWave() {
     lastLevel: 0,
     lastError: null
   });
+
+  useEffect(() => {
+    // #region agent log
+    sendAgentDebugLog({
+      sessionId: "c0db10",
+      runId: "pre-fix",
+      hypothesisId: "INIT",
+      location: "src/hooks/useVoiceWave.ts:512",
+      message: "useVoiceWave init",
+      data: {
+        tauriAvailable,
+        activeModel: settings.activeModel,
+        decodeMode: settings.decodeMode,
+        vadThreshold: settings.vadThreshold,
+        maxUtteranceMs: settings.maxUtteranceMs,
+        releaseTailMs: settings.releaseTailMs
+      },
+      timestamp: Date.now()
+    });
+    // #endregion agent log
+  }, []);
 
   const clearWebTimers = useCallback(() => {
     timeoutHandles.current.forEach((timeoutId) => {
@@ -769,6 +807,26 @@ export function useVoiceWave() {
             return;
           }
         }
+
+        // #region agent log
+        sendAgentDebugLog({
+          sessionId: "c0db10",
+          runId: "pre-fix",
+          hypothesisId: "A",
+          location: "src/hooks/useVoiceWave.ts:773",
+          message: "runDictation start",
+          data: {
+            mode,
+            activeModel: settings.activeModel,
+            decodeMode: settings.decodeMode,
+            vadThreshold: settings.vadThreshold,
+            maxUtteranceMs: settings.maxUtteranceMs,
+            releaseTailMs: settings.releaseTailMs,
+            tauriAvailable
+          },
+          timestamp: Date.now()
+        });
+        // #endregion agent log
 
         await ensureDictationModelReady();
         setError(null);
@@ -1766,6 +1824,25 @@ export function useVoiceWave() {
 
       latencyUnlisten = await listenVoicewaveLatency((payload: LatencyBreakdownEvent) => {
         setLastLatency(payload);
+
+        // #region agent log
+        sendAgentDebugLog({
+          sessionId: "c0db10",
+          runId: "pre-fix",
+          hypothesisId: "B",
+          location: "src/hooks/useVoiceWave.ts:1767",
+          message: "latency breakdown",
+          data: {
+            latency: payload,
+            activeModel: settings.activeModel,
+            decodeMode: settings.decodeMode,
+            vadThreshold: settings.vadThreshold,
+            maxUtteranceMs: settings.maxUtteranceMs,
+            releaseTailMs: settings.releaseTailMs
+          },
+          timestamp: Date.now()
+        });
+        // #endregion agent log
       });
     })();
 

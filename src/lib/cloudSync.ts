@@ -27,6 +27,49 @@ import { firebaseAuth, firebaseDb, firebaseEnabled } from "./firebase";
 import type { DictionaryTerm } from "../types/voicewave";
 
 const MAX_RECENT_SENTENCES = 5;
+const MAX_NAME_LENGTH = 80;
+const MAX_EMAIL_LENGTH = 200;
+const MAX_WORKSPACE_ROLE_LENGTH = 80;
+const MAX_SENTENCE_LENGTH = 512;
+const MAX_TERM_LENGTH = 72;
+const MAX_SOURCE_LENGTH = 40;
+const MIN_SENTENCE_WRITE_INTERVAL_MS = 700;
+const MIN_DICTIONARY_WRITE_INTERVAL_MS = 500;
+const MAX_WRITE_BACKOFF_MS = 8_000;
+const MAX_WRITE_ATTEMPTS = 3;
+
+type CloudGuardrailSeverity = "info" | "warn" | "error";
+
+interface WriteGuardrailState {
+  lastWriteMs: number;
+  lastContentHash: string | null;
+  consecutiveFailures: number;
+  nextAllowedWriteMs: number;
+}
+
+export interface CloudSyncErrorShape {
+  code: string;
+  retryable: boolean;
+  context: string;
+  message: string;
+}
+
+export class CloudSyncError extends Error implements CloudSyncErrorShape {
+  code: string;
+  retryable: boolean;
+  context: string;
+
+  constructor(payload: CloudSyncErrorShape) {
+    super(payload.message);
+    this.name = "CloudSyncError";
+    this.code = payload.code;
+    this.retryable = payload.retryable;
+    this.context = payload.context;
+  }
+}
+
+const sentenceWriteState = new Map<string, WriteGuardrailState>();
+const dictionaryWriteState = new Map<string, WriteGuardrailState>();
 
 export interface CloudProfile {
   uid: string;
@@ -49,6 +92,171 @@ function mapDictionaryTermRow(row: { id: string; data: () => Record<string, unkn
     source: typeof data.source === "string" ? data.source : "cloud-sync",
     createdAtUtcMs: typeof data.createdAtUtcMs === "number" ? data.createdAtUtcMs : Date.now()
   };
+}
+
+function clampTrimmed(value: string, max: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= max) {
+    return trimmed;
+  }
+  return trimmed.slice(0, max);
+}
+
+function hashPayload(value: string): string {
+  return value.toLowerCase();
+}
+
+function getWriteState(
+  registry: Map<string, WriteGuardrailState>,
+  key: string
+): WriteGuardrailState {
+  const existing = registry.get(key);
+  if (existing) {
+    return existing;
+  }
+  const initial: WriteGuardrailState = {
+    lastWriteMs: 0,
+    lastContentHash: null,
+    consecutiveFailures: 0,
+    nextAllowedWriteMs: 0
+  };
+  registry.set(key, initial);
+  return initial;
+}
+
+function emitCloudGuardrailEvent(
+  event: string,
+  context: string,
+  severity: CloudGuardrailSeverity,
+  detail: string
+): void {
+  const payload = {
+    event,
+    context,
+    severity,
+    detail,
+    atUtcMs: Date.now()
+  };
+  if (severity === "error") {
+    console.error("[CloudGuardrail]", payload);
+  } else if (severity === "warn") {
+    console.warn("[CloudGuardrail]", payload);
+  } else {
+    console.info("[CloudGuardrail]", payload);
+  }
+}
+
+function readFirebaseCode(error: unknown): string {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return "unknown";
+  }
+  return String((error as { code: unknown }).code);
+}
+
+function isRetryableFirebaseCode(code: string): boolean {
+  return (
+    code === "unavailable" ||
+    code === "aborted" ||
+    code === "deadline-exceeded" ||
+    code === "resource-exhausted" ||
+    code === "internal" ||
+    code === "unknown" ||
+    code === "auth/network-request-failed" ||
+    code === "permission-denied"
+  );
+}
+
+function normalizeCloudError(error: unknown, context: string): CloudSyncError {
+  const code = readFirebaseCode(error);
+  const message = readFirebaseMessage(error);
+  const retryable = isRetryableFirebaseCode(code);
+  if (code === "permission-denied") {
+    emitCloudGuardrailEvent("cloud_rule_rejection", context, "warn", message);
+  }
+  return new CloudSyncError({
+    code,
+    retryable,
+    context,
+    message
+  });
+}
+
+function registerWriteSuccess(state: WriteGuardrailState, writeMs: number, contentHash: string): void {
+  state.lastWriteMs = writeMs;
+  state.lastContentHash = contentHash;
+  state.consecutiveFailures = 0;
+  state.nextAllowedWriteMs = 0;
+}
+
+function registerWriteFailure(state: WriteGuardrailState, nowUtcMs: number): number {
+  state.consecutiveFailures += 1;
+  const delay = Math.min(MAX_WRITE_BACKOFF_MS, Math.pow(2, state.consecutiveFailures - 1) * 500);
+  state.nextAllowedWriteMs = nowUtcMs + delay;
+  return delay;
+}
+
+function enforceClientBackpressure(
+  state: WriteGuardrailState,
+  nowUtcMs: number,
+  contentHash: string,
+  minIntervalMs: number,
+  context: string
+): void {
+  if (state.nextAllowedWriteMs > nowUtcMs) {
+    const waitMs = state.nextAllowedWriteMs - nowUtcMs;
+    throw new CloudSyncError({
+      code: "client-backpressure",
+      retryable: true,
+      context,
+      message: `Cloud sync temporarily throttled. Retry in ${waitMs}ms.`
+    });
+  }
+
+  if (
+    state.lastContentHash === contentHash &&
+    nowUtcMs - state.lastWriteMs < minIntervalMs
+  ) {
+    throw new CloudSyncError({
+      code: "client-dedup",
+      retryable: false,
+      context,
+      message: "Skipped duplicate cloud write."
+    });
+  }
+}
+
+async function withCloudRetry<T>(
+  operation: () => Promise<T>,
+  context: string,
+  state: WriteGuardrailState,
+  contentHash: string
+): Promise<T> {
+  let lastError: CloudSyncError | null = null;
+  for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await operation();
+      registerWriteSuccess(state, Date.now(), contentHash);
+      return result;
+    } catch (error) {
+      const normalized = normalizeCloudError(error, context);
+      lastError = normalized;
+      if (!normalized.retryable || attempt >= MAX_WRITE_ATTEMPTS) {
+        registerWriteFailure(state, Date.now());
+        throw normalized;
+      }
+      const backoffMs = registerWriteFailure(state, Date.now());
+      await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
+    }
+  }
+  throw (
+    lastError ??
+    new CloudSyncError({
+      code: "unknown",
+      retryable: false,
+      context,
+      message: "Cloud request failed."
+    })
+  );
 }
 
 function requireCloud(): void {
@@ -91,6 +299,12 @@ function readFirebaseMessage(error: unknown): string {
   if (code === "auth/cancelled-popup-request") {
     return "Another sign-in request is already in progress.";
   }
+  if (code === "permission-denied") {
+    return "Cloud write blocked by server policy. Check account and payload constraints.";
+  }
+  if (code === "resource-exhausted") {
+    return "Cloud service is rate-limiting requests. Please retry shortly.";
+  }
   if ("message" in error && typeof (error as { message: unknown }).message === "string") {
     return (error as { message: string }).message;
   }
@@ -124,15 +338,18 @@ export async function signUpCloud(input: {
 }): Promise<CloudProfile> {
   requireCloud();
   try {
+    const email = clampTrimmed(input.email, MAX_EMAIL_LENGTH);
+    const nameInput = clampTrimmed(input.name, MAX_NAME_LENGTH);
+    const workspaceRole = clampTrimmed(input.workspaceRole, MAX_WORKSPACE_ROLE_LENGTH);
     const credential = await createUserWithEmailAndPassword(
       firebaseAuth!,
-      input.email.trim(),
+      email,
       input.password
     );
-    const name = input.name.trim() || credential.user.email?.split("@")[0] || "VoiceWave User";
+    const name = nameInput || credential.user.email?.split("@")[0] || "VoiceWave User";
     await updateProfile(credential.user, { displayName: name });
 
-    const profile = toProfile(credential.user, input.workspaceRole.trim() || "Personal Workspace");
+    const profile = toProfile(credential.user, workspaceRole || "Personal Workspace");
     await setDoc(
       doc(firebaseDb!, "users", credential.user.uid),
       {
@@ -146,17 +363,21 @@ export async function signUpCloud(input: {
     );
     return profile;
   } catch (error) {
-    throw new Error(readFirebaseMessage(error));
+    throw normalizeCloudError(error, "signup");
   }
 }
 
 export async function signInCloud(email: string, password: string): Promise<CloudProfile> {
   requireCloud();
   try {
-    const credential = await signInWithEmailAndPassword(firebaseAuth!, email.trim(), password);
+    const credential = await signInWithEmailAndPassword(
+      firebaseAuth!,
+      clampTrimmed(email, MAX_EMAIL_LENGTH),
+      password
+    );
     return ensureCloudProfile(credential.user, "Personal Workspace");
   } catch (error) {
-    throw new Error(readFirebaseMessage(error));
+    throw normalizeCloudError(error, "signin");
   }
 }
 
@@ -178,7 +399,7 @@ export async function signInWithGoogleCloud(): Promise<CloudProfile> {
       throw new Error("GOOGLE_REDIRECT_STARTED");
     }
 
-    throw new Error(readFirebaseMessage(error));
+    throw normalizeCloudError(error, "google-signin");
   }
 }
 
@@ -191,7 +412,7 @@ export async function completeGoogleRedirectSignIn(): Promise<CloudProfile | nul
     }
     return ensureCloudProfile(credential.user, "Personal Workspace");
   } catch (error) {
-    throw new Error(readFirebaseMessage(error));
+    throw normalizeCloudError(error, "google-redirect");
   }
 }
 
@@ -200,52 +421,56 @@ export async function signOutCloud(): Promise<void> {
   try {
     await signOut(firebaseAuth!);
   } catch (error) {
-    throw new Error(readFirebaseMessage(error));
+    throw normalizeCloudError(error, "signout");
   }
 }
 
 export async function requestPasswordResetCloud(email: string): Promise<void> {
   requireCloud();
   try {
-    await sendPasswordResetEmail(firebaseAuth!, email.trim());
+    await sendPasswordResetEmail(firebaseAuth!, clampTrimmed(email, MAX_EMAIL_LENGTH));
   } catch (error) {
-    throw new Error(readFirebaseMessage(error));
+    throw normalizeCloudError(error, "password-reset");
   }
 }
 
 export async function ensureCloudProfile(user: User, fallbackWorkspaceRole: string): Promise<CloudProfile> {
   requireCloud();
-  const userRef = doc(firebaseDb!, "users", user.uid);
-  const existing = await getDoc(userRef);
-  const baseProfile = toProfile(user, fallbackWorkspaceRole);
+  try {
+    const userRef = doc(firebaseDb!, "users", user.uid);
+    const existing = await getDoc(userRef);
+    const baseProfile = toProfile(user, clampTrimmed(fallbackWorkspaceRole, MAX_WORKSPACE_ROLE_LENGTH));
 
-  if (existing.exists()) {
-    const data = existing.data();
-    return {
-      uid: user.uid,
-      name:
-        typeof data.name === "string" && data.name.trim().length > 0
-          ? data.name
-          : baseProfile.name,
-      email:
-        typeof data.email === "string" && data.email.trim().length > 0
-          ? data.email
-          : baseProfile.email,
-      workspaceRole:
-        typeof data.workspaceRole === "string" && data.workspaceRole.trim().length > 0
-          ? data.workspaceRole
-          : baseProfile.workspaceRole
-    };
+    if (existing.exists()) {
+      const data = existing.data();
+      return {
+        uid: user.uid,
+        name:
+          typeof data.name === "string" && data.name.trim().length > 0
+            ? clampTrimmed(data.name, MAX_NAME_LENGTH)
+            : baseProfile.name,
+        email:
+          typeof data.email === "string" && data.email.trim().length > 0
+            ? clampTrimmed(data.email, MAX_EMAIL_LENGTH)
+            : baseProfile.email,
+        workspaceRole:
+          typeof data.workspaceRole === "string" && data.workspaceRole.trim().length > 0
+            ? clampTrimmed(data.workspaceRole, MAX_WORKSPACE_ROLE_LENGTH)
+            : baseProfile.workspaceRole
+      };
+    }
+
+    await setDoc(userRef, {
+      name: baseProfile.name,
+      email: baseProfile.email,
+      workspaceRole: baseProfile.workspaceRole,
+      createdAtUtcMs: Date.now(),
+      updatedAtUtcMs: Date.now()
+    });
+    return baseProfile;
+  } catch (error) {
+    throw normalizeCloudError(error, "ensure-profile");
   }
-
-  await setDoc(userRef, {
-    name: baseProfile.name,
-    email: baseProfile.email,
-    workspaceRole: baseProfile.workspaceRole,
-    createdAtUtcMs: Date.now(),
-    updatedAtUtcMs: Date.now()
-  });
-  return baseProfile;
 }
 
 export async function listRecentCloudSentences(uid: string): Promise<CloudSentence[]> {
@@ -270,31 +495,46 @@ export async function listRecentCloudSentences(uid: string): Promise<CloudSenten
 
 export async function saveCloudSentence(uid: string, text: string): Promise<CloudSentence[]> {
   requireCloud();
-  const normalized = text.trim();
+  const normalized = clampTrimmed(text, MAX_SENTENCE_LENGTH);
   if (!normalized) {
     return listRecentCloudSentences(uid);
   }
 
-  const rowRef = doc(collection(firebaseDb!, "users", uid, "recentSentences"));
-  await setDoc(rowRef, {
-    text: normalized,
-    createdAtUtcMs: Date.now()
-  });
+  const state = getWriteState(sentenceWriteState, uid);
+  const contentHash = hashPayload(normalized);
+  try {
+    enforceClientBackpressure(state, Date.now(), contentHash, MIN_SENTENCE_WRITE_INTERVAL_MS, "save-sentence");
+  } catch (error) {
+    if (error instanceof CloudSyncError && (error.code === "client-dedup" || error.code === "client-backpressure")) {
+      emitCloudGuardrailEvent("cloud_write_skipped", "save-sentence", "info", error.message);
+      return listRecentCloudSentences(uid);
+    }
+    throw error;
+  }
 
-  const recentRows = await getDocs(
-    query(collection(firebaseDb!, "users", uid, "recentSentences"), orderBy("createdAtUtcMs", "desc"))
-  );
-  const stale = recentRows.docs.slice(MAX_RECENT_SENTENCES);
-  await Promise.all(stale.map((entry) => deleteDoc(entry.ref)));
+  const context = "save-sentence";
+  return withCloudRetry(async () => {
+    const rowRef = doc(collection(firebaseDb!, "users", uid, "recentSentences"));
+    await setDoc(rowRef, {
+      text: normalized,
+      createdAtUtcMs: Date.now()
+    });
 
-  return recentRows.docs.slice(0, MAX_RECENT_SENTENCES).map((row) => {
-    const data = row.data();
-    return {
-      id: row.id,
-      text: typeof data.text === "string" ? data.text : "",
-      createdAtUtcMs: typeof data.createdAtUtcMs === "number" ? data.createdAtUtcMs : Date.now()
-    };
-  });
+    const recentRows = await getDocs(
+      query(collection(firebaseDb!, "users", uid, "recentSentences"), orderBy("createdAtUtcMs", "desc"))
+    );
+    const stale = recentRows.docs.slice(MAX_RECENT_SENTENCES);
+    await Promise.all(stale.map((entry) => deleteDoc(entry.ref)));
+
+    return recentRows.docs.slice(0, MAX_RECENT_SENTENCES).map((row) => {
+      const data = row.data();
+      return {
+        id: row.id,
+        text: typeof data.text === "string" ? data.text : "",
+        createdAtUtcMs: typeof data.createdAtUtcMs === "number" ? data.createdAtUtcMs : Date.now()
+      };
+    });
+  }, context, state, contentHash);
 }
 
 export async function listCloudDictionaryTerms(uid: string): Promise<DictionaryTerm[]> {
@@ -311,36 +551,80 @@ export async function addCloudDictionaryTerm(
   source = "manual-add"
 ): Promise<DictionaryTerm[]> {
   requireCloud();
-  const normalized = term.trim();
+  const normalized = clampTrimmed(term, MAX_TERM_LENGTH);
   if (!normalized) {
     return listCloudDictionaryTerms(uid);
   }
+  const normalizedSource = clampTrimmed(source, MAX_SOURCE_LENGTH) || "manual-add";
 
   const normalizedKey = normalized.toLowerCase();
-  const existing = await getDocs(
-    query(
-      collection(firebaseDb!, "users", uid, "dictionaryTerms"),
-      where("termNormalized", "==", normalizedKey),
-      limit(1)
-    )
-  );
-  if (!existing.empty) {
-    return listCloudDictionaryTerms(uid);
+  const state = getWriteState(dictionaryWriteState, uid);
+  const contentHash = hashPayload(`${normalizedKey}:${normalizedSource}`);
+  try {
+    enforceClientBackpressure(
+      state,
+      Date.now(),
+      contentHash,
+      MIN_DICTIONARY_WRITE_INTERVAL_MS,
+      "add-dictionary-term"
+    );
+  } catch (error) {
+    if (error instanceof CloudSyncError && (error.code === "client-dedup" || error.code === "client-backpressure")) {
+      emitCloudGuardrailEvent("cloud_write_skipped", "add-dictionary-term", "info", error.message);
+      return listCloudDictionaryTerms(uid);
+    }
+    throw error;
   }
 
-  const termRef = doc(collection(firebaseDb!, "users", uid, "dictionaryTerms"));
-  await setDoc(termRef, {
-    term: normalized,
-    source,
-    termNormalized: normalizedKey,
-    createdAtUtcMs: Date.now()
-  });
+  const context = "add-dictionary-term";
+  return withCloudRetry(async () => {
+    const existing = await getDocs(
+      query(
+        collection(firebaseDb!, "users", uid, "dictionaryTerms"),
+        where("termNormalized", "==", normalizedKey),
+        limit(1)
+      )
+    );
+    if (!existing.empty) {
+      return listCloudDictionaryTerms(uid);
+    }
 
-  return listCloudDictionaryTerms(uid);
+    const termRef = doc(collection(firebaseDb!, "users", uid, "dictionaryTerms"));
+    await setDoc(termRef, {
+      term: normalized,
+      source: normalizedSource,
+      termNormalized: normalizedKey,
+      createdAtUtcMs: Date.now()
+    });
+
+    return listCloudDictionaryTerms(uid);
+  }, context, state, contentHash);
 }
 
 export async function deleteCloudDictionaryTerm(uid: string, termId: string): Promise<DictionaryTerm[]> {
   requireCloud();
-  await deleteDoc(doc(firebaseDb!, "users", uid, "dictionaryTerms", termId));
-  return listCloudDictionaryTerms(uid);
+  const normalizedTermId = clampTrimmed(termId, 80);
+  const state = getWriteState(dictionaryWriteState, uid);
+  const contentHash = hashPayload(`delete:${normalizedTermId}`);
+  try {
+    enforceClientBackpressure(
+      state,
+      Date.now(),
+      contentHash,
+      MIN_DICTIONARY_WRITE_INTERVAL_MS,
+      "delete-dictionary-term"
+    );
+  } catch (error) {
+    if (error instanceof CloudSyncError && (error.code === "client-dedup" || error.code === "client-backpressure")) {
+      emitCloudGuardrailEvent("cloud_write_skipped", "delete-dictionary-term", "info", error.message);
+      return listCloudDictionaryTerms(uid);
+    }
+    throw error;
+  }
+
+  const context = "delete-dictionary-term";
+  return withCloudRetry(async () => {
+    await deleteDoc(doc(firebaseDb!, "users", uid, "dictionaryTerms", normalizedTermId));
+    return listCloudDictionaryTerms(uid);
+  }, context, state, contentHash);
 }

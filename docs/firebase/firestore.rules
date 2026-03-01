@@ -1,15 +1,85 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isSignedInOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    function isReasonableTimestamp(value) {
+      return value is int
+        && value > 1609459200000
+        && value < request.time.toMillis() + 300000;
+    }
+
+    function isValidUserProfile() {
+      return request.resource.data.keys().hasOnly([
+          'name',
+          'email',
+          'workspaceRole',
+          'createdAtUtcMs',
+          'updatedAtUtcMs'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 1
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.email is string
+        && request.resource.data.email.size() >= 3
+        && request.resource.data.email.size() <= 200
+        && request.resource.data.workspaceRole is string
+        && request.resource.data.workspaceRole.size() >= 1
+        && request.resource.data.workspaceRole.size() <= 80
+        && isReasonableTimestamp(request.resource.data.createdAtUtcMs)
+        && isReasonableTimestamp(request.resource.data.updatedAtUtcMs);
+    }
+
+    function isValidRecentSentence() {
+      return request.resource.data.keys().hasOnly([
+          'text',
+          'createdAtUtcMs'
+        ])
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1
+        && request.resource.data.text.size() <= 512
+        && isReasonableTimestamp(request.resource.data.createdAtUtcMs);
+    }
+
+    function isValidDictionaryTerm() {
+      return request.resource.data.keys().hasOnly([
+          'term',
+          'source',
+          'termNormalized',
+          'createdAtUtcMs'
+        ])
+        && request.resource.data.term is string
+        && request.resource.data.term.size() >= 1
+        && request.resource.data.term.size() <= 72
+        && request.resource.data.source is string
+        && request.resource.data.source.size() >= 1
+        && request.resource.data.source.size() <= 40
+        && request.resource.data.termNormalized is string
+        && request.resource.data.termNormalized.size() >= 1
+        && request.resource.data.termNormalized.size() <= 72
+        && isReasonableTimestamp(request.resource.data.createdAtUtcMs);
+    }
+
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isSignedInOwner(userId);
+      allow create: if isSignedInOwner(userId) && isValidUserProfile();
+      allow update: if isSignedInOwner(userId)
+        && isValidUserProfile()
+        && request.resource.data.createdAtUtcMs == resource.data.createdAtUtcMs;
+      allow delete: if isSignedInOwner(userId);
 
       match /recentSentences/{sentenceId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if isSignedInOwner(userId);
+        allow create, update: if isSignedInOwner(userId) && isValidRecentSentence();
+        allow delete: if isSignedInOwner(userId);
       }
 
       match /dictionaryTerms/{termId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if isSignedInOwner(userId);
+        allow create, update: if isSignedInOwner(userId) && isValidDictionaryTerm();
+        allow delete: if isSignedInOwner(userId);
       }
     }
   }
