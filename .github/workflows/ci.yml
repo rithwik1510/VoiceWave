@@ -6,6 +6,8 @@ on:
     branches:
       - main
       - master
+  schedule:
+    - cron: "0 6 * * 1"
 
 jobs:
   docs_format_check:
@@ -82,8 +84,36 @@ jobs:
       - name: Run unit tests
         run: npm run test
 
+      - name: Run frontend coverage gate
+        shell: pwsh
+        run: npm run quality:frontend:gate
+
       - name: Run frontend build
         run: npm run build
+
+  dependency_security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Dependency policy gate
+        shell: pwsh
+        run: npm run security:deps -- -Enforce
 
   rust_quality:
     runs-on: windows-latest
@@ -91,11 +121,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
 
       - name: Cargo test (core without desktop feature)
         run: cargo test --no-default-features --manifest-path src-tauri/Cargo.toml
 
       - name: Cargo desktop-feature compile check
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-run
+
+      - name: Backend quality gate
+        shell: pwsh
+        run: npm run quality:backend:gate
+
+  release_gate:
+    runs-on: windows-latest
+    needs:
+      - frontend_quality
+      - rust_quality
+      - dependency_security
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Firestore rules contract gate
+        shell: pwsh
+        run: npm run security:firestore-rules -- -Enforce
+
+      - name: Run release gate
+        shell: pwsh
+        run: npm run release:gate

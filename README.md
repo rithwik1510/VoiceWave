@@ -51,14 +51,15 @@ As documented in this branch:
 1. Phase 1 complete for Windows runtime integration.
 1. Phase 2 implemented and validated in Windows execution scope.
 1. Phase 3 implemented and validated for Windows rescue baseline.
-1. Phase 4 readiness gate complete (`npm run phase4:gate` passes).
-1. Phase 5 readiness pack prepared; implementation not started.
+1. Phase 4 and Phase 5 gate automation is implemented (`phase4`, `phase5`, and reliability checks).
+1. Release gate automation is implemented (`npm run release:gate`).
 1. Phase 6 not started.
 
 Open release blockers called out in current docs:
 
-1. Full manual acceptance checklist rows remain incomplete for Notepad, VS Code, and browser dictation workflow on target hardware.
-1. `>= 30` minute sustained battery evidence is deferred by marker and still required before GA.
+1. Artifact freshness policy now requires fresh evidence (`<= 7` days) for release-candidate decisions.
+1. Reliability exit thresholds are stricter (`insertion >= 98%`, `correction <= 12%`, `crash-free >= 99.5%`, `TTFSD <= 3`).
+1. Legal/compliance checklist and risk register are now release-gate inputs and must stay current.
 
 References:
 
@@ -88,6 +89,24 @@ npm install
 ```powershell
 npm run dev
 ```
+
+1. Optional: enable cloud auth + sentence sync (Firebase):
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Then fill the `VITE_FIREBASE_*` keys in `.env` from your Firebase project settings.
+When configured, VoiceWave enables:
+
+1. Email/password sign-up + sign-in
+1. Per-user cloud storage of only the latest 5 sentences
+1. Per-user synced approved dictionary terms
+1. Recent sentence list in Home and Dictionary views
+
+Firestore rules template is provided at:
+
+1. `docs/firebase/firestore.rules`
 
 1. Run tests:
 
@@ -123,6 +142,13 @@ npm run tauri:dev
 | `npm run phase5:gate` | Phase V blocking readiness gate |
 | `npm run phase5:reliability` | Phase V reliability evidence report |
 | `npm run phase5:reliability:gate` | Phase V blocking reliability gate |
+| `npm run release:gate` | End-to-end release blocking gate (phase4 + phase5 + risk/compliance) |
+| `npm run test:coverage` | Frontend test + coverage thresholds gate |
+| `npm run security:secrets -- -Enforce` | Enforced secret leakage scan |
+| `npm run security:deps -- -Enforce` | Enforced dependency vulnerability gate |
+| `npm run security:firestore-rules -- -Enforce` | Firestore rules schema/policy contract gate |
+| `npm run quality:frontend:gate` | Frontend quality gate (coverage + build) |
+| `npm run quality:backend:gate` | Backend quality gate (tests + inventory threshold) |
 | `npm run phaseA:cpu` | CPU latency sweep |
 | `npm run phaseB:gpu:check` | GPU readiness check |
 | `npm run phaseB:gpu` | GPU latency sweep |
@@ -208,6 +234,12 @@ Current CI baseline includes:
 1. Phase 0 artifact integrity checks
 1. Frontend tests and build
 1. Rust tests and compile paths
+1. Release gate job (`npm run release:gate`) on Windows runner
+
+Local pre-commit guard (recommended):
+
+1. `git config core.hooksPath .githooks`
+1. `chmod +x .githooks/pre-commit` (macOS/Linux only)
 
 ## ![Repo](docs/assets/readme/section-repo.svg) Repository Map
 
@@ -226,6 +258,8 @@ vendor/                # Local whisper-rs / whisper.cpp vendored deps
 1. Architecture RFC: [docs/rfc/0001-system-architecture.md](docs/rfc/0001-system-architecture.md)
 1. Test strategy: [docs/testing/test-strategy.md](docs/testing/test-strategy.md)
 1. Hardware tiers: [docs/testing/hardware-tiers.md](docs/testing/hardware-tiers.md)
+1. Release thresholds: [docs/testing/release-thresholds-windows.json](docs/testing/release-thresholds-windows.json)
+1. Legal/compliance checklist: [docs/testing/legal-compliance-checklist.md](docs/testing/legal-compliance-checklist.md)
 1. Phase recovery plan: [docs/PHASE_RECOVERY_PLAN.md](docs/PHASE_RECOVERY_PLAN.md)
 1. Implementation ledger: [Idea.md](Idea.md)
 1. Phase I implementation: [docs/PHASE1_IMPLEMENTATION.md](docs/PHASE1_IMPLEMENTATION.md)

@@ -3,6 +3,13 @@ dist/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+.env
+.env.*
+!.env.example
+*.log
+firebase-debug.log
+coverage/
+src-tauri/coverage/
 
 # Tauri / Rust
 src-tauri/target/
