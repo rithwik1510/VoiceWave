@@ -3,10 +3,10 @@ use std::collections::VecDeque;
 
 const WINDOW_SIZE: usize = 5;
 const SPEED_WINDOW_UTTERANCES: usize = 10;
-const LATENCY_ENTER_SPEED_MS: u64 = 2_300;
-const LATENCY_RETURN_BALANCED_MS: u64 = 2_000;
-const LATENCY_SEVERE_MS: u64 = 3_200;
-const LONG_UTTERANCE_MS: u64 = 12_000;
+const LATENCY_ENTER_SPEED_MS_DEFAULT: u64 = 2_100;
+const LATENCY_RETURN_BALANCED_MS_DEFAULT: u64 = 1_850;
+const LATENCY_SEVERE_MS_DEFAULT: u64 = 2_800;
+const LONG_UTTERANCE_MS_DEFAULT: u64 = 9_000;
 const FAILURE_GUARD_RATE: f32 = 0.25;
 const ENTER_MAX_FAILURE_RATE: f32 = 0.20;
 
@@ -42,7 +42,7 @@ impl RuntimeDecodePolicy {
 
         if self.speed_window_remaining == 0
             && stats.sample_count >= WINDOW_SIZE
-            && stats.p95_total_ms > LATENCY_ENTER_SPEED_MS
+            && stats.p95_total_ms > latency_enter_speed_ms()
             && stats.failure_rate <= ENTER_MAX_FAILURE_RATE
         {
             self.speed_window_remaining = SPEED_WINDOW_UTTERANCES;
@@ -50,15 +50,15 @@ impl RuntimeDecodePolicy {
 
         if self.speed_window_remaining > 0
             && stats.sample_count >= WINDOW_SIZE
-            && stats.p95_total_ms <= LATENCY_RETURN_BALANCED_MS
+            && stats.p95_total_ms <= latency_return_balanced_ms()
         {
             self.speed_window_remaining = 0;
             return DecodeMode::Balanced;
         }
 
         if self.speed_window_remaining > 0 {
-            let severe_latency = stats.p95_total_ms > LATENCY_SEVERE_MS;
-            if audio_duration_ms > LONG_UTTERANCE_MS && !severe_latency {
+            let severe_latency = stats.p95_total_ms > latency_severe_ms();
+            if audio_duration_ms > long_utterance_ms() && !severe_latency {
                 return DecodeMode::Balanced;
             }
             self.speed_window_remaining = self.speed_window_remaining.saturating_sub(1);
@@ -90,7 +90,13 @@ impl RuntimeDecodePolicy {
     }
 
     fn window_stats(&self) -> WindowStats {
-        let mut window = self.recent.iter().rev().take(WINDOW_SIZE).copied().collect::<Vec<_>>();
+        let mut window = self
+            .recent
+            .iter()
+            .rev()
+            .take(WINDOW_SIZE)
+            .copied()
+            .collect::<Vec<_>>();
         if window.is_empty() {
             return WindowStats::default();
         }
@@ -109,6 +115,50 @@ impl RuntimeDecodePolicy {
             failure_rate,
         }
     }
+}
+
+fn env_u64(key: &str, default_value: u64, min_value: u64, max_value: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.clamp(min_value, max_value))
+        .unwrap_or(default_value)
+}
+
+fn latency_enter_speed_ms() -> u64 {
+    env_u64(
+        "VOICEWAVE_POLICY_ENTER_SPEED_P95_MS",
+        LATENCY_ENTER_SPEED_MS_DEFAULT,
+        800,
+        8_000,
+    )
+}
+
+fn latency_return_balanced_ms() -> u64 {
+    env_u64(
+        "VOICEWAVE_POLICY_RETURN_BALANCED_P95_MS",
+        LATENCY_RETURN_BALANCED_MS_DEFAULT,
+        700,
+        8_000,
+    )
+}
+
+fn latency_severe_ms() -> u64 {
+    env_u64(
+        "VOICEWAVE_POLICY_SEVERE_LATENCY_MS",
+        LATENCY_SEVERE_MS_DEFAULT,
+        1_200,
+        12_000,
+    )
+}
+
+fn long_utterance_ms() -> u64 {
+    env_u64(
+        "VOICEWAVE_POLICY_LONG_UTTERANCE_MS",
+        LONG_UTTERANCE_MS_DEFAULT,
+        2_500,
+        30_000,
+    )
 }
 
 #[derive(Debug, Clone, Copy, Default)]
