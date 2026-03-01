@@ -55,6 +55,33 @@ function Get-BoolRate {
   return [math]::Round(($truthy * 100.0 / $withProp.Count), 1)
 }
 
+function Get-BoolRateNonNull {
+  param(
+    [object[]]$Rows,
+    [string]$PropertyName
+  )
+  if ($Rows.Count -eq 0) { return $null }
+  $withProp = @($Rows | Where-Object {
+      ($_.PSObject.Properties.Name -contains $PropertyName) -and ($null -ne $_.$PropertyName)
+    })
+  if ($withProp.Count -eq 0) { return $null }
+  $truthy = @($withProp | Where-Object { $_.$PropertyName -eq $true }).Count
+  return [math]::Round(($truthy * 100.0 / $withProp.Count), 1)
+}
+
+function Get-AverageValue {
+  param(
+    [object[]]$Rows,
+    [string]$PropertyName
+  )
+  if ($Rows.Count -eq 0) { return $null }
+  $withProp = @($Rows | Where-Object {
+      ($_.PSObject.Properties.Name -contains $PropertyName) -and ($null -ne $_.$PropertyName)
+    })
+  if ($withProp.Count -eq 0) { return $null }
+  return [math]::Round((($withProp | Measure-Object -Property $PropertyName -Average).Average), 4)
+}
+
 function Write-Distribution {
   param(
     [string]$Label,
@@ -173,6 +200,54 @@ if ($literalRetryRate -ne $null) {
 $lowCoherenceRate = Get-BoolRate -Rows $slice -PropertyName "fwLowCoherence"
 if ($lowCoherenceRate -ne $null) {
   Write-Host ("fw-small.en live low-coherence flag rate: {0}%" -f $lowCoherenceRate)
+}
+$pipelineGroups = @($slice | Where-Object { $_.PSObject.Properties.Name -contains "audioPipelineVersion" } | Group-Object -Property audioPipelineVersion | Sort-Object Count -Descending)
+if ($pipelineGroups.Count -gt 0) {
+  $parts = @()
+  foreach ($group in $pipelineGroups) {
+    $pct = [math]::Round(($group.Count * 100.0 / $slice.Count), 1)
+    $parts += ("{0}={1}%" -f $group.Name, $pct)
+  }
+  Write-Host ("audio pipeline distribution: {0}" -f ($parts -join ", "))
+}
+$fallbackRate = Get-BoolRate -Rows $slice -PropertyName "audioPipelineFallbackEngaged"
+if ($fallbackRate -ne $null) {
+  Write-Host ("audio pipeline fallback engaged rate: {0}%" -f $fallbackRate)
+}
+$warmStartRate = Get-BoolRate -Rows $slice -PropertyName "warmStartHit"
+if ($warmStartRate -ne $null) {
+  Write-Host ("fw warm-start hit rate: {0}%" -f $warmStartRate)
+}
+$workerReusedRate = Get-BoolRate -Rows $slice -PropertyName "workerReused"
+if ($workerReusedRate -ne $null) {
+  Write-Host ("fw worker reuse rate: {0}%" -f $workerReusedRate)
+}
+$watchdogThresholdAvg = Get-AverageValue -Rows $slice -PropertyName "effectiveReleaseWatchdogMs"
+if ($watchdogThresholdAvg -ne $null) {
+  Write-Host ("effective release watchdog avg: {0} ms" -f $watchdogThresholdAvg)
+}
+$avgLogprob = Get-AverageValue -Rows $slice -PropertyName "fwAvgLogprob"
+if ($avgLogprob -ne $null) {
+  Write-Host ("fw-small.en avg logprob: {0}" -f $avgLogprob)
+}
+$avgNoSpeech = Get-AverageValue -Rows $slice -PropertyName "fwNoSpeechProb"
+if ($avgNoSpeech -ne $null) {
+  Write-Host ("fw-small.en avg no-speech prob: {0}" -f $avgNoSpeech)
+}
+$shadowSampled = @($slice | Where-Object {
+    ($_.PSObject.Properties.Name -contains "fwShadowCandidateWon") -and ($null -ne $_.fwShadowCandidateWon)
+  }).Count
+if ($shadowSampled -gt 0) {
+  $shadowSampleRate = [math]::Round(($shadowSampled * 100.0 / $slice.Count), 1)
+  Write-Host ("shadow sampled sessions: {0}/{1} ({2}%)" -f $shadowSampled, $slice.Count, $shadowSampleRate)
+}
+$shadowWins = Get-BoolRateNonNull -Rows $slice -PropertyName "fwShadowCandidateWon"
+if ($shadowWins -ne $null) {
+  Write-Host ("shadow candidate win rate (sampled only): {0}%" -f $shadowWins)
+}
+$shadowDelta = Get-AverageValue -Rows $slice -PropertyName "fwShadowQualityDelta"
+if ($shadowDelta -ne $null) {
+  Write-Host ("shadow avg quality delta: {0}" -f $shadowDelta)
 }
 Write-Distribution -Label "insertion methods" -Rows $slice -PropertyName "insertionMethod"
 Write-Distribution -Label "decode policy selected mode" -Rows $slice -PropertyName "decodePolicyModeSelected"
