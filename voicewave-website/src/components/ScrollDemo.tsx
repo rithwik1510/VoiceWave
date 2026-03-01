@@ -1,149 +1,248 @@
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { CheckCircle2, CircleAlert, Mic, Radio, ScanText } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Dashboard } from '../appReplica/components/Dashboard'
+import { Layout } from '../appReplica/components/Layout'
+import { THEME } from '../appReplica/constants'
+import type { DictationState } from '../appReplica/types'
+import '../appReplica/styles.css'
+import { windowsDownloadUrl } from '../config/download'
 
-type DemoState = {
-  id: 'idle' | 'listening' | 'transcribing' | 'inserted' | 'error'
-  title: string
-  hint: string
-  transcript: string
+type DemoSample = {
+  id: string
+  label: string
+  partial: string
+  final: string
 }
 
-const states: DemoState[] = [
+const DEMO_SAMPLES: DemoSample[] = [
   {
-    id: 'idle',
-    title: 'Ready',
-    hint: 'Press and hold to talk',
-    transcript: 'Waiting for input.'
+    id: 'release',
+    label: 'Release Update',
+    partial: 'This week we closed the final release-readiness checks...',
+    final: 'This week we closed the final release-readiness checks and verified reliability on the RC build.',
   },
   {
-    id: 'listening',
-    title: 'Listening',
-    hint: 'Capture running locally',
-    transcript: 'So today we are finalizing the release notes'
+    id: 'coding',
+    label: 'Coding Note',
+    partial: 'Please keep the demo on the website homepage and use real app components...',
+    final: 'Please keep the demo on the website homepage and use real app components so users see truthful behavior.',
   },
   {
-    id: 'transcribing',
-    title: 'Transcribing',
-    hint: 'Local decode in progress',
-    transcript: 'So today we are finalizing the release notes and launch checklist'
+    id: 'study',
+    label: 'Study Summary',
+    partial: 'Key idea one is to gate rollout by reliability and rollback safety...',
+    final: 'Key idea one is to gate rollout by reliability and rollback safety before expanding the beta cohort.',
   },
-  {
-    id: 'inserted',
-    title: 'Inserted',
-    hint: 'Text delivered to focused app',
-    transcript: 'So today we are finalizing the release notes and launch checklist.'
-  },
-  {
-    id: 'error',
-    title: 'Recovered',
-    hint: 'Fallback preserved transcript',
-    transcript: '[fallback] transcript preserved in history + clipboard'
-  }
 ]
 
+type CorePane = 'home' | 'models' | 'dictionary' | 'pro'
+
+function asCorePane(value: string): CorePane {
+  if (value === 'models' || value === 'dictionary' || value === 'pro') {
+    return value
+  }
+  return 'home'
+}
+
 export default function ScrollDemo() {
-  const prefersReducedMotion = useReducedMotion()
-  const [index, setIndex] = useState(0)
+  const reducedMotion = useReducedMotion()
+  const isReducedMotion = Boolean(reducedMotion)
+  const [activeNav, setActiveNav] = useState<CorePane>('home')
+  const [status, setStatus] = useState<DictationState>('idle')
+  const [sampleIndex, setSampleIndex] = useState(0)
+  const [partialTranscript, setPartialTranscript] = useState<string | null>(null)
+  const [finalTranscript, setFinalTranscript] = useState<string | null>(null)
+  const [recentSentences, setRecentSentences] = useState<
+    Array<{
+      id: string
+      text: string
+      createdAtUtcMs: number
+    }>
+  >([])
+  const timeoutsRef = useRef<number[]>([])
+
+  const sample = useMemo(() => DEMO_SAMPLES[sampleIndex] ?? DEMO_SAMPLES[0], [sampleIndex])
+  const isRecording = status === 'listening' || status === 'transcribing'
+
+  const clearAllTimeouts = useCallback(() => {
+    for (const timeoutId of timeoutsRef.current) {
+      window.clearTimeout(timeoutId)
+    }
+    timeoutsRef.current = []
+  }, [])
+
+  useEffect(() => () => clearAllTimeouts(), [clearAllTimeouts])
+
+  const advanceSample = useCallback(() => {
+    setSampleIndex((current) => (current + 1) % DEMO_SAMPLES.length)
+  }, [])
+
+  const startCapture = useCallback(() => {
+    clearAllTimeouts()
+    setStatus('listening')
+    setPartialTranscript(sample.partial)
+    setFinalTranscript(null)
+  }, [clearAllTimeouts, sample.partial])
+
+  const releaseCapture = useCallback(() => {
+    clearAllTimeouts()
+    setStatus('transcribing')
+    setPartialTranscript(sample.partial)
+    const insertedTimeout = window.setTimeout(() => {
+      setStatus('inserted')
+      setPartialTranscript(null)
+      setFinalTranscript(sample.final)
+      setRecentSentences((current) => [
+        {
+          id: `demo-${Date.now()}`,
+          text: sample.final,
+          createdAtUtcMs: Date.now(),
+        },
+        ...current,
+      ].slice(0, 5))
+    }, 540)
+
+    const idleTimeout = window.setTimeout(() => {
+      setStatus('idle')
+      setPartialTranscript(null)
+      advanceSample()
+    }, 1900)
+
+    timeoutsRef.current.push(insertedTimeout, idleTimeout)
+  }, [advanceSample, clearAllTimeouts, sample.final, sample.partial])
 
   useEffect(() => {
-    if (prefersReducedMotion) {
+    if (isReducedMotion || activeNav !== 'home') {
       return
     }
 
-    const timer = window.setInterval(() => {
-      setIndex((current) => (current + 1) % states.length)
-    }, 2200)
+    let timeoutId: number | null = null
+    if (status === 'idle') {
+      timeoutId = window.setTimeout(() => startCapture(), 1200)
+    } else if (status === 'listening') {
+      timeoutId = window.setTimeout(() => releaseCapture(), 1300)
+    }
 
-    return () => window.clearInterval(timer)
-  }, [prefersReducedMotion])
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [isReducedMotion, activeNav, status, startCapture, releaseCapture])
 
-  const active = states[index]
+  const renderPane = () => {
+    if (activeNav === 'home') {
+      return (
+        <Dashboard
+          theme={THEME}
+          status={status}
+          onPressStart={startCapture}
+          onPressEnd={releaseCapture}
+          currentModel="fw-small.en"
+          partialTranscript={partialTranscript}
+          finalTranscript={finalTranscript}
+          pushToTalkHotkey="Ctrl + Space"
+          isPro={false}
+          recentSentences={recentSentences}
+        />
+      )
+    }
+
+    if (activeNav === 'models') {
+      return (
+        <section className="mx-auto max-w-5xl space-y-4 pb-12">
+          <h2 className="vw-section-heading text-3xl text-[#09090B]">Models</h2>
+          <div className="grid gap-4 md:grid-cols-2">
+            <article className="vw-surface-base rounded-3xl px-5 py-5">
+              <p className="text-sm font-semibold text-[#09090B]">fw-small.en</p>
+              <p className="mt-2 text-sm text-[#64748B]">Fast startup and low latency for everyday dictation.</p>
+              <span className="vw-chip mt-3">Recommended for most users</span>
+            </article>
+            <article className="vw-surface-base rounded-3xl px-5 py-5">
+              <p className="text-sm font-semibold text-[#09090B]">fw-large-v3</p>
+              <p className="mt-2 text-sm text-[#64748B]">Higher quality at higher compute cost.</p>
+              <span className="vw-chip mt-3">Best on high-performance hardware</span>
+            </article>
+          </div>
+        </section>
+      )
+    }
+
+    if (activeNav === 'dictionary') {
+      return (
+        <section className="mx-auto max-w-5xl space-y-4 pb-12">
+          <h2 className="vw-section-heading text-3xl text-[#09090B]">Dictionary</h2>
+          <article className="vw-surface-base rounded-3xl px-5 py-5">
+            <p className="text-sm font-semibold text-[#09090B]">Approved terms</p>
+            <ul className="mt-3 space-y-2 text-sm text-[#334155]">
+              <li>Faster-Whisper</li>
+              <li>VoiceWave</li>
+              <li>TTFSD</li>
+            </ul>
+          </article>
+        </section>
+      )
+    }
+
+    return (
+      <section className="mx-auto max-w-5xl space-y-4 pb-12">
+        <h2 className="vw-section-heading text-3xl text-[#09090B]">Pro</h2>
+        <article className="vw-surface-elevated rounded-3xl px-5 py-5">
+          <p className="text-sm text-[#334155]">Public preview shows customer-facing Pro messaging only.</p>
+          <a
+            href={windowsDownloadUrl}
+            target="_blank"
+            rel="noreferrer"
+            download
+            className="vw-btn-primary mt-4 inline-flex"
+          >
+            Upgrade / Download
+          </a>
+        </article>
+      </section>
+    )
+  }
 
   return (
     <section id="demo" className="px-0 py-10 sm:py-14">
       <div className="site-shell">
-        <h2 className="text-[clamp(2.15rem,5.4vw,3.7rem)] leading-[1.02] text-[#0a1020]">Ship more, break less</h2>
+        <h2 className="text-[clamp(2.1rem,5.2vw,3.85rem)] leading-[1.02] text-[#0a1020]">App-realistic live demo</h2>
         <p className="mt-3 max-w-3xl text-base text-[#475569] sm:text-lg">
-          VoiceWave keeps your runtime surface visible from capture to insertion, with local fallback when apps block
-          direct input.
+          This preview uses the same app UI components with simulated input, so users see truthful VoiceWave behavior.
         </p>
 
-        <div className="demo-showcase panel-card mt-9 overflow-hidden">
-          <div className="border-b border-[#dce7f7] bg-[linear-gradient(135deg,rgba(243,250,255,0.98),rgba(231,243,255,0.96))] px-6 py-3.5 sm:px-7">
-            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#4c6284]">VoiceWave Desktop Demo</p>
+        <motion.div
+          initial={{ opacity: 0, y: isReducedMotion ? 0 : 10 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, amount: 0.22 }}
+          transition={{ duration: isReducedMotion ? 0.01 : 0.32, ease: [0.16, 1, 0.3, 1] }}
+          className="panel-card mt-8 overflow-hidden border-[#d6e5f8]"
+        >
+          <div className="flex items-center justify-between gap-3 border-b border-[#d7e6f8] bg-[linear-gradient(132deg,rgba(247,251,255,0.98),rgba(233,244,255,0.95))] px-4 py-2.5">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#cfe0f4] bg-white/90 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-[#2a4261]">
+              Simulated UI
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#cfe0f4] bg-white/90 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-[#2a4261]">
+              State: {status}
+            </span>
           </div>
 
-          <div className="demo-showcase-grid grid gap-0 md:grid-cols-[260px_1fr]">
-            <aside className="border-b border-[#dce7f7] bg-[linear-gradient(180deg,#fafdff_0%,#f2f8ff_100%)] p-5 md:border-b-0 md:border-r md:p-6">
-              <div className="space-y-2.5">
-                {states.map((state, stateIndex) => {
-                  const activeState = stateIndex === index
-                  return (
-                    <button
-                      key={state.id}
-                      type="button"
-                      onClick={() => setIndex(stateIndex)}
-                      className={`flex w-full items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-left font-mono text-[10px] font-semibold uppercase tracking-[0.12em] transition-colors ${
-                        activeState
-                          ? 'border-[#bcd3f4] bg-white/92 text-[#0f172a]'
-                          : 'border-transparent bg-transparent text-[#5d7190] hover:bg-white/78'
-                      }`}
-                    >
-                      <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[#dbe4f0] bg-white">
-                        {state.id === 'idle' && <Mic size={14} />}
-                        {state.id === 'listening' && <Radio size={14} />}
-                        {state.id === 'transcribing' && <ScanText size={14} />}
-                        {state.id === 'inserted' && <CheckCircle2 size={14} />}
-                        {state.id === 'error' && <CircleAlert size={14} />}
-                      </span>
-                      {state.title}
-                    </button>
-                  )
-                })}
-              </div>
-            </aside>
-
-            <div className="demo-showcase-main p-6 sm:p-8 md:p-10">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-[2.35rem] leading-none text-[#0a1020] sm:text-[2.7rem]">{active.title}</h3>
-                  <p className="mt-2 text-sm text-[#64748b] sm:text-base">{active.hint}</p>
-                </div>
-                <span className="rounded-full border border-[#dbe5f1] bg-[#f8fbff] px-3 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#475569]">
-                  fw-small.en
-                </span>
-              </div>
-
-              <div className="mt-7 overflow-hidden rounded-2xl border border-[#cfe1f8] bg-[linear-gradient(150deg,rgba(244,250,255,0.97),rgba(226,241,255,0.93))] p-6">
-                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#64748b]">Transcript</p>
-                <AnimatePresence mode="wait">
-                  <motion.p
-                    key={active.id}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -6 }}
-                    transition={{ duration: 0.2 }}
-                    className="mt-2 min-h-20 text-lg text-[#23364f] sm:text-xl"
-                  >
-                    {active.transcript}
-                  </motion.p>
-                </AnimatePresence>
-              </div>
-
-              <div className="mt-6 grid gap-3.5 text-sm text-[#334155] sm:grid-cols-2">
-                <div className="rounded-xl border border-[#d6e5f8] bg-[linear-gradient(160deg,#ffffff_0%,#eef6ff_100%)] px-4 py-3.5">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#64748b]">Pipeline</p>
-                  <p className="mt-1">{'Capture -> Decode -> Insert'}</p>
-                </div>
-                <div className="rounded-xl border border-[#d6e5f8] bg-[linear-gradient(160deg,#ffffff_0%,#eef6ff_100%)] px-4 py-3.5">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#64748b]">Mode</p>
-                  <p className="mt-1">Local-only v1 with fallback-safe insertion</p>
-                </div>
-              </div>
-            </div>
+          <div className="h-[860px] overflow-hidden">
+            <Layout
+              theme={THEME}
+              activeNav={activeNav}
+              setActiveNav={(next) => setActiveNav(asCorePane(next))}
+              isRecording={isRecording}
+              isPro={false}
+              showProTools={false}
+              profileDisplayName="VoiceWave Demo"
+              profileStatusLabel="Public preview"
+              isProfileAuthenticated={false}
+            >
+              {renderPane()}
+            </Layout>
           </div>
-        </div>
+        </motion.div>
       </div>
     </section>
   )
