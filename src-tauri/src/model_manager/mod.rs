@@ -1,13 +1,11 @@
-
 use base64::Engine;
 use directories::ProjectDirs;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    env,
     collections::HashMap,
-    fs,
+    env, fs,
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -15,6 +13,11 @@ use std::{
 
 const FASTER_WHISPER_FORMAT: &str = "faster-whisper";
 const FASTER_WHISPER_VERSION: &str = "faster-whisper-v1";
+const MANIFEST_VERIFY_KEY_B64: &str = "BFHdCqQYd/56J4tm8cYMUnhrfHOR6YyJqiwXPgO+5gU=";
+const BUILTIN_FW_SMALL_SIGNATURE: &str =
+    "rMFWdTBjLS6Z57h0md+zUowiDQYeQTH/1YnCHgibS7mcF7fx0Yc28ZDsW6Wf0jXhXRerb42BbSqp1mhS9CVhDw==";
+const BUILTIN_FW_LARGE_SIGNATURE: &str =
+    "6xvz9HoVFEx1c4FE0ZjSih+k/N4wdZqRXOYwLMbJT9tvG3MCa6+uzhh+PYGMkD2l4nHgY7rVuFHb66plGLWuCA==";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -309,7 +312,11 @@ impl ModelManager {
         self.installed.get(model_id).cloned()
     }
 
-    pub fn get_download_status(&self, model_id: &str, active_model: Option<&str>) -> Option<ModelStatus> {
+    pub fn get_download_status(
+        &self,
+        model_id: &str,
+        active_model: Option<&str>,
+    ) -> Option<ModelStatus> {
         if let Some(installed) = self.get_installed(model_id) {
             return Some(ModelStatus {
                 model_id: model_id.to_string(),
@@ -380,8 +387,11 @@ impl ModelManager {
 
         if validate_manifest_signature(&manifest).is_err() {
             if let Some(checkpoint) = self.downloads.remove(model_id) {
-                let _ =
-                    self.quarantine_path(Path::new(&checkpoint.partial_path), model_id, "manifest-signature");
+                let _ = self.quarantine_path(
+                    Path::new(&checkpoint.partial_path),
+                    model_id,
+                    "manifest-signature",
+                );
                 let _ = fs::remove_file(&checkpoint.partial_path);
                 let _ = self.persist_downloads();
             }
@@ -405,7 +415,8 @@ impl ModelManager {
             checkpoint.state = ModelStatusState::Cancelled;
             checkpoint.last_error = Some("Download cancelled before start.".to_string());
             checkpoint.updated_at_utc_ms = now_utc_ms();
-            self.downloads.insert(model_id.to_string(), checkpoint.clone());
+            self.downloads
+                .insert(model_id.to_string(), checkpoint.clone());
             self.persist_downloads()?;
             let status = self.status_from_checkpoint(model_id, &checkpoint, false, None);
             on_progress(status.clone());
@@ -413,16 +424,12 @@ impl ModelManager {
         }
 
         let download_url = manifest.download_url.clone();
-        if is_http_url(&download_url)
-            && checkpoint.downloaded_bytes > 0
-            && !http_resume_enabled()
-        {
+        if is_http_url(&download_url) && checkpoint.downloaded_bytes > 0 && !http_resume_enabled() {
             if let Ok(_) = fs::remove_file(&checkpoint.partial_path) {
                 checkpoint.downloaded_bytes = 0;
                 checkpoint.state = ModelStatusState::Downloading;
-                checkpoint.last_error = Some(
-                    "Restarting download to avoid corrupted resume data.".to_string(),
-                );
+                checkpoint.last_error =
+                    Some("Restarting download to avoid corrupted resume data.".to_string());
                 checkpoint.updated_at_utc_ms = now_utc_ms();
                 self.downloads
                     .insert(model_id.to_string(), checkpoint.clone());
@@ -447,15 +454,13 @@ impl ModelManager {
                 .build();
             let mut request = agent.get(&download_url).set("User-Agent", "voicewave/0.1");
             if checkpoint.downloaded_bytes > 0 && http_resume_enabled() {
-                request = request.set(
-                    "Range",
-                    &format!("bytes={}-", checkpoint.downloaded_bytes),
-                );
+                request = request.set("Range", &format!("bytes={}-", checkpoint.downloaded_bytes));
             }
-            let mut response = request
-                .call()
-                .map_err(|err| ModelError::Read(io::Error::new(io::ErrorKind::Other, err.to_string())))?;
-            if checkpoint.downloaded_bytes > 0 && http_resume_enabled() && response.status() != 206 {
+            let mut response = request.call().map_err(|err| {
+                ModelError::Read(io::Error::new(io::ErrorKind::Other, err.to_string()))
+            })?;
+            if checkpoint.downloaded_bytes > 0 && http_resume_enabled() && response.status() != 206
+            {
                 checkpoint.downloaded_bytes = 0;
                 checkpoint.state = ModelStatusState::Downloading;
                 checkpoint.last_error =
@@ -515,7 +520,8 @@ impl ModelManager {
                 checkpoint.state = ModelStatusState::Cancelled;
                 checkpoint.last_error = Some("Download cancelled by user.".to_string());
                 checkpoint.updated_at_utc_ms = now_utc_ms();
-                self.downloads.insert(model_id.to_string(), checkpoint.clone());
+                self.downloads
+                    .insert(model_id.to_string(), checkpoint.clone());
                 self.persist_downloads()?;
                 let status = self.status_from_checkpoint(model_id, &checkpoint, false, None);
                 on_progress(status.clone());
@@ -525,7 +531,8 @@ impl ModelManager {
                 checkpoint.state = ModelStatusState::Paused;
                 checkpoint.last_error = Some("Download paused.".to_string());
                 checkpoint.updated_at_utc_ms = now_utc_ms();
-                self.downloads.insert(model_id.to_string(), checkpoint.clone());
+                self.downloads
+                    .insert(model_id.to_string(), checkpoint.clone());
                 self.persist_downloads()?;
                 let status = self.status_from_checkpoint(model_id, &checkpoint, false, None);
                 on_progress(status.clone());
@@ -535,9 +542,11 @@ impl ModelManager {
             let read = source.read(&mut buffer).map_err(ModelError::Read)?;
             if read == 0 {
                 checkpoint.state = ModelStatusState::Failed;
-                checkpoint.last_error = Some("Source stream ended before expected size.".to_string());
+                checkpoint.last_error =
+                    Some("Source stream ended before expected size.".to_string());
                 checkpoint.updated_at_utc_ms = now_utc_ms();
-                self.downloads.insert(model_id.to_string(), checkpoint.clone());
+                self.downloads
+                    .insert(model_id.to_string(), checkpoint.clone());
                 self.persist_downloads()?;
                 return Err(ModelError::CorruptSource {
                     model_id: model_id.to_string(),
@@ -553,7 +562,8 @@ impl ModelManager {
                         "Low disk detected. Needed {next_total} bytes but limit is {limit}."
                     ));
                     checkpoint.updated_at_utc_ms = now_utc_ms();
-                    self.downloads.insert(model_id.to_string(), checkpoint.clone());
+                    self.downloads
+                        .insert(model_id.to_string(), checkpoint.clone());
                     self.persist_downloads()?;
                     let status = self.status_from_checkpoint(model_id, &checkpoint, false, None);
                     on_progress(status.clone());
@@ -568,9 +578,11 @@ impl ModelManager {
                 let kind = write_err.kind();
                 if kind == io::ErrorKind::StorageFull || write_err.raw_os_error() == Some(112) {
                     checkpoint.state = ModelStatusState::Failed;
-                    checkpoint.last_error = Some("Low disk while writing model artifact.".to_string());
+                    checkpoint.last_error =
+                        Some("Low disk while writing model artifact.".to_string());
                     checkpoint.updated_at_utc_ms = now_utc_ms();
-                    self.downloads.insert(model_id.to_string(), checkpoint.clone());
+                    self.downloads
+                        .insert(model_id.to_string(), checkpoint.clone());
                     self.persist_downloads()?;
                     return Err(ModelError::LowDisk {
                         model_id: model_id.to_string(),
@@ -585,7 +597,8 @@ impl ModelManager {
             checkpoint.last_error = None;
             checkpoint.updated_at_utc_ms = now_utc_ms();
 
-            self.downloads.insert(model_id.to_string(), checkpoint.clone());
+            self.downloads
+                .insert(model_id.to_string(), checkpoint.clone());
             self.persist_downloads()?;
             let status = self.status_from_checkpoint(model_id, &checkpoint, false, None);
             on_progress(status.clone());
@@ -612,7 +625,8 @@ impl ModelManager {
                 manifest.sha256, verified_checksum
             ));
             checkpoint.updated_at_utc_ms = now_utc_ms();
-            self.downloads.insert(model_id.to_string(), checkpoint.clone());
+            self.downloads
+                .insert(model_id.to_string(), checkpoint.clone());
             self.persist_downloads()?;
             return Err(ModelError::ChecksumMismatch {
                 model_id: model_id.to_string(),
@@ -645,7 +659,9 @@ impl ModelManager {
             progress: 100,
             active: false,
             installed: true,
-            message: Some("Model installed successfully with manifest + checksum verification.".to_string()),
+            message: Some(
+                "Model installed successfully with manifest + checksum verification.".to_string(),
+            ),
             installed_model: Some(installed),
             downloaded_bytes: Some(manifest.size),
             total_bytes: Some(manifest.size),
@@ -694,24 +710,27 @@ impl ModelManager {
         self.download_chunk_bytes = chunk_size.max(1024);
     }
 
-    fn prepare_checkpoint(&mut self, manifest: &SignedModelManifest) -> Result<DownloadCheckpoint, ModelError> {
+    fn prepare_checkpoint(
+        &mut self,
+        manifest: &SignedModelManifest,
+    ) -> Result<DownloadCheckpoint, ModelError> {
         let partial_path = self.partial_model_path_for(manifest);
         let partial_path_str = partial_path.to_string_lossy().to_string();
 
-        let mut checkpoint = self
-            .downloads
-            .get(&manifest.model_id)
-            .cloned()
-            .unwrap_or(DownloadCheckpoint {
-                model_id: manifest.model_id.clone(),
-                version: manifest.version.clone(),
-                partial_path: partial_path_str,
-                downloaded_bytes: 0,
-                total_bytes: manifest.size,
-                state: ModelStatusState::Idle,
-                last_error: None,
-                updated_at_utc_ms: now_utc_ms(),
-            });
+        let mut checkpoint =
+            self.downloads
+                .get(&manifest.model_id)
+                .cloned()
+                .unwrap_or(DownloadCheckpoint {
+                    model_id: manifest.model_id.clone(),
+                    version: manifest.version.clone(),
+                    partial_path: partial_path_str,
+                    downloaded_bytes: 0,
+                    total_bytes: manifest.size,
+                    state: ModelStatusState::Idle,
+                    last_error: None,
+                    updated_at_utc_ms: now_utc_ms(),
+                });
 
         if checkpoint.version != manifest.version {
             let old_path = PathBuf::from(&checkpoint.partial_path);
@@ -727,11 +746,13 @@ impl ModelManager {
         if partial_path.exists() {
             let file_size = fs::metadata(&partial_path).map_err(ModelError::Read)?.len();
             if file_size > manifest.size {
-                let _ = self.quarantine_path(&partial_path, &manifest.model_id, "oversized-partial");
+                let _ =
+                    self.quarantine_path(&partial_path, &manifest.model_id, "oversized-partial");
                 let _ = fs::remove_file(&partial_path);
                 checkpoint.downloaded_bytes = 0;
                 checkpoint.state = ModelStatusState::Failed;
-                checkpoint.last_error = Some("Corrupt partial artifact detected and quarantined.".to_string());
+                checkpoint.last_error =
+                    Some("Corrupt partial artifact detected and quarantined.".to_string());
             } else {
                 checkpoint.downloaded_bytes = file_size;
             }
@@ -758,8 +779,8 @@ impl ModelManager {
         let progress = if checkpoint.total_bytes == 0 {
             0
         } else {
-            ((checkpoint.downloaded_bytes.saturating_mul(100)) / checkpoint.total_bytes)
-                .min(100) as u8
+            ((checkpoint.downloaded_bytes.saturating_mul(100)) / checkpoint.total_bytes).min(100)
+                as u8
         };
 
         let resumable = matches!(
@@ -947,7 +968,10 @@ impl ModelManager {
 
         fs::create_dir_all(&self.source_dir).map_err(ModelError::Write)?;
         for manifest in &self.catalog {
-            if !manifest.download_url.starts_with("local://model-artifacts/") {
+            if !manifest
+                .download_url
+                .starts_with("local://model-artifacts/")
+            {
                 continue;
             }
             let path = self.source_path_for_manifest(manifest);
@@ -968,7 +992,9 @@ impl ModelManager {
     }
 
     fn apply_source_overrides(&mut self) -> Result<(), ModelError> {
-        let env_source_dir = env::var("VOICEWAVE_MODEL_SOURCE_DIR").ok().map(PathBuf::from);
+        let env_source_dir = env::var("VOICEWAVE_MODEL_SOURCE_DIR")
+            .ok()
+            .map(PathBuf::from);
         let local_source_dir = self.source_dir.clone();
         for manifest in &mut self.catalog {
             if let Some(source_path) = resolve_override_source_path_for_manifest(
@@ -998,12 +1024,17 @@ impl ModelManager {
         Ok(())
     }
 
-    fn resolve_download_source(&self, manifest: &SignedModelManifest) -> Result<PathBuf, ModelError> {
-        if manifest.download_url.starts_with("local://model-artifacts/") {
-            return Ok(
-                self.resolve_override_source_path(manifest)
-                    .unwrap_or_else(|| self.source_path_for_manifest(manifest)),
-            );
+    fn resolve_download_source(
+        &self,
+        manifest: &SignedModelManifest,
+    ) -> Result<PathBuf, ModelError> {
+        if manifest
+            .download_url
+            .starts_with("local://model-artifacts/")
+        {
+            return Ok(self
+                .resolve_override_source_path(manifest)
+                .unwrap_or_else(|| self.source_path_for_manifest(manifest)));
         }
 
         if let Some(path) = manifest.download_url.strip_prefix("file://") {
@@ -1018,7 +1049,8 @@ impl ModelManager {
 
     fn source_path_for_manifest(&self, manifest: &SignedModelManifest) -> PathBuf {
         let ext = model_extension_for(&manifest.format);
-        self.source_dir.join(format!("{}.{}", manifest.model_id, ext))
+        self.source_dir
+            .join(format!("{}.{}", manifest.model_id, ext))
     }
 
     fn partial_model_path_for(&self, manifest: &SignedModelManifest) -> PathBuf {
@@ -1093,10 +1125,13 @@ impl ModelManager {
                     Ok(meta) => {
                         let size = meta.len();
                         if size > checkpoint.total_bytes && checkpoint.total_bytes > 0 {
-                            quarantine_jobs.push((partial_path.to_path_buf(), checkpoint.model_id.clone()));
+                            quarantine_jobs
+                                .push((partial_path.to_path_buf(), checkpoint.model_id.clone()));
                             checkpoint.downloaded_bytes = 0;
                             checkpoint.state = ModelStatusState::Failed;
-                            checkpoint.last_error = Some("Corrupt partial artifact detected and quarantined.".to_string());
+                            checkpoint.last_error = Some(
+                                "Corrupt partial artifact detected and quarantined.".to_string(),
+                            );
                             checkpoint.updated_at_utc_ms = now_utc_ms();
                             changed = true;
                         } else if size != checkpoint.downloaded_bytes {
@@ -1108,7 +1143,8 @@ impl ModelManager {
                     Err(_) => {
                         checkpoint.downloaded_bytes = 0;
                         checkpoint.state = ModelStatusState::Failed;
-                        checkpoint.last_error = Some("Failed to read partial download metadata.".to_string());
+                        checkpoint.last_error =
+                            Some("Failed to read partial download metadata.".to_string());
                         checkpoint.updated_at_utc_ms = now_utc_ms();
                         changed = true;
                     }
@@ -1116,14 +1152,16 @@ impl ModelManager {
             } else if checkpoint.downloaded_bytes > 0 {
                 checkpoint.downloaded_bytes = 0;
                 checkpoint.state = ModelStatusState::Idle;
-                checkpoint.last_error = Some("Download checkpoint reset (partial file missing).".to_string());
+                checkpoint.last_error =
+                    Some("Download checkpoint reset (partial file missing).".to_string());
                 checkpoint.updated_at_utc_ms = now_utc_ms();
                 changed = true;
             }
 
             if matches!(checkpoint.state, ModelStatusState::Downloading) {
                 checkpoint.state = ModelStatusState::Paused;
-                checkpoint.last_error = Some("Resumable checkpoint restored after restart.".to_string());
+                checkpoint.last_error =
+                    Some("Resumable checkpoint restored after restart.".to_string());
                 checkpoint.updated_at_utc_ms = now_utc_ms();
                 changed = true;
             }
@@ -1140,8 +1178,14 @@ impl ModelManager {
     }
 
     fn resolve_override_source_path(&self, manifest: &SignedModelManifest) -> Option<PathBuf> {
-        let env_source_dir = env::var("VOICEWAVE_MODEL_SOURCE_DIR").ok().map(PathBuf::from);
-        resolve_override_source_path_for_manifest(manifest, env_source_dir.as_ref(), &self.source_dir)
+        let env_source_dir = env::var("VOICEWAVE_MODEL_SOURCE_DIR")
+            .ok()
+            .map(PathBuf::from);
+        resolve_override_source_path_for_manifest(
+            manifest,
+            env_source_dir.as_ref(),
+            &self.source_dir,
+        )
     }
 }
 
@@ -1151,7 +1195,11 @@ fn resolve_override_source_path_for_manifest(
     local_source_dir: &Path,
 ) -> Option<PathBuf> {
     let preferred_ext = model_extension_for(&manifest.format);
-    let fallback_ext = if preferred_ext == "bin" { "gguf" } else { "bin" };
+    let fallback_ext = if preferred_ext == "bin" {
+        "gguf"
+    } else {
+        "bin"
+    };
     let extensions = [preferred_ext, fallback_ext];
 
     for ext in extensions {
@@ -1297,20 +1345,43 @@ fn validate_manifest_signature(manifest: &SignedModelManifest) -> Result<(), ()>
 
 fn sign_manifest(manifest: &SignedModelManifest) -> String {
     let payload = manifest_signature_payload(manifest);
-    let signature = manifest_signing_key().sign(payload.as_bytes());
+    let signature = manifest_signing_key()
+        .expect("model manifest signing key is unavailable")
+        .sign(payload.as_bytes());
     base64::engine::general_purpose::STANDARD.encode(signature.to_bytes())
 }
 
-fn manifest_signing_key() -> SigningKey {
-    SigningKey::from_bytes(&[
+#[cfg(any(test, debug_assertions))]
+fn manifest_signing_key() -> Option<SigningKey> {
+    Some(SigningKey::from_bytes(&[
         0x53, 0x12, 0x29, 0x7A, 0x40, 0xCD, 0x81, 0x03, 0xE0, 0x11, 0xF1, 0x56, 0x0A, 0x44,
         0xB8, 0x92, 0xBC, 0x01, 0x77, 0xAB, 0x18, 0x6F, 0x99, 0x31, 0xD2, 0x2E, 0x50, 0x8D,
         0x09, 0x6A, 0x4F, 0xC1,
-    ])
+    ]))
+}
+
+#[cfg(not(any(test, debug_assertions)))]
+fn manifest_signing_key() -> Option<SigningKey> {
+    let encoded = env::var("VOICEWAVE_MANIFEST_SIGNING_KEY_B64").ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim().as_bytes())
+        .ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    let mut key = [0_u8; 32];
+    key.copy_from_slice(&bytes);
+    Some(SigningKey::from_bytes(&key))
 }
 
 fn manifest_verifying_key() -> VerifyingKey {
-    manifest_signing_key().verifying_key()
+    let key_bytes = base64::engine::general_purpose::STANDARD
+        .decode(MANIFEST_VERIFY_KEY_B64.as_bytes())
+        .expect("manifest verify key must decode");
+    let fixed: [u8; 32] = key_bytes
+        .try_into()
+        .expect("manifest verify key must be 32 bytes");
+    VerifyingKey::from_bytes(&fixed).expect("manifest verify key must be valid")
 }
 
 fn build_catalog() -> Vec<SignedModelManifest> {
@@ -1365,12 +1436,22 @@ fn build_whispercpp_catalog() -> Vec<SignedModelManifest> {
     let mut manifests = Vec::new();
 
     let faster_rows = [
-        ("fw-small.en", "small.en", 487_614_201_u64),
-        ("fw-large-v3", "large-v3", 3_094_000_000_u64),
+        (
+            "fw-small.en",
+            "small.en",
+            487_614_201_u64,
+            BUILTIN_FW_SMALL_SIGNATURE,
+        ),
+        (
+            "fw-large-v3",
+            "large-v3",
+            3_094_000_000_u64,
+            BUILTIN_FW_LARGE_SIGNATURE,
+        ),
     ];
 
-    for (voicewave_id, runtime_id, size) in faster_rows {
-        let mut manifest = SignedModelManifest {
+    for (voicewave_id, runtime_id, size, signature) in faster_rows {
+        let manifest = SignedModelManifest {
             model_id: voicewave_id.to_string(),
             version: FASTER_WHISPER_VERSION.to_string(),
             format: FASTER_WHISPER_FORMAT.to_string(),
@@ -1378,9 +1459,8 @@ fn build_whispercpp_catalog() -> Vec<SignedModelManifest> {
             sha256: format!("{:064x}", size),
             license: "MIT (faster-whisper + model license)".to_string(),
             download_url: format!("faster-whisper://{runtime_id}"),
-            signature: String::new(),
+            signature: signature.to_string(),
         };
-        manifest.signature = sign_manifest(&manifest);
         manifests.push(manifest);
     }
 
@@ -1427,7 +1507,8 @@ mod tests {
     use super::*;
 
     fn test_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("voicewave-model-tests-{name}-{}", now_utc_ms()));
+        let root =
+            std::env::temp_dir().join(format!("voicewave-model-tests-{name}-{}", now_utc_ms()));
         fs::create_dir_all(&root).expect("create test root");
         root
     }
@@ -1443,7 +1524,8 @@ mod tests {
         let source_path = manager
             .source_dir
             .join(format!("{}-test-source.bin", model_id.replace('.', "_")));
-        let payload = source_payload_for_manifest(&manifest.model_id, &manifest.version, manifest.size);
+        let payload =
+            source_payload_for_manifest(&manifest.model_id, &manifest.version, manifest.size);
         fs::write(&source_path, payload).expect("seed local source payload");
         let payload = fs::read(&source_path).expect("read local source payload");
         manifest.size = payload.len() as u64;
@@ -1466,7 +1548,9 @@ mod tests {
             .find(|row| row.model_id == "fw-small.en")
             .cloned()
             .expect("manifest");
-        let resolved_source = manager.resolve_download_source(&manifest).expect("source path");
+        let resolved_source = manager
+            .resolve_download_source(&manifest)
+            .expect("source path");
         assert_eq!(resolved_source, source_path);
 
         let mut tampered = fs::read(&source_path).expect("source bytes");
@@ -1593,7 +1677,8 @@ mod tests {
             .cloned()
             .expect("manifest");
         let partial_path = manager.partial_model_path_for(&manifest);
-        fs::create_dir_all(partial_path.parent().expect("partial parent")).expect("create partial parent");
+        fs::create_dir_all(partial_path.parent().expect("partial parent"))
+            .expect("create partial parent");
         fs::write(&partial_path, b"partial-tampered").expect("seed partial");
 
         let tampered_manifest = manager
@@ -1612,7 +1697,10 @@ mod tests {
             other => panic!("expected signature failure, got {other:?}"),
         }
 
-        assert!(!partial_path.exists(), "partial should be quarantined/removed");
+        assert!(
+            !partial_path.exists(),
+            "partial should be quarantined/removed"
+        );
     }
 
     #[test]
@@ -1628,8 +1716,10 @@ mod tests {
             .cloned()
             .expect("manifest");
         let partial_path = manager.partial_model_path_for(&manifest);
-        fs::create_dir_all(partial_path.parent().expect("partial parent")).expect("create partial parent");
-        fs::write(&partial_path, vec![0_u8; manifest.size as usize + 4096]).expect("oversized partial");
+        fs::create_dir_all(partial_path.parent().expect("partial parent"))
+            .expect("create partial parent");
+        fs::write(&partial_path, vec![0_u8; manifest.size as usize + 4096])
+            .expect("oversized partial");
 
         let installed = manager
             .install_model_resumable("fw-small.en", || false, || false, |_| {})
@@ -1643,10 +1733,13 @@ mod tests {
         let mut manager = ModelManager::with_test_paths(&root).expect("manager");
         fs::write(&manager.installed_index_path, "\u{feff}   \n  ").expect("seed blank metadata");
 
-        manager.load_installed().expect("blank installed metadata should recover");
+        manager
+            .load_installed()
+            .expect("blank installed metadata should recover");
         assert!(manager.installed.is_empty());
 
-        let rewritten = fs::read_to_string(&manager.installed_index_path).expect("rewritten metadata");
+        let rewritten =
+            fs::read_to_string(&manager.installed_index_path).expect("rewritten metadata");
         assert!(
             rewritten.contains("\"installed\""),
             "installed metadata should be rewritten with default structure"
@@ -1664,7 +1757,8 @@ mod tests {
             .expect("corrupt download metadata should recover");
         assert!(manager.downloads.is_empty());
 
-        let rewritten = fs::read_to_string(&manager.download_state_path).expect("rewritten downloads metadata");
+        let rewritten =
+            fs::read_to_string(&manager.download_state_path).expect("rewritten downloads metadata");
         assert!(
             rewritten.contains("\"downloads\""),
             "download metadata should be rewritten with default structure"
