@@ -1,9 +1,15 @@
 use crate::settings::{DecodeMode, VoiceWaveSettings};
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce,
+};
+use base64::Engine;
 use directories::ProjectDirs;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -137,6 +143,14 @@ struct DiagnosticsStore {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct EncryptedDiagnosticsStore {
+    version: u8,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DiagnosticsBundle {
     version: u8,
     app_version: String,
@@ -179,6 +193,12 @@ pub enum DiagnosticsError {
     Write(std::io::Error),
     #[error("failed to parse diagnostics JSON: {0}")]
     Parse(serde_json::Error),
+    #[error("failed to encrypt diagnostics store: {0}")]
+    Encrypt(String),
+    #[error("failed to decrypt diagnostics store: {0}")]
+    Decrypt(String),
+    #[error("failed to decode diagnostics key: {0}")]
+    KeyDecode(String),
     #[error("cannot resolve app data directory")]
     AppData,
     #[error("diagnostics export requires opt-in to be enabled")]
@@ -187,6 +207,8 @@ pub enum DiagnosticsError {
 
 pub struct DiagnosticsManager {
     store_path: PathBuf,
+    _key_path: PathBuf,
+    key: [u8; 32],
     export_dir: PathBuf,
     store: DiagnosticsStore,
 }
@@ -199,9 +221,24 @@ impl DiagnosticsManager {
         let proj_dirs =
             ProjectDirs::from("com", "voicewave", "localcore").ok_or(DiagnosticsError::AppData)?;
         let store_path = proj_dirs.config_dir().join("diagnostics.json");
+        let key_path = proj_dirs.config_dir().join("diagnostics.key");
         let export_dir = proj_dirs.data_dir().join("diagnostics-exports");
+        Self::from_paths(store_path, key_path, export_dir)
+    }
+
+    pub fn from_paths(
+        store_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
+        export_dir: impl AsRef<Path>,
+    ) -> Result<Self, DiagnosticsError> {
+        let store_path = store_path.as_ref().to_path_buf();
+        let key_path = key_path.as_ref().to_path_buf();
+        let key = load_or_create_key(&key_path)?;
+        let export_dir = export_dir.as_ref().to_path_buf();
         let mut manager = Self {
             store_path,
+            _key_path: key_path,
+            key,
             export_dir,
             store: DiagnosticsStore::default(),
         };
@@ -340,7 +377,14 @@ impl DiagnosticsManager {
             return Ok(());
         }
         let raw = fs::read_to_string(&self.store_path).map_err(DiagnosticsError::Read)?;
+        if let Ok(encrypted) = serde_json::from_str::<EncryptedDiagnosticsStore>(&raw) {
+            self.store = decrypt_diagnostics_store(&encrypted, &self.key)?;
+            return Ok(());
+        }
+
         self.store = serde_json::from_str(&raw).map_err(DiagnosticsError::Parse)?;
+        backup_legacy_plaintext(&self.store_path)?;
+        self.persist()?;
         Ok(())
     }
 
@@ -348,10 +392,102 @@ impl DiagnosticsManager {
         if let Some(parent) = self.store_path.parent() {
             fs::create_dir_all(parent).map_err(DiagnosticsError::Write)?;
         }
-        let encoded = serde_json::to_string_pretty(&self.store).map_err(DiagnosticsError::Parse)?;
-        fs::write(&self.store_path, encoded).map_err(DiagnosticsError::Write)?;
+        let encrypted = encrypt_diagnostics_store(&self.store, &self.key)?;
+        let raw = serde_json::to_string_pretty(&encrypted).map_err(DiagnosticsError::Parse)?;
+        fs::write(&self.store_path, raw).map_err(DiagnosticsError::Write)?;
         Ok(())
     }
+}
+
+fn backup_legacy_plaintext(path: &Path) -> Result<(), DiagnosticsError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let backup_path = path.with_extension("json.bak");
+    if backup_path.exists() {
+        return Ok(());
+    }
+    fs::copy(path, backup_path).map_err(DiagnosticsError::Write)?;
+    Ok(())
+}
+
+fn load_or_create_key(path: &PathBuf) -> Result<[u8; 32], DiagnosticsError> {
+    if path.exists() {
+        let encoded = fs::read_to_string(path).map_err(DiagnosticsError::Read)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .map_err(|err| DiagnosticsError::KeyDecode(err.to_string()))?;
+        if bytes.len() != 32 {
+            return Err(DiagnosticsError::KeyDecode(
+                "diagnostics.key must decode to 32 bytes".to_string(),
+            ));
+        }
+        let mut key = [0_u8; 32];
+        key.copy_from_slice(&bytes);
+        return Ok(key);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(DiagnosticsError::Write)?;
+    }
+    let mut key = [0_u8; 32];
+    OsRng.fill_bytes(&mut key);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(key);
+    fs::write(path, encoded).map_err(DiagnosticsError::Write)?;
+    Ok(key)
+}
+
+fn encrypt_diagnostics_store(
+    store: &DiagnosticsStore,
+    key: &[u8; 32],
+) -> Result<EncryptedDiagnosticsStore, DiagnosticsError> {
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|err| DiagnosticsError::Encrypt(err.to_string()))?;
+    let mut nonce_bytes = [0_u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let plaintext = serde_json::to_vec(store).map_err(DiagnosticsError::Parse)?;
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_ref())
+        .map_err(|err| DiagnosticsError::Encrypt(err.to_string()))?;
+
+    Ok(EncryptedDiagnosticsStore {
+        version: 1,
+        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce_bytes),
+        ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+    })
+}
+
+fn decrypt_diagnostics_store(
+    encrypted: &EncryptedDiagnosticsStore,
+    key: &[u8; 32],
+) -> Result<DiagnosticsStore, DiagnosticsError> {
+    if encrypted.version != 1 {
+        return Err(DiagnosticsError::Decrypt(format!(
+            "unsupported diagnostics encryption version {}",
+            encrypted.version
+        )));
+    }
+
+    let nonce_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encrypted.nonce_b64.as_bytes())
+        .map_err(|err| DiagnosticsError::Decrypt(err.to_string()))?;
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(encrypted.ciphertext_b64.as_bytes())
+        .map_err(|err| DiagnosticsError::Decrypt(err.to_string()))?;
+    if nonce_bytes.len() != 12 {
+        return Err(DiagnosticsError::Decrypt(
+            "diagnostics nonce must be 12 bytes".to_string(),
+        ));
+    }
+
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|err| DiagnosticsError::Decrypt(err.to_string()))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext.as_ref())
+        .map_err(|err| DiagnosticsError::Decrypt(err.to_string()))?;
+    serde_json::from_slice(&plaintext).map_err(DiagnosticsError::Parse)
 }
 
 fn aggregate_metrics(
@@ -409,6 +545,21 @@ fn now_utc_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::settings::VoiceWaveSettings;
+
+    fn test_manager(name: &str) -> DiagnosticsManager {
+        let base = std::env::temp_dir().join(format!("voicewave-diagnostics-{name}-{}", now_utc_ms()));
+        let store_path = base.with_extension("json");
+        let key_path = base.with_extension("key");
+        let export_dir = std::env::temp_dir().join(format!("voicewave-diagnostics-export-{name}"));
+        let key = load_or_create_key(&key_path).expect("key");
+        DiagnosticsManager {
+            store_path,
+            _key_path: key_path,
+            key,
+            export_dir,
+            store: DiagnosticsStore::default(),
+        }
+    }
 
     #[test]
     fn aggregate_handles_empty_input() {
@@ -548,11 +699,7 @@ mod tests {
 
     #[test]
     fn export_requires_opt_in() {
-        let mut manager = DiagnosticsManager {
-            store_path: std::env::temp_dir().join("voicewave-diagnostics-test.json"),
-            export_dir: std::env::temp_dir().join("voicewave-diagnostics-exports-test"),
-            store: DiagnosticsStore::default(),
-        };
+        let mut manager = test_manager("opt-in");
 
         let err = manager
             .export_bundle(false, "0.1.0", &VoiceWaveSettings::default(), 0)
@@ -562,11 +709,7 @@ mod tests {
 
     #[test]
     fn model_reliability_summary_uses_recent_window() {
-        let mut manager = DiagnosticsManager {
-            store_path: std::env::temp_dir().join("voicewave-diagnostics-summary-test.json"),
-            export_dir: std::env::temp_dir().join("voicewave-diagnostics-summary-exports-test"),
-            store: DiagnosticsStore::default(),
-        };
+        let mut manager = test_manager("summary");
         manager.store.records = vec![
             LatencyMetricRecord {
                 session_id: 1,
@@ -692,5 +835,74 @@ mod tests {
         assert_eq!(summary.sample_count, 1);
         assert_eq!(summary.success_rate_percent.round() as u32, 100);
         assert_eq!(summary.p95_release_to_transcribing_ms, 15);
+    }
+
+    #[test]
+    fn persisted_diagnostics_is_encrypted() {
+        let mut manager = test_manager("encrypt");
+        manager
+            .record_latency(LatencyMetricRecord {
+                session_id: 3,
+                timestamp_utc_ms: now_utc_ms(),
+                capture_ms: 8,
+                release_to_transcribing_ms: 12,
+                effective_release_watchdog_ms: 300,
+                decode_ms: 22,
+                post_ms: 4,
+                insert_ms: 3,
+                total_ms: 41,
+                release_to_inserted_ms: 41,
+                audio_duration_ms: 320,
+                model_id: "small.en".to_string(),
+                decode_mode: DecodeMode::Balanced,
+                watchdog_recovered: false,
+                segments_captured: 1,
+                release_stop_detected_at_utc_ms: now_utc_ms(),
+                model_init_ms: 0,
+                audio_condition_ms: 0,
+                decode_compute_ms: 0,
+                runtime_cache_hit: true,
+                backend_requested: "cpu".to_string(),
+                backend_used: "cpu".to_string(),
+                backend_fallback: false,
+                hold_to_first_draft_ms: 0,
+                incremental_decode_ms: 0,
+                release_finalize_ms: 0,
+                incremental_windows_decoded: 0,
+                finalize_tail_audio_ms: 0,
+                decode_policy_mode_selected: Some(DecodeMode::Balanced),
+                decode_policy_reason: Some("runtime-policy:balanced".to_string()),
+                asr_integrity_percent: 100.0,
+                asr_raw_word_count: 6,
+                asr_final_word_count: 6,
+                fw_low_coherence: false,
+                fw_retry_used: false,
+                fw_literal_retry_used: false,
+                audio_pipeline_version: "v1".to_string(),
+                fw_avg_logprob: Some(-0.3),
+                fw_no_speech_prob: Some(0.1),
+                fw_compression_ratio: Some(1.1),
+                fw_shadow_candidate_version: None,
+                fw_shadow_quality_delta: None,
+                fw_shadow_candidate_avg_logprob: None,
+                fw_shadow_candidate_no_speech_prob: None,
+                fw_shadow_candidate_retry_used: None,
+                fw_shadow_candidate_low_coherence: None,
+                fw_shadow_candidate_decode_compute_ms: None,
+                fw_shadow_candidate_won: None,
+                audio_pipeline_fallback_engaged: false,
+                audio_pipeline_fallback_remaining: 0,
+                warm_start_hit: false,
+                worker_reused: false,
+                correction_candidates_count: 0,
+                insertion_method: Some("direct".to_string()),
+                insertion_target_class: Some("editor".to_string()),
+                success: true,
+            })
+            .expect("persist encrypted diagnostics");
+
+        let raw = fs::read_to_string(&manager.store_path).expect("read diagnostics");
+        assert!(!raw.contains("\"records\""));
+        assert!(raw.contains("ciphertextB64"));
     }
 }

@@ -1,8 +1,14 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce,
+};
+use base64::Engine;
 use directories::ProjectDirs;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
     collections::HashSet,
+    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -42,6 +48,12 @@ pub enum DictionaryError {
     Write(std::io::Error),
     #[error("failed to parse dictionary JSON: {0}")]
     Parse(serde_json::Error),
+    #[error("failed to encrypt dictionary: {0}")]
+    Encrypt(String),
+    #[error("failed to decrypt dictionary: {0}")]
+    Decrypt(String),
+    #[error("failed to decode dictionary key: {0}")]
+    KeyDecode(String),
     #[error("cannot resolve app data directory")]
     AppData,
     #[error("dictionary queue entry not found: {0}")]
@@ -60,8 +72,18 @@ struct DictionaryStore {
     terms: Vec<DictionaryTerm>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EncryptedDictionaryStore {
+    version: u8,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
 pub struct DictionaryManager {
     path: PathBuf,
+    _key_path: PathBuf,
+    key: [u8; 32],
     store: DictionaryStore,
 }
 
@@ -70,13 +92,27 @@ impl DictionaryManager {
         let proj_dirs =
             ProjectDirs::from("com", "voicewave", "localcore").ok_or(DictionaryError::AppData)?;
         let path = proj_dirs.config_dir().join("dictionary.json");
-        Self::from_path(path)
+        let key_path = proj_dirs.config_dir().join("dictionary.key");
+        Self::from_paths(path, key_path)
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, DictionaryError> {
         let path = path.as_ref().to_path_buf();
+        let key_path = path.with_extension("key");
+        Self::from_paths(path, key_path)
+    }
+
+    pub fn from_paths(
+        path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
+    ) -> Result<Self, DictionaryError> {
+        let path = path.as_ref().to_path_buf();
+        let key_path = key_path.as_ref().to_path_buf();
+        let key = load_or_create_key(&key_path)?;
         let mut manager = Self {
             path,
+            _key_path: key_path,
+            key,
             store: DictionaryStore {
                 next_id: 1,
                 queue: Vec::new(),
@@ -307,7 +343,13 @@ impl DictionaryManager {
             return Ok(());
         }
         let raw = fs::read_to_string(&self.path).map_err(DictionaryError::Read)?;
-        self.store = serde_json::from_str(&raw).map_err(DictionaryError::Parse)?;
+        if let Ok(encrypted) = serde_json::from_str::<EncryptedDictionaryStore>(&raw) {
+            self.store = decrypt_dictionary_store(&encrypted, &self.key)?;
+        } else {
+            self.store = serde_json::from_str(&raw).map_err(DictionaryError::Parse)?;
+            backup_legacy_plaintext(&self.path)?;
+            self.persist()?;
+        }
         let before = self.store.queue.len();
         self.store
             .queue
@@ -322,10 +364,102 @@ impl DictionaryManager {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(DictionaryError::Write)?;
         }
-        let encoded = serde_json::to_string_pretty(&self.store).map_err(DictionaryError::Parse)?;
-        fs::write(&self.path, encoded).map_err(DictionaryError::Write)?;
+        let encrypted = encrypt_dictionary_store(&self.store, &self.key)?;
+        let raw = serde_json::to_string_pretty(&encrypted).map_err(DictionaryError::Parse)?;
+        fs::write(&self.path, raw).map_err(DictionaryError::Write)?;
         Ok(())
     }
+}
+
+fn backup_legacy_plaintext(path: &Path) -> Result<(), DictionaryError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let backup_path = path.with_extension("json.bak");
+    if backup_path.exists() {
+        return Ok(());
+    }
+    fs::copy(path, backup_path).map_err(DictionaryError::Write)?;
+    Ok(())
+}
+
+fn load_or_create_key(path: &PathBuf) -> Result<[u8; 32], DictionaryError> {
+    if path.exists() {
+        let encoded = fs::read_to_string(path).map_err(DictionaryError::Read)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .map_err(|err| DictionaryError::KeyDecode(err.to_string()))?;
+        if bytes.len() != 32 {
+            return Err(DictionaryError::KeyDecode(
+                "dictionary.key must decode to 32 bytes".to_string(),
+            ));
+        }
+        let mut key = [0_u8; 32];
+        key.copy_from_slice(&bytes);
+        return Ok(key);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(DictionaryError::Write)?;
+    }
+    let mut key = [0_u8; 32];
+    OsRng.fill_bytes(&mut key);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(key);
+    fs::write(path, encoded).map_err(DictionaryError::Write)?;
+    Ok(key)
+}
+
+fn encrypt_dictionary_store(
+    store: &DictionaryStore,
+    key: &[u8; 32],
+) -> Result<EncryptedDictionaryStore, DictionaryError> {
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|err| DictionaryError::Encrypt(err.to_string()))?;
+    let mut nonce_bytes = [0_u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let plaintext = serde_json::to_vec(store).map_err(DictionaryError::Parse)?;
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_ref())
+        .map_err(|err| DictionaryError::Encrypt(err.to_string()))?;
+
+    Ok(EncryptedDictionaryStore {
+        version: 1,
+        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce_bytes),
+        ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+    })
+}
+
+fn decrypt_dictionary_store(
+    encrypted: &EncryptedDictionaryStore,
+    key: &[u8; 32],
+) -> Result<DictionaryStore, DictionaryError> {
+    if encrypted.version != 1 {
+        return Err(DictionaryError::Decrypt(format!(
+            "unsupported dictionary encryption version {}",
+            encrypted.version
+        )));
+    }
+
+    let nonce_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encrypted.nonce_b64.as_bytes())
+        .map_err(|err| DictionaryError::Decrypt(err.to_string()))?;
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(encrypted.ciphertext_b64.as_bytes())
+        .map_err(|err| DictionaryError::Decrypt(err.to_string()))?;
+    if nonce_bytes.len() != 12 {
+        return Err(DictionaryError::Decrypt(
+            "dictionary nonce must be 12 bytes".to_string(),
+        ));
+    }
+
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|err| DictionaryError::Decrypt(err.to_string()))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext.as_ref())
+        .map_err(|err| DictionaryError::Decrypt(err.to_string()))?;
+    serde_json::from_slice(&plaintext).map_err(DictionaryError::Parse)
 }
 
 fn candidate_terms(transcript: &str, low_confidence: bool) -> Vec<String> {
@@ -359,7 +493,8 @@ fn candidate_terms(transcript: &str, low_confidence: bool) -> Vec<String> {
 
 fn is_high_signal_term(token: &str) -> bool {
     let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
-    let has_structure = has_digit || token.contains('-') || token.contains('_') || token.contains('.');
+    let has_structure =
+        has_digit || token.contains('-') || token.contains('_') || token.contains('.');
     if has_structure {
         return token.len() >= 4;
     }
@@ -391,12 +526,22 @@ fn now_utc_ms() -> u64 {
 mod tests {
     use super::*;
 
+    fn test_manager(name: &str) -> DictionaryManager {
+        let base = std::env::temp_dir().join(format!("voicewave-dictionary-{name}-{}", now_utc_ms()));
+        let path = base.with_extension("json");
+        let key_path = base.with_extension("key");
+        let key = load_or_create_key(&key_path).expect("key");
+        DictionaryManager {
+            path,
+            _key_path: key_path,
+            key,
+            store: DictionaryStore::default(),
+        }
+    }
+
     #[test]
     fn ingest_adds_distinctive_candidates() {
-        let mut manager = DictionaryManager {
-            path: std::env::temp_dir().join("voicewave-dictionary-test.json"),
-            store: DictionaryStore::default(),
-        };
+        let mut manager = test_manager("distinctive");
 
         let added = manager
             .ingest_transcript_with_signal("Reviewed VoiceWave FW-V3 roadmap for OpenAI", true)
@@ -407,10 +552,7 @@ mod tests {
 
     #[test]
     fn ingest_ignores_plain_sentence_words() {
-        let mut manager = DictionaryManager {
-            path: std::env::temp_dir().join("voicewave-dictionary-test-plain.json"),
-            store: DictionaryStore::default(),
-        };
+        let mut manager = test_manager("plain");
 
         let added = manager
             .ingest_transcript("Today we discussed the project and the workflow in detail")
@@ -420,14 +562,23 @@ mod tests {
 
     #[test]
     fn ingest_requires_low_confidence_signal() {
-        let mut manager = DictionaryManager {
-            path: std::env::temp_dir().join("voicewave-dictionary-test-signal.json"),
-            store: DictionaryStore::default(),
-        };
+        let mut manager = test_manager("signal");
 
         let added = manager
             .ingest_transcript_with_signal("Reviewed VoiceWave FW-V3 roadmap for OpenAI", false)
             .expect("ingest should succeed");
         assert_eq!(added, 0);
+    }
+
+    #[test]
+    fn persisted_dictionary_is_encrypted() {
+        let mut manager = test_manager("encrypted");
+        manager
+            .add_term("VoiceWave-v3", Some("unit-test".to_string()))
+            .expect("add term");
+
+        let raw = fs::read_to_string(&manager.path).expect("read dictionary");
+        assert!(!raw.contains("VoiceWave-v3"));
+        assert!(raw.contains("ciphertextB64"));
     }
 }
