@@ -5,7 +5,6 @@ import {
   getDictionaryQueue,
   loadSnapshot,
   rejectDictionaryEntry,
-  listenVoicewaveHotkey,
   listenVoicewaveMicLevel,
   listenVoicewaveState,
   setPillReviewMode,
@@ -22,7 +21,6 @@ function clamp01(value: number): number {
 export function FloatingPill() {
   const [rawState, setRawState] = useState<VoiceWaveHudState>("idle");
   const [displayState, setDisplayState] = useState<VisualState>("idle");
-  const [pushHeld, setPushHeld] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [smoothedLevel, setSmoothedLevel] = useState(0);
   const [phaseTime, setPhaseTime] = useState(0);
@@ -32,7 +30,7 @@ export function FloatingPill() {
   const reviewRequestRef = useRef(0);
   const reviewWindowStartRef = useRef(0);
   const reviewModeActive = Boolean(reviewItem);
-  const visualState: VisualState = pushHeld && displayState === "idle" ? "listening" : displayState;
+  const visualState: VisualState = displayState;
 
   const resetReview = useCallback(() => {
     reviewRequestRef.current += 1;
@@ -72,7 +70,6 @@ export function FloatingPill() {
 
     let stateUnlisten: (() => void) | null = null;
     let micUnlisten: (() => void) | null = null;
-    let hotkeyUnlisten: (() => void) | null = null;
 
     void (async () => {
       stateUnlisten = await listenVoicewaveState((payload) => {
@@ -80,16 +77,6 @@ export function FloatingPill() {
       });
       micUnlisten = await listenVoicewaveMicLevel((payload) => {
         setMicLevel(clamp01(payload.level ?? 0));
-      });
-      hotkeyUnlisten = await listenVoicewaveHotkey((payload) => {
-        if (payload.action !== "pushToTalk") {
-          return;
-        }
-        if (payload.phase === "pressed") {
-          setPushHeld(true);
-        } else if (payload.phase === "released") {
-          setPushHeld(false);
-        }
       });
     })();
 
@@ -108,7 +95,6 @@ export function FloatingPill() {
       window.clearInterval(snapshotTimer);
       stateUnlisten?.();
       micUnlisten?.();
-      hotkeyUnlisten?.();
     };
   }, []);
 
@@ -124,12 +110,6 @@ export function FloatingPill() {
     }
     setDisplayState(rawState);
     return undefined;
-  }, [rawState]);
-
-  useEffect(() => {
-    if (rawState !== "listening") {
-      setPushHeld(false);
-    }
   }, [rawState]);
 
   useEffect(() => {

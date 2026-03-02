@@ -100,8 +100,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const isRecording = visualStatus === "listening" || visualStatus === "transcribing";
   const proIconGradient = "linear-gradient(135deg, rgba(10,42,140,0.1) 8%, rgba(27,142,255,0.2) 54%, rgba(126,216,255,0.26) 84%, rgba(167,232,255,0.2) 100%)";
   const idleHint = finalTranscript ?? partialTranscript ?? `Hold ${pushToTalkHotkey} to start capturing`;
-  const hasFinal = Boolean(finalTranscript && finalTranscript.trim().length > 0);
-  const nowLabel = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const statusMeta = STATUS_META[visualStatus];
   const stateClass = `vw-home-state-${visualStatus}`;
 
@@ -120,11 +118,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
     text: session.text,
     latest: false
   }));
-  const transcriptRows = [
-    ...(hasFinal ? [{ id: "latest", time: nowLabel, text: finalTranscript ?? "", latest: true }] : []),
-    ...syncedRows,
-    ...fallbackRows
-  ];
+  const transcriptRows = [...syncedRows, ...fallbackRows].map((row, index) => ({
+    ...row,
+    latest: index === 0
+  }));
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-16">
