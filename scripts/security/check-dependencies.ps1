@@ -6,6 +6,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$inCi = $env:CI -eq 'true'
+$result = 'pass'
+
+function Write-Result([string]$value, [string]$detail) {
+  Write-Host ("DEPS_CHECK_RESULT={0}" -f $value)
+  Write-Host ("DEPS_CHECK_DETAIL={0}" -f $detail)
+}
+
 Push-Location $repoRoot
 try {
   $prodAuditRaw = npm audit --omit=dev --json
@@ -33,10 +41,10 @@ try {
     $cargoAudit = Get-Command cargo-audit.exe -ErrorAction SilentlyContinue
   }
   if ($null -eq $cargoAudit) {
-    $inCi = $env:CI -eq 'true'
     if ($Enforce -and $inCi) {
       throw 'cargo-audit is required for enforced dependency checks. Install with: cargo install cargo-audit'
     }
+    $result = 'warn-local-skip'
     Write-Warning 'cargo-audit is not installed; skipping Rust advisory scan outside CI.'
   } else {
     cargo audit -q
@@ -46,8 +54,10 @@ try {
   }
 
   Write-Host 'Dependency security checks passed.'
+  Write-Result $result $(if ($result -eq 'pass') { 'npm-audit+cargo-audit' } else { 'npm-audit-only' })
 }
 catch {
+  Write-Result 'fail' $_.Exception.Message
   if ($Enforce) {
     throw
   }

@@ -6,6 +6,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$inCi = $env:CI -eq 'true'
+$result = 'pass'
+
+function Write-Result([string]$value, [string]$detail) {
+  Write-Host ("SECRETS_CHECK_RESULT={0}" -f $value)
+  Write-Host ("SECRETS_CHECK_DETAIL={0}" -f $detail)
+}
+
 Push-Location $repoRoot
 try {
   $trackedEnv = @(
@@ -23,10 +31,16 @@ try {
       throw 'gitleaks detected potential secret leakage.'
     }
     Write-Host 'Secrets check passed via gitleaks.'
+    Write-Result $result 'gitleaks'
     return
   }
 
-  Write-Warning 'gitleaks is not installed; running fallback secret-pattern scan.'
+  if ($Enforce -and $inCi) {
+    throw 'gitleaks is required in CI enforced mode. Install gitleaks or use gitleaks action.'
+  }
+
+  $result = 'warn-local-skip'
+  Write-Warning 'gitleaks is not installed; running fallback secret-pattern scan (local advisory mode).'
   $patterns = @(
     'AKIA[0-9A-Z]{16}',
     'AIza[0-9A-Za-z\\-_]{35}',
@@ -47,8 +61,10 @@ try {
   }
 
   Write-Host 'Secrets check passed via fallback scan.'
+  Write-Result $result 'fallback-pattern-scan'
 }
 catch {
+  Write-Result 'fail' $_.Exception.Message
   if ($Enforce) {
     throw
   }
