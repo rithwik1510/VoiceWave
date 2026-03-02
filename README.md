@@ -8,9 +8,15 @@ Current v1 runtime path is local-only (`whisper.cpp` through Rust) with a Window
 
 ## ![Overview](docs/assets/readme/section-overview.svg) Live Demo
 
-[Watch the VoiceWave demo (MP4)](Voice%20Wave.mp4)
+<p align="center">
+  <img src="docs/assets/readme/voicewave-demo.gif" alt="VoiceWave live demo preview" width="920" />
+</p>
 
-Recorded walkthrough showing the current pill interaction and translation flow in the app.
+<p align="center">
+  <strong>VoiceWave in action:</strong> pill activation, live capture, and translated output flow.
+</p>
+
+Full-quality recording: [voicewave-demo.mp4](docs/assets/readme/voicewave-demo.mp4)
 
 ## ![Overview](docs/assets/readme/section-overview.svg) Product At A Glance
 
