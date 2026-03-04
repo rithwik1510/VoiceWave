@@ -1,7 +1,10 @@
 :root {
   color-scheme: dark;
-  --vw-brand-blue: #38bdf8;
-  --vw-brand-lime: #a3e635;
+  --vw-brand-blue: #1b8eff;
+  --vw-brand-cyan: #7ed8ff;
+  --vw-brand-cyan-soft: #a7e8ff;
+  --vw-cta-lime-top: #d9f99d;
+  --vw-cta-lime-bottom: #bef264;
 }
 
 html,
@@ -113,7 +116,7 @@ body,
   height: 12px;
   border-radius: 999px;
   transform-origin: 50% 100%;
-  background: linear-gradient(180deg, var(--vw-brand-blue), var(--vw-brand-lime));
+  background: linear-gradient(180deg, var(--vw-brand-blue), var(--vw-brand-cyan), var(--vw-brand-cyan-soft));
   transition: transform 42ms linear;
 }
 
@@ -122,9 +125,9 @@ body,
   width: 0;
   height: 0;
   border-radius: 999px;
-  border: 1.2px solid rgba(56, 189, 248, 0.26);
-  border-top-color: rgba(56, 189, 248, 0.96);
-  border-right-color: rgba(163, 230, 53, 0.92);
+  border: 1.2px solid rgba(27, 142, 255, 0.3);
+  border-top-color: rgba(27, 142, 255, 0.98);
+  border-right-color: rgba(126, 216, 255, 0.96);
   opacity: 0;
   transform: rotate(0deg);
   transition:
@@ -232,13 +235,20 @@ body,
 }
 
 .vw-pill-action-approve {
-  border-color: rgba(163, 230, 53, 0.46);
-  background: linear-gradient(90deg, rgba(163, 230, 53, 0.2), rgba(56, 189, 248, 0.16));
-  color: #f8fafc;
+  border-color: rgba(190, 242, 100, 0.82);
+  background: linear-gradient(180deg, var(--vw-cta-lime-top) 0%, var(--vw-cta-lime-bottom) 100%);
+  color: #112012;
+  box-shadow:
+    0 10px 22px -14px rgba(190, 242, 100, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56);
 }
 
 .vw-pill-action-approve:hover:not(:disabled) {
-  border-color: rgba(163, 230, 53, 0.64);
+  border-color: rgba(190, 242, 100, 0.95);
+  background: linear-gradient(180deg, #edfeca 0%, #d5f98e 100%);
+  box-shadow:
+    0 12px 24px -14px rgba(190, 242, 100, 0.96),
+    inset 0 1px 0 rgba(255, 255, 255, 0.62);
 }
 
 .vw-pill-action-dismiss:hover:not(:disabled),
