@@ -44,6 +44,6 @@ describe("Dashboard", () => {
     fireEvent.pointerCancel(holdButton);
 
     expect(onPressStart).toHaveBeenCalledTimes(1);
-    expect(onPressEnd).toHaveBeenCalledTimes(2);
+    expect(onPressEnd).toHaveBeenCalledTimes(1);
   });
 });

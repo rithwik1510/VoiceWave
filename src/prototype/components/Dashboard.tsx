@@ -2,7 +2,7 @@ import type React from "react";
 import { Cpu, Mic, Pause, Zap } from "lucide-react";
 import { MOCK_SESSIONS } from "../constants";
 import type { DictationState, ThemeConfig } from "../types";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface DashboardProps {
   theme: ThemeConfig;
@@ -82,6 +82,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   recentSentences = []
 }) => {
   const { colors, typography, shapes } = theme;
+  const activePointerIdRef = useRef<number | null>(null);
+  const keyboardPressActiveRef = useRef(false);
   const [visualStatus, setVisualStatus] = useState<DictationState>(status);
   useEffect(() => {
     if (status !== "inserted") {
@@ -190,6 +192,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <button
                   onPointerDown={(event) => {
                     event.preventDefault();
+                    if (activePointerIdRef.current !== null) {
+                      return;
+                    }
+                    activePointerIdRef.current = event.pointerId;
                     if (event.currentTarget.setPointerCapture) {
                       event.currentTarget.setPointerCapture(event.pointerId);
                     }
@@ -197,24 +203,49 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   }}
                   onPointerUp={(event) => {
                     event.preventDefault();
+                    if (activePointerIdRef.current !== event.pointerId) {
+                      return;
+                    }
                     if (
                       event.currentTarget.hasPointerCapture &&
                       event.currentTarget.hasPointerCapture(event.pointerId)
                     ) {
                       event.currentTarget.releasePointerCapture(event.pointerId);
                     }
+                    activePointerIdRef.current = null;
                     onPressEnd();
                   }}
-                  onPointerCancel={() => onPressEnd()}
+                  onPointerCancel={(event) => {
+                    if (activePointerIdRef.current !== event.pointerId) {
+                      return;
+                    }
+                    activePointerIdRef.current = null;
+                    onPressEnd();
+                  }}
+                  onLostPointerCapture={() => {
+                    if (activePointerIdRef.current === null) {
+                      return;
+                    }
+                    activePointerIdRef.current = null;
+                    onPressEnd();
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === " " || event.key === "Enter") {
+                      if (event.repeat || keyboardPressActiveRef.current) {
+                        return;
+                      }
                       event.preventDefault();
+                      keyboardPressActiveRef.current = true;
                       onPressStart();
                     }
                   }}
                   onKeyUp={(event) => {
                     if (event.key === " " || event.key === "Enter") {
+                      if (!keyboardPressActiveRef.current) {
+                        return;
+                      }
                       event.preventDefault();
+                      keyboardPressActiveRef.current = false;
                       onPressEnd();
                     }
                   }}
