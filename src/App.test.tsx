@@ -155,9 +155,9 @@ afterEach(() => {
 });
 
 describe("App navigation and phase three panels", () => {
-  it("hides Pro Tools navigation for free users", async () => {
+  it("shows Pro Tools navigation by default during the release offer", async () => {
     render(<App />);
-    expect(screen.queryByRole("button", { name: "Pro Tools" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pro Tools" })).toBeInTheDocument();
   });
 
   it("shows Pro Tools for pro users and applies Coding mode", async () => {

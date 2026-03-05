@@ -179,20 +179,20 @@ const fallbackDiagnosticsStatus: DiagnosticsStatus = {
 };
 
 const fallbackEntitlement: EntitlementSnapshot = {
-  tier: "free",
-  status: "free",
-  isPro: false,
+  tier: "pro",
+  status: "pro_active",
+  isPro: true,
   isOwnerOverride: false,
   expiresAtUtcMs: null,
   graceUntilUtcMs: null,
   lastRefreshedAtUtcMs: 0,
   plan: {
-    basePriceUsdMonthly: 4,
-    launchPriceUsdMonthly: 1.5,
-    launchMonths: 3,
-    displayBasePrice: "$4/mo",
-    displayLaunchPrice: "$1.50/mo",
-    offerCopy: "Launch offer: first 3 months at $1.50, then $4/month"
+    basePriceUsdMonthly: 0,
+    launchPriceUsdMonthly: 0,
+    launchMonths: 0,
+    displayBasePrice: "Included",
+    displayLaunchPrice: "Included",
+    offerCopy: "Initial release offer: Pro is included for everyone."
   },
   message: null
 };

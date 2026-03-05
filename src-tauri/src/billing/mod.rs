@@ -13,7 +13,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const GRACE_WINDOW_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CHECKOUT_URL: &str = "";
 const DEFAULT_PORTAL_URL: &str = "";
 
@@ -48,12 +47,12 @@ pub struct BillingPlanDisplay {
 impl Default for BillingPlanDisplay {
     fn default() -> Self {
         Self {
-            base_price_usd_monthly: 4.0,
-            launch_price_usd_monthly: 1.5,
-            launch_months: 3,
-            display_base_price: "$4/mo".to_string(),
-            display_launch_price: "$1.50/mo".to_string(),
-            offer_copy: "Launch offer: first 3 months at $1.50, then $4/month".to_string(),
+            base_price_usd_monthly: 0.0,
+            launch_price_usd_monthly: 0.0,
+            launch_months: 0,
+            display_base_price: "Included".to_string(),
+            display_launch_price: "Included".to_string(),
+            offer_copy: "Initial release offer: Pro is included for everyone.".to_string(),
         }
     }
 }
@@ -136,7 +135,10 @@ impl BillingManager {
         Self::from_paths(path, key_path)
     }
 
-    pub fn from_paths(path: impl AsRef<Path>, key_path: impl AsRef<Path>) -> Result<Self, BillingError> {
+    pub fn from_paths(
+        path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
+    ) -> Result<Self, BillingError> {
         let path = path.as_ref().to_path_buf();
         let key_path = key_path.as_ref().to_path_buf();
         let key = load_or_create_key(&key_path)?;
@@ -199,7 +201,7 @@ impl BillingManager {
             url,
             launched: false,
             message: Some(
-                "Checkout link opening is disabled in this build. Configure billing URLs first."
+                "Checkout is disabled during the initial release offer. Pro is already enabled."
                     .to_string(),
             ),
         }
@@ -215,14 +217,13 @@ impl BillingManager {
             url,
             launched: false,
             message: Some(
-                "Billing portal opening is disabled in this build. Configure billing URLs first."
+                "Billing portal is disabled during the initial release offer. Pro is already enabled."
                     .to_string(),
             ),
         }
     }
 
     fn compute_snapshot(&self, message: Option<String>) -> EntitlementSnapshot {
-        let now = now_utc_ms();
         let plan = BillingPlanDisplay::default();
 
         if self.store.owner_override_enabled {
@@ -239,36 +240,18 @@ impl BillingManager {
             };
         }
 
-        let expires_at = self.store.remote_pro_until_utc_ms;
-        let grace_until = expires_at.map(|expires| expires.saturating_add(GRACE_WINDOW_MS));
-
-        let (tier, status, is_pro) = match expires_at {
-            Some(expires) if expires >= now => (EntitlementTier::Pro, EntitlementStatus::ProActive, true),
-            Some(expires) if expires < now => {
-                if let Some(grace) = grace_until {
-                    if grace >= now {
-                        (EntitlementTier::Pro, EntitlementStatus::Grace, true)
-                    } else {
-                        (EntitlementTier::Free, EntitlementStatus::Expired, false)
-                    }
-                } else {
-                    (EntitlementTier::Free, EntitlementStatus::Expired, false)
-                }
-            }
-            None => (EntitlementTier::Free, EntitlementStatus::Free, false),
-            _ => (EntitlementTier::Free, EntitlementStatus::Free, false),
-        };
-
         EntitlementSnapshot {
-            tier,
-            status,
-            is_pro,
+            tier: EntitlementTier::Pro,
+            status: EntitlementStatus::ProActive,
+            is_pro: true,
             is_owner_override: false,
-            expires_at_utc_ms: expires_at,
-            grace_until_utc_ms: grace_until,
+            expires_at_utc_ms: None,
+            grace_until_utc_ms: None,
             last_refreshed_at_utc_ms: self.store.last_refreshed_at_utc_ms,
             plan,
-            message,
+            message: message.or_else(|| {
+                Some("Initial release offer active: Pro is enabled for everyone.".to_string())
+            }),
         }
     }
 
@@ -307,10 +290,6 @@ fn owner_passphrase_valid(passphrase: &str) -> bool {
             return false;
         }
         return candidate_hash == expected;
-    }
-
-    if cfg!(debug_assertions) {
-        return passphrase.trim() == "Rishi";
     }
 
     false
@@ -430,7 +409,8 @@ mod tests {
 
         manager.store.owner_override_enabled = false;
         manager.store.remote_pro_until_utc_ms = Some(now_utc_ms().saturating_sub(1000));
-        let expired = manager.snapshot();
-        assert!(matches!(expired.status, EntitlementStatus::Grace | EntitlementStatus::Expired));
+        let release_offer = manager.snapshot();
+        assert!(release_offer.is_pro);
+        assert_eq!(release_offer.status, EntitlementStatus::ProActive);
     }
 }

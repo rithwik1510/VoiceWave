@@ -365,7 +365,6 @@ function App() {
     lastHistoryExport,
     lastDiagnosticsExport,
     lastLatency,
-    openBillingPortal,
     permissions,
     proRequiredFeature,
     audioQualityReport,
@@ -398,8 +397,6 @@ function App() {
     addSessionTag,
     addDictionaryTerm,
     resetVadThreshold,
-    restorePurchase,
-    startProCheckout,
     settings,
     switchToRecommendedInput,
     recommendedVadThreshold,
@@ -416,7 +413,7 @@ function App() {
       return null;
     }
     if (proRequiredFeature) {
-      return "This action requires Pro. Free dictation remains fully available.";
+      return "This feature is included in the release offer. Please retry in a moment.";
     }
     return error;
   }, [error, proRequiredFeature]);
@@ -431,39 +428,15 @@ function App() {
   const lastCloudSentenceRef = useRef<string | null>(null);
   const activeProToolsMode = useMemo(() => detectProToolsMode(settings), [settings]);
   const displayedProToolsMode = modeApplyPending ?? activeProToolsMode;
-  const proStatusLabel = isOwnerOverride ? "Owner Pro (Device Override)" : isPro ? "Pro Active" : "Free";
-  const entitlementSyncedAt = entitlement.lastRefreshedAtUtcMs
-    ? formatDate(entitlement.lastRefreshedAtUtcMs)
-    : "Never";
-  const subscriptionHeadline = isPro
-    ? "VoiceWave Pro is active on this device."
-    : "Ready to unlock the full Pro toolkit.";
-  const subscriptionPriceLine = isPro
-    ? `Launch plan: ${entitlement.plan.displayLaunchPrice} for ${entitlement.plan.launchMonths} months, then ${entitlement.plan.displayBasePrice}.`
-    : `${entitlement.plan.displayLaunchPrice} for first ${entitlement.plan.launchMonths} months, then ${entitlement.plan.displayBasePrice}.`;
-  const subscriptionStateLine = useMemo(() => {
+  const proStatusLabel = isOwnerOverride ? "Owner Pro (Device Override)" : "Release Offer Active";
+  const releaseOfferHeadline = "Pro is unlocked for every workspace during this initial release.";
+  const releaseOfferLine = entitlement.plan.offerCopy || "Initial release offer: Pro is included for everyone.";
+  const releaseOfferStateLine = useMemo(() => {
     if (isOwnerOverride) {
       return "Owner override is enabled on this machine for internal access.";
     }
-    if (entitlement.status === "grace" && entitlement.graceUntilUtcMs) {
-      return `In grace period until ${formatDate(entitlement.graceUntilUtcMs)}.`;
-    }
-    if (entitlement.status === "expired") {
-      return "Subscription expired. Restore purchase or refresh entitlement to re-activate Pro.";
-    }
-    if (entitlement.expiresAtUtcMs) {
-      return `Current access window: ${formatDate(entitlement.expiresAtUtcMs)}.`;
-    }
-    return isPro
-      ? "Pro access is active and synced locally."
-      : "Free plan active. Upgrade to enable advanced workflow controls.";
-  }, [
-    entitlement.expiresAtUtcMs,
-    entitlement.graceUntilUtcMs,
-    entitlement.status,
-    isOwnerOverride,
-    isPro
-  ]);
+    return "Release offer is active. No subscription purchase is required right now.";
+  }, [isOwnerOverride]);
   const isDemoAuthenticated = Boolean(demoProfile);
   const profileDisplayName = demoProfile?.name ?? "Workspace";
   const profileStatusLabel = demoProfile
@@ -966,7 +939,7 @@ function App() {
                     <p className="vw-kicker">VoiceWave Pro</p>
                     <h3 className="vw-section-heading text-lg font-semibold text-[#09090B]">Power Features for Coders + Students</h3>
                     <p className="mt-1 text-sm text-[#71717A]">
-                      Keep fast local dictation in Free, unlock advanced formatting, domain packs, code mode, and power history tools in Pro.
+                      Initial release offer: everyone gets advanced formatting, domain packs, code mode, and power history tools from day one.
                     </p>
                   </div>
                   <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-accent" : ""}`}>{proStatusLabel}</span>
@@ -977,48 +950,26 @@ function App() {
                     <div className="vw-pro-subscription-grid">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="vw-pro-subscription-kicker">Subscription Console</span>
+                          <span className="vw-pro-subscription-kicker">Release Offer</span>
                           <span className={`vw-chip ${isPro ? "vw-pro-chip-active vw-chip-accent" : ""}`}>
                             {proStatusLabel}
                           </span>
                         </div>
                         <p className="vw-section-heading mt-3 text-2xl font-semibold text-[#09090B]">
-                          {subscriptionHeadline}
+                          {releaseOfferHeadline}
                         </p>
-                        <p className="mt-2 text-sm text-[#3F3F46]">{subscriptionPriceLine}</p>
-                        <p className="mt-2 text-xs text-[#71717A]">{subscriptionStateLine}</p>
-                        <p className="mt-3 text-xs text-[#71717A]">
-                          Current status key: <span className="font-semibold text-[#27272A]">{entitlement.status}</span>
-                        </p>
+                        <p className="mt-2 text-sm text-[#3F3F46]">{releaseOfferLine}</p>
+                        <p className="mt-2 text-xs text-[#71717A]">{releaseOfferStateLine}</p>
                       </div>
 
                       <div className="vw-pro-subscription-actions">
-                        {!isPro ? (
-                          <button
-                            type="button"
-                            className="vw-btn-primary vw-action-button"
-                            onClick={() => void startProCheckout()}
-                          >
-                            Upgrade to Pro
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="vw-btn-primary vw-action-button"
-                            onClick={() => void openBillingPortal()}
-                          >
-                            Manage Plan
-                          </button>
-                        )}
-                        <div className="vw-pro-subscription-action-row">
-                          <button type="button" className="vw-btn-secondary" onClick={() => void refreshEntitlement()}>
-                            Refresh Entitlement
-                          </button>
-                          <button type="button" className="vw-btn-secondary" onClick={() => void restorePurchase()}>
-                            Restore Purchase
-                          </button>
-                        </div>
-                        <p className="text-xs text-[#71717A]">Last synced: {entitlementSyncedAt}</p>
+                        <button
+                          type="button"
+                          className="vw-btn-primary vw-action-button"
+                          onClick={() => setActiveNav("pro-tools")}
+                        >
+                          Open Pro Tools
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1378,7 +1329,7 @@ function App() {
                     void searchHistory(historyQuery, tags, null);
                   }}
                 >
-                  {isPro ? "Run Search" : "Upgrade to Pro"}
+                  {isPro ? "Run Search" : "Open Pro Offer"}
                 </button>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -1748,7 +1699,7 @@ function App() {
                 className="vw-btn-primary vw-action-button mt-3"
                 onClick={() => setActiveNav("pro")}
               >
-                View Pro Plans
+                Open Pro Offer
               </button>
             )}
           </div>
@@ -2003,7 +1954,7 @@ function App() {
       {activeOverlay === "profile" && (
         <OverlayModal
           title="Profile"
-          subtitle="Your workspace identity and subscription shortcuts."
+          subtitle="Your workspace identity and release-offer shortcuts."
           onClose={closeOverlay}
         >
           <div className="space-y-4">
@@ -2047,7 +1998,7 @@ function App() {
                   setActiveNav("pro");
                 }}
               >
-                Manage Subscription
+                View Pro Offer
               </button>
               <button
                 type="button"

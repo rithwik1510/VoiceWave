@@ -225,15 +225,10 @@ export const Layout: React.FC<LayoutProps> = ({
                 ) : (
                   <>
                     <p className="text-xs opacity-75 mb-2 leading-relaxed">
-                      Launch offer for coders and students.
+                      Initial release offer is active for coders and students.
                     </p>
-                    <div className="mb-3.5">
-                      <p className="text-[11px] text-[#71717A] line-through">~$4/mo~</p>
-                      <p className="text-lg font-semibold text-[#09090B]">$1.50/mo</p>
-                      <p className="text-[11px] text-[#71717A]">First 3 months, then $4/mo</p>
-                    </div>
                     <p className="text-[11px] text-[#52525B] mb-3 leading-relaxed">
-                      Advanced formatting, domain packs, code mode, and power history tools.
+                      Pro is included for everyone right now. Open the offer panel to see what is unlocked.
                     </p>
                   </>
                 )}
@@ -252,17 +247,8 @@ export const Layout: React.FC<LayoutProps> = ({
                     setActiveNav("pro");
                   }}
                 >
-                  {isPro ? "Open Pro Tools" : "Upgrade to Pro"}
+                  {isPro ? "Open Pro Tools" : "View Release Offer"}
                 </button>
-                {isPro && onUpgradeClick && (
-                  <button
-                    type="button"
-                    className="mt-1.5 w-full text-[11px] font-semibold text-[#52525B] underline underline-offset-2 hover:text-[#18181B]"
-                    onClick={onUpgradeClick}
-                  >
-                    Manage Plan
-                  </button>
-                )}
               </div>
           </div>
           </div>
@@ -348,7 +334,7 @@ export const Layout: React.FC<LayoutProps> = ({
 
         <div className="flex-1 overflow-hidden relative pr-2 pb-2">
           <div
-            className={`w-full h-full overflow-y-auto relative scroll-smooth ${colors.canvasBg} rounded-3xl ${
+            className={`vw-canvas-scroll w-full h-full overflow-y-auto relative ${colors.canvasBg} rounded-3xl ${
               isPro && activeNav === "home" ? "vw-pro-canvas" : "border border-[#DEE0E7]"
             } shadow-[0_8px_20px_rgba(9,9,11,0.05),0_1px_4px_rgba(9,9,11,0.03)]`}
           >
