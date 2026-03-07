@@ -82,6 +82,15 @@ export default function HeroDottedField({
     const pointerDelta = new THREE.Vector2(0, 0)
     const nextPointer = new THREE.Vector2(0.5, 0.72)
     let pointerActive = 0
+    let lastScrollY = window.scrollY
+    let scrollVelY = 0
+
+    const onScroll = () => {
+      const delta = window.scrollY - lastScrollY
+      lastScrollY = window.scrollY
+      scrollVelY = Math.max(-0.018, Math.min(0.018, delta * 0.00028))
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
 
     let renderer: THREE.WebGLRenderer | null = null
     let displayScene: THREE.Scene | null = null
@@ -264,7 +273,7 @@ export default function HeroDottedField({
       const halfWidthPx = halfWidthBase * resolutionScale.x
       const halfHeightPx = halfHeightBase * resolutionScale.y
       const cornerPx = Math.min(halfWidthPx, halfHeightPx) * 0.62
-      const feather = Math.max(16, Math.min(halfWidthPx, halfHeightPx) * 0.38)
+      const feather = Math.max(16, Math.min(halfWidthPx, halfHeightPx) * 0.62)
       const cutoff = Math.max(0, topCutoffRef.current) * resolutionScale.y
       const secondary = autoSafe?.secondary ?? null
       const secondaryHalfWidthPx = (secondary?.halfWidth ?? 0) * resolutionScale.x
@@ -409,7 +418,8 @@ export default function HeroDottedField({
           uTime: { value: 0 },
           uDt: { value: 0.016 },
           uDecay: { value: config.decay },
-          uAmbientStrength: { value: prefersReducedMotion ? config.ambientStrength * 0.2 : config.ambientStrength }
+          uAmbientStrength: { value: prefersReducedMotion ? config.ambientStrength * 0.2 : config.ambientStrength },
+          uScrollVelocity: { value: new THREE.Vector2(0, 0) }
         }
       })
 
@@ -635,6 +645,8 @@ export default function HeroDottedField({
           simulationMaterial.uniforms.uPointerActive.value = disableInteraction || prefersReducedMotion ? 0 : pointerActive
           simulationMaterial.uniforms.uTime.value = timestampMs * 0.001
           simulationMaterial.uniforms.uDt.value = simStep
+          simulationMaterial.uniforms.uScrollVelocity.value.set(0, scrollVelY)
+          scrollVelY *= 0.88
 
           renderer.setRenderTarget(currentWrite)
           renderer.render(simulationScene, camera)
@@ -670,6 +682,8 @@ export default function HeroDottedField({
       destroyed = true
       window.cancelAnimationFrame(animationFrameId)
       window.clearTimeout(readyFallbackTimeoutId)
+
+      window.removeEventListener('scroll', onScroll)
 
       if (interactionTarget) {
         interactionTarget.removeEventListener('pointermove', pointerMoveHandler)

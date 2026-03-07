@@ -20,6 +20,7 @@ export const heroSimulationFragmentShader = `
   uniform float uDt;
   uniform float uDecay;
   uniform float uAmbientStrength;
+  uniform vec2 uScrollVelocity;
 
   float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -34,7 +35,7 @@ export const heroSimulationFragmentShader = `
     vec2 ambientDrift = vec2(
       sin(vUv.y * 10.0 + uTime * 0.27) + cos(vUv.x * 9.0 - uTime * 0.33),
       cos(vUv.x * 11.0 - uTime * 0.22) - sin(vUv.y * 7.0 + uTime * 0.31)
-    ) * 0.0021;
+    ) * 0.003;
 
     vec2 advectUv = clamp(vUv - velocity * 0.020 - ambientDrift, 0.0, 1.0);
     vec4 advected = texture2D(uPrev, advectUv);
@@ -48,6 +49,7 @@ export const heroSimulationFragmentShader = `
 
     field += impulse * 0.82;
     velocity += uPointerDelta * impulse * 0.68;
+    velocity += uScrollVelocity * 0.55;
 
     float sparkle = hash12(floor(vUv * 280.0) + floor(uTime * 0.82));
     field += uAmbientStrength * (0.58 + sparkle * 0.42) * uDt;
@@ -280,8 +282,8 @@ export const heroDisplayFragmentShader = `
     float pointerDist = distance(uv, uPointer);
     float pointerFalloff = exp(-pow(pointerDist, 2.0) * pointerRadius) * uPointerActive * uPointerStrength;
 
-    float horizontalBand = exp(-pow((uv.x - 0.5) / 0.5, 2.0));
-    float verticalBand = smoothstep(0.035, 0.13, uv.y) * (1.0 - smoothstep(0.90, 0.985, uv.y));
+    float horizontalBand = max(0.22, exp(-pow((uv.x - 0.5) / 0.82, 2.0)));
+    float verticalBand = smoothstep(0.035, 0.13, uv.y) * (1.0 - smoothstep(0.93, 0.998, uv.y));
     float lowerLift = exp(-pow((uv.y - 0.66) / 0.32, 2.0));
     float structure = clamp(horizontalBand * verticalBand * (0.72 + 0.28 * lowerLift), 0.0, 1.0);
 
@@ -348,7 +350,7 @@ export const heroDisplayFragmentShader = `
     float idleFade = mix(0.30, 1.0, activityCurve);
     float prominence = mix(0.64 + motionPresence * 0.12, 0.96, hoverPresence);
 
-    float radius = mix(uMinDotRadius / max(cellSize, 1.0), 0.33, energy) + activePointer * 0.05;
+    float radius = mix(uMinDotRadius / max(cellSize, 1.0), 0.41, energy) + activePointer * 0.06;
     float dot = 1.0 - smoothstep(radius, radius + 0.075, distInCell);
 
     float dynamicTwinkle = 0.82 + 0.18 * sin(uTime * 1.8 + cellNoise * 6.2831853);
@@ -381,6 +383,8 @@ export const heroDisplayFragmentShader = `
     float basePattern = dot * (0.09 + staticPattern * 0.05) * structure * topZone * bottomZone;
     alpha = max(alpha, basePattern * mix(0.62, 0.82, hoverPresence));
     alpha *= mix(1.0, 1.14, hoverPresence);
+    float centerGradualFade = smoothstep(-uSafeFeatherPx * 0.5, uSafeFeatherPx * 4.2, safeNoGlowDist);
+    alpha *= centerGradualFade;
     alpha = clamp(alpha, 0.0, 1.0);
     alpha *= uDotAlphaMultiplier;
 

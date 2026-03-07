@@ -1,10 +1,19 @@
+import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useRef, useState } from 'react'
 import { ArrowRight } from 'lucide-react'
 import { windowsDownloadUrl } from '../config/download'
 import HeroDottedField, { type HeroSafeZone } from './HeroDottedField'
 
+const HERO_SUBTEXTS = [
+  'Built for fast on-device dictation. No cloud path. Everything stays local.',
+  'Press. Speak. Release. Text appears in your active app in under 2 seconds.',
+  'Whisper runs on your CPU or GPU. Your audio never leaves this machine.',
+  'Hold to talk. Release to insert. Local by design, fast by default.',
+]
+
 export default function Hero() {
   const heroPoints = ['Windows-first rollout', 'Local-only v1', 'Fallback-safe insertion']
+  const [subtextIdx, setSubtextIdx] = useState(0)
   const heroSectionRef = useRef<HTMLElement | null>(null)
   const copyStackRef = useRef<HTMLDivElement | null>(null)
   const [safeZone, setSafeZone] = useState<HeroSafeZone | null>(null)
@@ -71,6 +80,14 @@ export default function Hero() {
 
     scheduleCompute()
 
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    let subtextInterval = 0
+    if (!prefersReduced) {
+      subtextInterval = window.setInterval(() => {
+        setSubtextIdx(i => (i + 1) % HERO_SUBTEXTS.length)
+      }, 3600)
+    }
+
     const resizeObserver = new ResizeObserver(() => {
       scheduleCompute()
     })
@@ -86,6 +103,9 @@ export default function Hero() {
     return () => {
       if (frameId !== 0) {
         window.cancelAnimationFrame(frameId)
+      }
+      if (subtextInterval !== 0) {
+        window.clearInterval(subtextInterval)
       }
       resizeObserver.disconnect()
       window.removeEventListener('resize', scheduleCompute)
@@ -108,10 +128,20 @@ export default function Hero() {
             Private Dictation.
           </h1>
 
-          <p className="hero-body-copy mt-5 max-w-xl text-pretty text-[clamp(0.78rem,1.9vw,1rem)] leading-relaxed text-[#d7ecff]">
-            Built for fast on-device dictation with no cloud transcription path in v1. Everything stays local on your
-            computer.
-          </p>
+          <div className="relative mt-5 flex min-h-[3.6rem] max-w-xl items-center justify-center">
+            <AnimatePresence mode="wait">
+              <motion.p
+                key={subtextIdx}
+                initial={{ opacity: 0, y: 7 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -7 }}
+                transition={{ duration: 0.38, ease: [0.16, 1, 0.3, 1] }}
+                className="hero-body-copy text-pretty text-[clamp(0.78rem,1.9vw,1rem)] leading-relaxed text-[#d7ecff]"
+              >
+                {HERO_SUBTEXTS[subtextIdx]}
+              </motion.p>
+            </AnimatePresence>
+          </div>
 
           <ul className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[8px] font-semibold uppercase tracking-[0.12em] text-[#dff0ff] sm:text-[9px]">
             {heroPoints.map((point) => (
