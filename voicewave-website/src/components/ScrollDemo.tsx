@@ -1,4 +1,5 @@
 import { motion, useReducedMotion } from 'framer-motion'
+import { Monitor } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Dashboard } from '../appReplica/components/Dashboard'
 import { Layout } from '../appReplica/components/Layout'
@@ -227,7 +228,17 @@ export default function ScrollDemo() {
             </span>
           </div>
 
-          <div style={{ overflow: 'hidden', height: '496px' }}>
+          {/* Mobile placeholder */}
+          <div className="md:hidden rounded-2xl border border-[#d6e5f8] bg-[linear-gradient(135deg,rgba(247,251,255,0.98),rgba(233,244,255,0.95))] p-8 text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#e8f1ff]">
+              <Monitor className="h-7 w-7 text-[#0a3eb8]" />
+            </div>
+            <p className="font-semibold text-[#0a1020] text-base">Interactive Demo</p>
+            <p className="mt-2 text-sm text-[#475569] leading-relaxed">Best experienced on a larger screen. Open VoiceWave on desktop to see the full app UI in action.</p>
+          </div>
+
+          {/* Desktop demo */}
+          <div className="hidden md:block" style={{ overflow: 'hidden', height: '496px' }}>
             <div style={{ transform: 'scale(0.8)', transformOrigin: 'top left', width: 'calc(100% / 0.8)' }}>
               <Layout
                 theme={THEME}
