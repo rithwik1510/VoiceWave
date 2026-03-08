@@ -20,8 +20,43 @@ function Add-MingwToPathIfAvailable {
   }
 }
 
+function Get-CargoToolchainPrefix([string]$cargoPath) {
+  & $cargoPath +stable-x86_64-pc-windows-msvc -V *> $null
+  if ($LASTEXITCODE -eq 0) {
+    return @("+stable-x86_64-pc-windows-msvc")
+  }
+
+  & $cargoPath +stable-x86_64-pc-windows-gnu -V *> $null
+  if ($LASTEXITCODE -eq 0) {
+    return @("+stable-x86_64-pc-windows-gnu")
+  }
+
+  & $cargoPath +stable -V *> $null
+  if ($LASTEXITCODE -eq 0) {
+    return @("+stable")
+  }
+
+  return @()
+}
+
+function Invoke-CargoWithToolchain {
+  param(
+    [string]$CargoPath,
+    [string[]]$ToolchainPrefix,
+    [string[]]$CommandArgs
+  )
+
+  & $CargoPath @ToolchainPrefix @CommandArgs
+  return $LASTEXITCODE
+}
+
 function Ensure-SpaceSafeJunction([string]$sourcePath) {
-  $junctionPath = Join-Path $env:TEMP "voicewave-phase3-validation-nospace"
+  $safeRoot = "C:\voicewave-tauri"
+  if (-not (Test-Path $safeRoot)) {
+    New-Item -ItemType Directory -Path $safeRoot | Out-Null
+  }
+
+  $junctionPath = Join-Path $safeRoot "phase3-validation-nospace"
   if (Test-Path $junctionPath) {
     $item = Get-Item $junctionPath -ErrorAction SilentlyContinue
     if ($item -and $item.LinkType -eq "Junction") {
@@ -37,9 +72,23 @@ function Ensure-SpaceSafeJunction([string]$sourcePath) {
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $cargoExe = Resolve-CargoPath
 Add-MingwToPathIfAvailable
-$env:CARGO_TARGET_DIR = Join-Path $env:TEMP "voicewave-phase3-target"
-$spaceSafeRoot = Ensure-SpaceSafeJunction $repoRoot
-$desktopManifest = Join-Path $spaceSafeRoot "src-tauri\Cargo.toml"
+$cargoToolchainPrefix = Get-CargoToolchainPrefix $cargoExe
+$toolchainSuffix = if ((@($cargoToolchainPrefix)).Count -gt 0) {
+  (@($cargoToolchainPrefix)[0]).TrimStart("+").Replace("-", "_")
+}
+else {
+  "default"
+}
+$safeRoot = "C:\voicewave-tauri"
+if (-not (Test-Path $safeRoot)) {
+  New-Item -ItemType Directory -Path $safeRoot | Out-Null
+}
+$env:CARGO_TARGET_DIR = Join-Path $safeRoot "phase3-target-$toolchainSuffix"
+if (Test-Path $env:CARGO_TARGET_DIR) {
+  Remove-Item -Path $env:CARGO_TARGET_DIR -Recurse -Force
+}
+$null = New-Item -ItemType Directory -Path $env:CARGO_TARGET_DIR -Force
+$desktopManifest = Join-Path $repoRoot "src-tauri\Cargo.toml"
 
 Push-Location $repoRoot
 try {
@@ -53,7 +102,7 @@ try {
     throw "frontend build failed"
   }
 
-  & $cargoExe +stable-x86_64-pc-windows-gnu test --manifest-path $desktopManifest --no-run
+  Invoke-CargoWithToolchain -CargoPath $cargoExe -ToolchainPrefix $cargoToolchainPrefix -CommandArgs @("test", "--manifest-path", $desktopManifest, "--no-run")
   if ($LASTEXITCODE -ne 0) {
     throw "desktop-feature rust compile check failed"
   }
@@ -61,7 +110,7 @@ try {
   function Invoke-QualityGuardTest {
     param([string]$TestName)
 
-    & $cargoExe +stable-x86_64-pc-windows-gnu test --manifest-path $desktopManifest --lib $TestName
+    Invoke-CargoWithToolchain -CargoPath $cargoExe -ToolchainPrefix $cargoToolchainPrefix -CommandArgs @("test", "--manifest-path", $desktopManifest, "--lib", $TestName)
     if ($LASTEXITCODE -eq 0) {
       return
     }
@@ -69,7 +118,7 @@ try {
     # Some Windows GNU environments can compile desktop tests but fail to execute
     # GUI-linked test binaries at runtime (STATUS_ENTRYPOINT_NOT_FOUND). Fallback to
     # no-default-features execution so quality assertions still run.
-    & $cargoExe +stable-x86_64-pc-windows-gnu test --manifest-path $desktopManifest --no-default-features --lib $TestName
+    Invoke-CargoWithToolchain -CargoPath $cargoExe -ToolchainPrefix $cargoToolchainPrefix -CommandArgs @("test", "--manifest-path", $desktopManifest, "--no-default-features", "--lib", $TestName)
     if ($LASTEXITCODE -eq 0) {
       Write-Warning "Desktop runtime execution failed for '$TestName'; validated via --no-default-features fallback."
       return

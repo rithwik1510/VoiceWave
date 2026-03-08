@@ -282,7 +282,7 @@ async fn run_model_sweep(
 
 fn build_fixture_samples() -> Vec<f32> {
     let mut vad = VadSegmenter::new(VadConfig::default());
-    let mut segments = Vec::new();
+    let mut segments: Vec<Vec<f32>> = Vec::new();
     for frame in mock_audio_fixture_frames() {
         if let Some(segment) = vad.push_frame(&frame) {
             segments.push(segment);

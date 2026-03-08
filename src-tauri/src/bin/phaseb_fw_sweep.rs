@@ -69,7 +69,8 @@ async fn run() -> Result<(), String> {
         .iter()
         .find(|row| row.model_id == "small.en")
         .ok_or_else(|| {
-            "required model 'small.en' is not installed; install it before running sweep".to_string()
+            "required model 'small.en' is not installed; install it before running sweep"
+                .to_string()
         })?;
 
     let small_worker = InferenceWorker::new_runtime_with_mode(
@@ -81,11 +82,27 @@ async fn run() -> Result<(), String> {
     let _ = prefetch_faster_whisper_model("fw-small.en")
         .await
         .map_err(|err| format!("fw-small prefetch failed: {err}"))?;
-    let fw_worker =
-        InferenceWorker::new_faster_whisper_with_mode("fw-small.en".to_string(), DecodeMode::Balanced);
+    let fw_worker = InferenceWorker::new_faster_whisper_with_mode(
+        "fw-small.en".to_string(),
+        DecodeMode::Balanced,
+    );
 
-    let small_row = run_worker_sweep("small.en", &small_worker, &merged_samples, warmup_runs, runs).await?;
-    let fw_row = run_worker_sweep("fw-small.en", &fw_worker, &merged_samples, warmup_runs, runs).await?;
+    let small_row = run_worker_sweep(
+        "small.en",
+        &small_worker,
+        &merged_samples,
+        warmup_runs,
+        runs,
+    )
+    .await?;
+    let fw_row = run_worker_sweep(
+        "fw-small.en",
+        &fw_worker,
+        &merged_samples,
+        warmup_runs,
+        runs,
+    )
+    .await?;
 
     let artifact = SweepArtifact {
         generated_at_utc: now_utc_iso(),
@@ -134,7 +151,7 @@ async fn run_worker_sweep(
         if result
             .transcript
             .as_ref()
-            .is_some_and(|text| !text.trim().is_empty())
+            .is_some_and(|text: &String| !text.trim().is_empty())
         {
             successes += 1;
         }
@@ -167,7 +184,7 @@ async fn run_worker_sweep(
 
 fn build_fixture_samples() -> Vec<f32> {
     let mut vad = VadSegmenter::new(VadConfig::default());
-    let mut segments = Vec::new();
+    let mut segments: Vec<Vec<f32>> = Vec::new();
     for frame in mock_audio_fixture_frames() {
         if let Some(segment) = vad.push_frame(&frame) {
             segments.push(segment);
