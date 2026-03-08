@@ -349,7 +349,7 @@ describe("App navigation and phase three panels", () => {
     });
   });
 
-  it("applies demo sign-in locally and reflects account details in profile", async () => {
+  it("blocks cloud sign-in when firebase config is unavailable", async () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Open workspace menu" }));
@@ -359,11 +359,12 @@ describe("App navigation and phase three panels", () => {
     const authDialog = screen.getByRole("dialog", { name: "Sign In / Sign Up" });
     fireEvent.change(within(authDialog).getByLabelText("Email"), { target: { value: "alex@voicewave.app" } });
     fireEvent.change(within(authDialog).getByLabelText("Password"), { target: { value: "pass-1234" } });
-    fireEvent.click(within(authDialog).getByRole("button", { name: "Sign In" }));
+    fireEvent.click(within(authDialog).getByRole("button", { name: "Cloud Auth Unavailable" }));
 
     await waitFor(() => {
-      const profileDialog = screen.getByRole("dialog", { name: "Profile" });
-      expect(within(profileDialog).getByText("alex@voicewave.app")).toBeInTheDocument();
+      expect(
+        within(authDialog).getByText("Cloud sign-in is unavailable in this build. Continue as Guest.")
+      ).toBeInTheDocument();
     });
   });
 

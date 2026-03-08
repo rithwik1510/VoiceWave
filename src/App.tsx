@@ -680,21 +680,7 @@ function App() {
       return;
     }
 
-    const derivedName =
-      authMode === "signup"
-        ? authName.trim() || normalizedEmail.split("@")[0] || "VoiceWave User"
-        : demoProfile?.name || normalizedEmail.split("@")[0] || "VoiceWave User";
-    setDemoProfile({
-      name: derivedName,
-      email: normalizedEmail,
-      workspaceRole: authWorkspaceRole.trim() || "Personal Workspace"
-    });
-    setCloudUserId(null);
-    setCloudRecentSentences([]);
-    setCloudDictionaryTerms([]);
-    setAuthPassword("");
-    setAuthConfirmPassword("");
-    setActiveOverlay("profile");
+    setAuthError("Cloud sign-in is unavailable in this build. Continue as Guest.");
   };
 
   const continueAsGuest = () => {
@@ -1981,7 +1967,7 @@ function App() {
                 {isDemoAuthenticated
                   ? cloudUserId
                     ? "Cloud account is active. Recent sentences and dictionary terms sync automatically."
-                    : "Local account mode is active on this device."
+                    : "Cloud account is unavailable in this build."
                   : "Guest mode is enabled. You can keep using all core flows without signing in."}
               </p>
             </section>
@@ -2033,7 +2019,7 @@ function App() {
           subtitle={
             firebaseEnabled
               ? "Cloud sync is active."
-              : "Firebase is not configured. Authentication runs in local demo mode."
+              : "Firebase is not configured. Cloud authentication is unavailable in this build."
           }
           onClose={closeOverlay}
           maxWidthClassName="max-w-5xl"
@@ -2168,7 +2154,13 @@ function App() {
 
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button type="submit" className="vw-btn-primary" disabled={authPending}>
-                    {authPending ? "Please wait..." : authMode === "signin" ? "Sign In" : "Create Account"}
+                    {authPending
+                      ? "Please wait..."
+                      : firebaseEnabled
+                        ? authMode === "signin"
+                          ? "Sign In"
+                          : "Create Account"
+                        : "Cloud Auth Unavailable"}
                   </button>
                   <button type="button" className="vw-btn-secondary" onClick={continueAsGuest}>
                     Continue as Guest
@@ -2192,7 +2184,7 @@ function App() {
                 <section className="rounded-2xl border border-[#E4E4E7] bg-[#FAFAFA] px-4 py-3 text-sm text-[#3F3F46]">
                   <p>
                     Signed in as <span className="font-semibold text-[#09090B]">{demoProfile.email}</span>
-                    {cloudUserId ? " with cloud sync enabled." : " on local demo mode."}
+                    {cloudUserId ? " with cloud sync enabled." : "."}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button
