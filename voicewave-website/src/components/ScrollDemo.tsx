@@ -227,6 +227,7 @@ export default function ScrollDemo() {
             </span>
           </div>
 
+          <div className="overflow-hidden">
           <div style={{ zoom: 0.8, width: 'calc(100% / 0.8)' }}>
             <Layout
               theme={THEME}
@@ -241,6 +242,7 @@ export default function ScrollDemo() {
             >
               {renderPane()}
             </Layout>
+          </div>
           </div>
         </motion.div>
       </div>
