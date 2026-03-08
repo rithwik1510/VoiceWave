@@ -350,6 +350,7 @@ section[id] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-height: 44px;
   border-radius: 999px;
   border: 1px solid rgba(190, 242, 100, 0.9);
   background: linear-gradient(180deg, #d9f99d 0%, #bef264 100%);
@@ -1013,7 +1014,9 @@ section[id] {
 
 .where-marquee-bleed {
   width: 100vw;
+  max-width: 100vw;
   margin-left: calc(50% - 50vw);
+  overflow-x: hidden;
 }
 
 .where-marquee-mask {
@@ -1127,7 +1130,7 @@ section[id] {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .site-shell,
   .site-shell-tight {
     width: min(100%, calc(100% - 1.25rem));

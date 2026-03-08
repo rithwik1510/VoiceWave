@@ -86,6 +86,7 @@ export default function HeroDottedField({
     let scrollVelY = 0
 
     const onScroll = () => {
+      if (coarsePointer) return
       const delta = window.scrollY - lastScrollY
       lastScrollY = window.scrollY
       scrollVelY = Math.max(-0.018, Math.min(0.018, delta * 0.00028))
