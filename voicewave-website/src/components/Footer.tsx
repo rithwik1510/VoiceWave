@@ -17,7 +17,7 @@ export default function Footer() {
               <span className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/55 bg-white/22">
                 <VoiceWaveLogo size={14} strokeWidth={2.6} tone="adaptive" adaptiveOn="light" />
               </span>
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-[#0d2b58] sm:text-[11px]">
+              <span className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-[#0d2b58]">
                 Local Runtime Platform
               </span>
             </div>
@@ -42,7 +42,7 @@ export default function Footer() {
         </div>
 
         <div className="mt-12 border-t border-[#0b2756]/30 pt-6">
-          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#0d2b58]">
+          <p className="font-mono text-xs uppercase tracking-[0.16em] text-[#0d2b58]">
             &copy; {new Date().getFullYear()} VoiceWave Corp. Local mode active.
           </p>
         </div>

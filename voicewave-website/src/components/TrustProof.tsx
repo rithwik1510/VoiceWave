@@ -50,12 +50,12 @@ export default function TrustProof() {
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#64748b]">
             Trust Proof
           </p>
-          <h2 className="mt-3 max-w-3xl font-display text-[clamp(1.9rem,4vw,3.2rem)] leading-[1.03] text-[#0a1020]">
+          <h2 className="mt-3 max-w-3xl font-display text-[clamp(1.6rem,6vw,3.2rem)] leading-[1.03] text-[#0a1020]">
             Teams that use VoiceWave diagnose issues earlier and spend less time resolving
             insertion failures.
           </h2>
 
-          <div className="mt-8 grid gap-4 sm:grid-cols-3">
+          <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3">
             {/* Static stat */}
             <article className="rounded-2xl border border-[#dbe5f2] bg-[#f8fbff] p-4 sm:p-5">
               <p className="text-3xl text-[#0a1020] sm:text-4xl">5x</p>
