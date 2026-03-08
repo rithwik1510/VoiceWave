@@ -227,22 +227,22 @@ export default function ScrollDemo() {
             </span>
           </div>
 
-          <div className="overflow-hidden">
-          <div style={{ zoom: 0.8, width: 'calc(100% / 0.8)' }}>
-            <Layout
-              theme={THEME}
-              activeNav={activeNav}
-              setActiveNav={(next) => setActiveNav(asCorePane(next))}
-              isRecording={isRecording}
-              isPro={false}
-              showProTools={false}
-              profileDisplayName="VoiceWave Demo"
-              profileStatusLabel="Public preview"
-              isProfileAuthenticated={false}
-            >
-              {renderPane()}
-            </Layout>
-          </div>
+          <div style={{ overflow: 'hidden', height: '496px' }}>
+            <div style={{ transform: 'scale(0.8)', transformOrigin: 'top left', width: 'calc(100% / 0.8)' }}>
+              <Layout
+                theme={THEME}
+                activeNav={activeNav}
+                setActiveNav={(next) => setActiveNav(asCorePane(next))}
+                isRecording={isRecording}
+                isPro={false}
+                showProTools={false}
+                profileDisplayName="VoiceWave Demo"
+                profileStatusLabel="Public preview"
+                isProfileAuthenticated={false}
+              >
+                {renderPane()}
+              </Layout>
+            </div>
           </div>
         </motion.div>
       </div>
