@@ -156,6 +156,69 @@ function Test-TabletopDrillArtifact {
   Add-CheckResult "Tabletop drill marked complete" $complete "Requires `Status: Complete` marker."
 }
 
+function Test-DesktopRuntimeUxGuards {
+  $fwRelativePath = "src-tauri/src/inference/faster_whisper.rs"
+  $fwFullPath = Join-Path $repoRoot $fwRelativePath
+  if (-not (Test-Path $fwFullPath)) {
+    Add-CheckResult "Faster-whisper worker spawn guard present" $false "Missing $fwRelativePath"
+  }
+  else {
+    $fwRaw = Get-Content -Path $fwFullPath -Raw
+    $hasNoConsoleFlag = $fwRaw -match "CREATE_NO_WINDOW"
+    Add-CheckResult "Faster-whisper worker uses no-console spawn on Windows" $hasNoConsoleFlag "Requires CREATE_NO_WINDOW spawn flag for worker process."
+  }
+
+  $libRelativePath = "src-tauri/src/lib.rs"
+  $libFullPath = Join-Path $repoRoot $libRelativePath
+  if (-not (Test-Path $libFullPath)) {
+    Add-CheckResult "Desktop tray close guard present" $false "Missing $libRelativePath"
+    return
+  }
+
+  $libRaw = Get-Content -Path $libFullPath -Raw
+  $hasTraySetup = $libRaw -match "configure_system_tray"
+  $hasTrayFallback = $libRaw -match "tray setup failed, falling back to close-to-exit"
+  $hasConditionalClose = $libRaw -match "configure_main_window_close_behavior\(&app_handle,\s*tray_ready\)"
+
+  Add-CheckResult "Desktop tray setup wired" $hasTraySetup "Requires configure_system_tray setup."
+  Add-CheckResult "Desktop tray failure fallback wired" $hasTrayFallback "Requires fallback to close-to-exit when tray setup fails."
+  Add-CheckResult "Main window close behavior tied to tray state" $hasConditionalClose "Requires configure_main_window_close_behavior(..., tray_ready)."
+}
+
+function Test-VersionAlignment {
+  $packageJsonPath = Join-Path $repoRoot "package.json"
+  $cargoTomlPath = Join-Path $repoRoot "src-tauri/Cargo.toml"
+  $tauriConfigPath = Join-Path $repoRoot "src-tauri/tauri.conf.json"
+
+  if (-not (Test-Path $packageJsonPath)) {
+    Add-CheckResult "Version alignment: package.json present" $false "Missing package.json"
+    return
+  }
+  if (-not (Test-Path $cargoTomlPath)) {
+    Add-CheckResult "Version alignment: Cargo.toml present" $false "Missing src-tauri/Cargo.toml"
+    return
+  }
+  if (-not (Test-Path $tauriConfigPath)) {
+    Add-CheckResult "Version alignment: tauri.conf present" $false "Missing src-tauri/tauri.conf.json"
+    return
+  }
+
+  $packageVersion = (Get-Content -Path $packageJsonPath -Raw | ConvertFrom-Json).version
+  $cargoRaw = Get-Content -Path $cargoTomlPath -Raw
+  $cargoMatch = [regex]::Match($cargoRaw, '(?m)^\s*version\s*=\s*"([^"]+)"\s*$')
+  $cargoVersion = if ($cargoMatch.Success) { $cargoMatch.Groups[1].Value } else { "" }
+  $tauriVersion = (Get-Content -Path $tauriConfigPath -Raw | ConvertFrom-Json).version
+
+  Add-CheckResult "Version alignment: package.json parse" (-not [string]::IsNullOrWhiteSpace($packageVersion)) "package.json version=$packageVersion"
+  Add-CheckResult "Version alignment: Cargo.toml parse" (-not [string]::IsNullOrWhiteSpace($cargoVersion)) "Cargo.toml version=$cargoVersion"
+  Add-CheckResult "Version alignment: tauri.conf parse" (-not [string]::IsNullOrWhiteSpace($tauriVersion)) "tauri.conf version=$tauriVersion"
+
+  $versionsAligned =
+    ($packageVersion -eq $cargoVersion) -and
+    ($packageVersion -eq $tauriVersion)
+  Add-CheckResult "Version alignment across package/cargo/tauri" $versionsAligned "package=$packageVersion cargo=$cargoVersion tauri=$tauriVersion"
+}
+
 Invoke-NpmScript -ScriptName "phase4:gate" -Label "Phase 4 technical validation gate"
 
 Push-Location $repoRoot
@@ -190,6 +253,8 @@ Test-LegalComplianceChecklist
 Test-RiskRegisterBlockingState
 Test-RunbookReleaseControls
 Test-TabletopDrillArtifact
+Test-DesktopRuntimeUxGuards
+Test-VersionAlignment
 
 Write-Host ""
 Write-Host "Release Gate Report"
