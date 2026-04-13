@@ -1,4 +1,4 @@
-use super::{backend::gpu_session_cpu_locked, InferenceError};
+use super::InferenceError;
 use crate::settings::DecodeMode;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use directories::ProjectDirs;
@@ -6,13 +6,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{
+    mpsc::{self, RecvTimeoutError},
+    Mutex, OnceLock,
+};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(target_os = "windows")]
+const DETACHED_PROCESS: u32 = 0x00000008;
 
 #[derive(Debug, Clone)]
 pub struct FasterWhisperDecodeOutput {
@@ -106,12 +114,15 @@ struct WorkerResponse {
 struct WorkerProcess {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    stdout: Option<BufReader<ChildStdout>>,
     next_id: u64,
 }
 
 static WORKER: OnceLock<Mutex<Option<WorkerProcess>>> = OnceLock::new();
 const FW_GPU_DISABLED_MARKER: &str = "fw-gpu-disabled.marker";
+const FW_WORKER_RESPONSE_TIMEOUT_MS_DEFAULT: u64 = 75_000;
+const FW_WORKER_RESPONSE_TIMEOUT_MS_MIN: u64 = 3_000;
+const FW_WORKER_RESPONSE_TIMEOUT_MS_MAX: u64 = 300_000;
 
 pub async fn ensure_faster_whisper_ready() -> Result<(), InferenceError> {
     tokio::task::spawn_blocking(ensure_worker_ready_blocking)
@@ -181,13 +192,15 @@ pub async fn transcribe_samples_with_overrides(
         return Err(InferenceError::Cancelled);
     }
     let response = result?;
-    if response.backend_fallback
-        && response.backend_requested.eq_ignore_ascii_case("cuda")
-        && response.backend_used.eq_ignore_ascii_case("cpu")
-    {
-        set_fw_gpu_persistently_disabled(true);
-    } else if response.backend_used.eq_ignore_ascii_case("cuda") {
-        set_fw_gpu_persistently_disabled(false);
+    if should_manage_fw_gpu_disable_marker() {
+        if response.backend_fallback
+            && response.backend_requested.eq_ignore_ascii_case("cuda")
+            && response.backend_used.eq_ignore_ascii_case("cpu")
+        {
+            set_fw_gpu_persistently_disabled(true);
+        } else if response.backend_used.eq_ignore_ascii_case("cuda") {
+            set_fw_gpu_persistently_disabled(false);
+        }
     }
     Ok(FasterWhisperDecodeOutput {
         text: response.text.unwrap_or_default(),
@@ -225,12 +238,7 @@ fn ensure_worker_ready_blocking() -> Result<(), InferenceError> {
 }
 
 fn send_worker_request_blocking(request: WorkerRequest) -> Result<WorkerResponse, InferenceError> {
-    let slot = WORKER.get_or_init(|| Mutex::new(None));
-    let mut guard = slot.lock().map_err(|_| {
-        InferenceError::RuntimeJoin("faster-whisper worker lock poisoned".to_string())
-    })?;
-
-    let worker = ensure_worker(&mut guard)?;
+    let mut worker = checkout_worker()?;
     let payload = serde_json::to_string(&request).map_err(|err| {
         InferenceError::RuntimeJoin(format!("encode worker request failed: {err}"))
     })?;
@@ -238,46 +246,147 @@ fn send_worker_request_blocking(request: WorkerRequest) -> Result<WorkerResponse
         .stdin
         .write_all(payload.as_bytes())
         .map_err(|err| InferenceError::RuntimeJoin(format!("worker stdin write failed: {err}")))?;
-    worker
-        .stdin
-        .write_all(b"\n")
-        .map_err(|err| {
-            InferenceError::RuntimeJoin(format!("worker stdin newline write failed: {err}"))
-        })?;
+    worker.stdin.write_all(b"\n").map_err(|err| {
+        InferenceError::RuntimeJoin(format!("worker stdin newline write failed: {err}"))
+    })?;
     worker
         .stdin
         .flush()
         .map_err(|err| InferenceError::RuntimeJoin(format!("worker stdin flush failed: {err}")))?;
 
-    let mut line = String::new();
-    let bytes = worker.stdout.read_line(&mut line).map_err(|err| {
-        InferenceError::RuntimeJoin(format!("worker stdout read failed: {err}"))
-    })?;
-    if bytes == 0 {
-        *guard = None;
-        return Err(InferenceError::RuntimeJoin(
-            "faster-whisper worker exited unexpectedly".to_string(),
-        ));
-    }
+    let line = match read_worker_response_line_with_timeout(&mut worker, worker_response_timeout())
+    {
+        Ok(value) => value,
+        Err(err) => {
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+            return Err(err);
+        }
+    };
 
-    let response: WorkerResponse = serde_json::from_str(line.trim()).map_err(|err| {
-        InferenceError::RuntimeJoin(format!("parse worker response failed: {err}"))
-    })?;
+    let response: WorkerResponse = match serde_json::from_str(line.trim()) {
+        Ok(value) => value,
+        Err(err) => {
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+            return Err(InferenceError::RuntimeJoin(format!(
+                "parse worker response failed: {err}"
+            )));
+        }
+    };
     if !response.ok {
+        let reason = response
+            .error
+            .unwrap_or_else(|| "faster-whisper request failed".to_string());
+        checkin_worker(worker);
         return Err(InferenceError::DecodeFailed {
             model_id: request.model_id,
-            reason: response
-                .error
-                .unwrap_or_else(|| "faster-whisper request failed".to_string()),
+            reason,
         });
     }
     if response.id != Some(request.id) {
+        let _ = worker.child.kill();
+        let _ = worker.child.wait();
         return Err(InferenceError::RuntimeJoin(format!(
             "worker response id mismatch (expected {}, got {:?})",
             request.id, response.id
         )));
     }
+    checkin_worker(worker);
     Ok(response)
+}
+
+fn checkout_worker() -> Result<WorkerProcess, InferenceError> {
+    let slot = WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = slot.lock().map_err(|_| {
+        InferenceError::RuntimeJoin("faster-whisper worker lock poisoned".to_string())
+    })?;
+    let _ = ensure_worker(&mut guard)?;
+    guard.take().ok_or_else(|| {
+        InferenceError::RuntimeJoin("failed to acquire faster-whisper worker".to_string())
+    })
+}
+
+fn checkin_worker(mut worker: WorkerProcess) {
+    let slot = WORKER.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = slot.lock() {
+        if guard.is_none() {
+            *guard = Some(worker);
+            return;
+        }
+    }
+    let _ = worker.child.kill();
+    let _ = worker.child.wait();
+}
+
+fn worker_response_timeout() -> Duration {
+    let timeout_ms = std::env::var("VOICEWAVE_FW_WORKER_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| {
+            value.clamp(
+                FW_WORKER_RESPONSE_TIMEOUT_MS_MIN,
+                FW_WORKER_RESPONSE_TIMEOUT_MS_MAX,
+            )
+        })
+        .unwrap_or(FW_WORKER_RESPONSE_TIMEOUT_MS_DEFAULT);
+    Duration::from_millis(timeout_ms)
+}
+
+fn read_worker_response_line_with_timeout(
+    worker: &mut WorkerProcess,
+    timeout: Duration,
+) -> Result<String, InferenceError> {
+    let stdout = worker
+        .stdout
+        .take()
+        .ok_or_else(|| InferenceError::RuntimeJoin("worker stdout unavailable".to_string()))?;
+    let (tx, rx) = mpsc::channel();
+
+    // Read worker stdout on a helper thread so stalled GPU decode cannot block forever.
+    std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut line = String::new();
+        let result = match stdout.read_line(&mut line) {
+            Ok(bytes) => Ok((stdout, bytes, line)),
+            Err(err) => Err((stdout, err)),
+        };
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok((stdout, bytes, line))) => {
+            worker.stdout = Some(stdout);
+            if bytes == 0 {
+                return Err(InferenceError::RuntimeJoin(
+                    "faster-whisper worker exited unexpectedly".to_string(),
+                ));
+            }
+            Ok(line)
+        }
+        Ok(Err((stdout, err))) => {
+            worker.stdout = Some(stdout);
+            Err(InferenceError::RuntimeJoin(format!(
+                "worker stdout read failed: {err}"
+            )))
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            let timeout_ms = timeout.as_millis();
+            let pid = worker.child.id();
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+            Err(InferenceError::RuntimeJoin(format!(
+                "faster-whisper worker timed out after {timeout_ms} ms waiting for decode result (pid {pid}); worker restarted"
+            )))
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+            Err(InferenceError::RuntimeJoin(
+                "faster-whisper worker response channel disconnected".to_string(),
+            ))
+        }
+    }
 }
 
 fn ensure_worker<'a>(
@@ -297,15 +406,16 @@ fn ensure_worker<'a>(
 
 fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
     let worker_path = resolve_worker_path()?;
-    let python = resolve_python_path();
+    let python = resolve_python_path()?;
     let hf_home = hf_home_dir();
     let hub_cache = hf_home.join("hub");
     fs::create_dir_all(&hub_cache).map_err(|err| {
-        InferenceError::RuntimeJoin(format!("failed to create faster-whisper cache directories: {err}"))
+        InferenceError::RuntimeJoin(format!(
+            "failed to create faster-whisper cache directories: {err}"
+        ))
     })?;
 
-    let thread_cap = preferred_worker_thread_cap()
-        .to_string();
+    let thread_cap = preferred_worker_thread_cap().to_string();
 
     let mut command = Command::new(&python);
     command
@@ -318,6 +428,11 @@ fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        // Prevent python worker startup from flashing a console window in desktop builds.
+        command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
     let cuda_bins = resolve_cuda_bin_paths(&python);
     if !cuda_bins.is_empty() {
         let prepend = cuda_bins
@@ -340,7 +455,7 @@ fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
     }
     let mut child = command.spawn().map_err(|err| {
         InferenceError::RuntimeJoin(format!(
-            "failed to spawn faster-whisper worker using '{python}': {err}. Run scripts/faster_whisper/setup-faster-whisper-cpu.ps1 first."
+            "failed to spawn faster-whisper worker using '{python}': {err}. Reinstall the latest beta build or configure VOICEWAVE_FASTER_WHISPER_PYTHON."
         ))
     })?;
 
@@ -355,9 +470,9 @@ fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
     let mut stdout_reader = BufReader::new(stdout);
 
     let mut ready_line = String::new();
-    let ready_bytes = stdout_reader.read_line(&mut ready_line).map_err(|err| {
-        InferenceError::RuntimeJoin(format!("worker ready read failed: {err}"))
-    })?;
+    let ready_bytes = stdout_reader
+        .read_line(&mut ready_line)
+        .map_err(|err| InferenceError::RuntimeJoin(format!("worker ready read failed: {err}")))?;
     if ready_bytes == 0 {
         let stderr = child
             .stderr
@@ -377,7 +492,7 @@ fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
     Ok(WorkerProcess {
         child,
         stdin,
-        stdout: stdout_reader,
+        stdout: Some(stdout_reader),
         next_id: 1,
     })
 }
@@ -390,14 +505,7 @@ fn resolve_worker_path() -> Result<PathBuf, InferenceError> {
         }
     }
 
-    let candidates = [
-        PathBuf::from("scripts").join("faster_whisper").join("worker.py"),
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("scripts")
-            .join("faster_whisper")
-            .join("worker.py"),
-    ];
+    let candidates = worker_path_candidates();
     for candidate in candidates {
         if candidate.exists() {
             return Ok(candidate);
@@ -405,34 +513,160 @@ fn resolve_worker_path() -> Result<PathBuf, InferenceError> {
     }
 
     Err(InferenceError::RuntimeJoin(
-        "faster-whisper worker.py not found. Expected scripts/faster_whisper/worker.py"
-            .to_string(),
+        "faster-whisper worker is missing from this install. Reinstall the latest beta build or configure VOICEWAVE_FASTER_WHISPER_WORKER.".to_string(),
     ))
 }
 
-fn resolve_python_path() -> String {
+fn resolve_python_path() -> Result<String, InferenceError> {
     if let Ok(path) = std::env::var("VOICEWAVE_FASTER_WHISPER_PYTHON") {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
-            return trimmed.to_string();
+            let candidate = PathBuf::from(trimmed);
+            if candidate.exists() {
+                return Ok(candidate.to_string_lossy().to_string());
+            }
         }
     }
 
-    let venv_python = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(".venv-faster-whisper")
-        .join("Scripts")
-        .join("python.exe");
-    if venv_python.exists() {
-        return venv_python.to_string_lossy().to_string();
+    for candidate in python_path_candidates() {
+        if candidate.exists() {
+            return Ok(candidate.to_string_lossy().to_string());
+        }
     }
 
-    "python".to_string()
+    Err(InferenceError::RuntimeJoin(
+        "faster-whisper python runtime is missing from this install. Reinstall the latest beta build or configure VOICEWAVE_FASTER_WHISPER_PYTHON.".to_string(),
+    ))
+}
+
+fn worker_path_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(exe_dir) = current_exe_dir() {
+        candidates.push(exe_dir.join("faster-whisper").join("worker.py"));
+        candidates.push(
+            exe_dir
+                .join("resources")
+                .join("faster-whisper")
+                .join("worker.py"),
+        );
+    }
+
+    if let Some(app_support_dir) = app_support_dir() {
+        candidates.push(app_support_dir.join("faster-whisper").join("worker.py"));
+    }
+
+    candidates.push(
+        PathBuf::from("scripts")
+            .join("faster_whisper")
+            .join("worker.py"),
+    );
+    candidates.push(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("faster_whisper")
+            .join("worker.py"),
+    );
+
+    candidates
+}
+
+fn python_path_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(exe_dir) = current_exe_dir() {
+        candidates.extend(python_layout_candidates(&exe_dir.join("faster-whisper")));
+        candidates.extend(python_layout_candidates(
+            &exe_dir.join("resources").join("faster-whisper"),
+        ));
+    }
+
+    if let Some(app_support_dir) = app_support_dir() {
+        candidates.extend(python_layout_candidates(&app_support_dir.join("faster-whisper")));
+    }
+
+    candidates.extend(python_layout_candidates(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".venv-faster-whisper"),
+    ));
+
+    candidates.extend(installed_system_python_candidates());
+    dedupe_existing_paths(candidates)
+}
+
+fn python_layout_candidates(root: &Path) -> Vec<PathBuf> {
+    vec![
+        root.join("Scripts").join("python.exe"),
+        root.join("python.exe"),
+        root.join("python").join("Scripts").join("python.exe"),
+        root.join("python").join("python.exe"),
+    ]
+}
+
+fn installed_system_python_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let programs_dir = PathBuf::from(local_app_data).join("Programs").join("Python");
+        if let Ok(entries) = fs::read_dir(programs_dir) {
+            let mut installs = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|value| value.starts_with("Python"))
+                })
+                .collect::<Vec<_>>();
+            installs.sort_by(|left, right| right.cmp(left));
+            for install in installs {
+                candidates.push(install.join("python.exe"));
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("where.exe").arg("python").output() {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.contains("\\WindowsApps\\") {
+                    continue;
+                }
+                candidates.push(PathBuf::from(trimmed));
+            }
+        }
+    }
+
+    candidates
+}
+
+fn dedupe_existing_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    paths.into_iter()
+        .filter(|path| seen.insert(path.to_string_lossy().to_ascii_lowercase()))
+        .collect()
+}
+
+fn current_exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+fn app_support_dir() -> Option<PathBuf> {
+    ProjectDirs::from("com", "voicewave", "localcore")
+        .map(|dirs| dirs.data_dir().join("runtime-support"))
 }
 
 fn resolve_cuda_bin_path() -> Option<PathBuf> {
     if let Ok(cuda_root) = std::env::var("CUDA_PATH") {
         let root = PathBuf::from(cuda_root.trim());
+        let bin_x64 = root.join("bin").join("x64");
+        if bin_x64.exists() {
+            return Some(bin_x64);
+        }
         let bin = root.join("bin");
         if bin.exists() {
             return Some(bin);
@@ -459,7 +693,10 @@ fn resolve_cuda_bin_path() -> Option<PathBuf> {
     versions.sort_by(|a, b| b.cmp(a));
     versions
         .into_iter()
-        .map(|path| path.join("bin"))
+        .flat_map(|path| {
+            let bin = path.join("bin");
+            [bin.join("x64"), bin]
+        })
         .find(|bin| bin.exists())
 }
 
@@ -558,13 +795,25 @@ fn worker_request_for(
 }
 
 fn worker_backend_preference_for_model(model_id: &str) -> String {
+    let force_cpu = env_flag("VOICEWAVE_FORCE_CPU", false);
+    let force_gpu = env_flag("VOICEWAVE_FORCE_GPU", false);
+    let auto_gpu_enabled = env_flag("VOICEWAVE_AUTO_GPU", true);
+    // By default, ignore the persistent GPU-disable marker so that GPU can be
+    // retried on subsequent runs unless the user explicitly opts back into the
+    // old sticky-disable behavior.
+    let respect_disable_marker = env_flag("VOICEWAVE_RESPECT_FW_GPU_DISABLE_MARKER", false);
+    let persistently_disabled = if respect_disable_marker {
+        fw_gpu_persistently_disabled()
+    } else {
+        false
+    };
+
     select_worker_backend_preference(
         model_id,
-        env_flag("VOICEWAVE_FORCE_CPU", false),
-        env_flag("VOICEWAVE_FORCE_GPU", false),
-        gpu_session_cpu_locked(),
-        fw_gpu_persistently_disabled(),
-        env_flag("VOICEWAVE_AUTO_GPU", true),
+        force_cpu,
+        force_gpu,
+        persistently_disabled,
+        auto_gpu_enabled,
     )
     .to_string()
 }
@@ -573,7 +822,6 @@ fn select_worker_backend_preference(
     model_id: &str,
     force_cpu: bool,
     force_gpu: bool,
-    session_cpu_locked: bool,
     persistently_disabled: bool,
     auto_gpu_enabled: bool,
 ) -> &'static str {
@@ -583,7 +831,7 @@ fn select_worker_backend_preference(
     if force_gpu {
         return "cuda";
     }
-    if session_cpu_locked || persistently_disabled || !auto_gpu_enabled {
+    if persistently_disabled || !auto_gpu_enabled {
         return "cpu";
     }
     if is_gpu_preferred_model(model_id) {
@@ -629,6 +877,10 @@ fn fw_gpu_persistently_disabled() -> bool {
     fw_gpu_disable_marker_path()
         .as_ref()
         .is_some_and(|path| path.exists())
+}
+
+fn should_manage_fw_gpu_disable_marker() -> bool {
+    env_flag("VOICEWAVE_RESPECT_FW_GPU_DISABLE_MARKER", false)
 }
 
 fn set_fw_gpu_persistently_disabled(disabled: bool) {
@@ -709,8 +961,8 @@ fn decode_hyperparams_for(model_id: &str, decode_mode: DecodeMode) -> (u32, u32)
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_hyperparams_for, encode_pcm16_base64, select_worker_backend_preference, worker_request_for,
-        FasterWhisperRequestOverrides,
+        decode_hyperparams_for, encode_pcm16_base64, select_worker_backend_preference,
+        worker_request_for, FasterWhisperRequestOverrides,
     };
     use crate::settings::DecodeMode;
 
@@ -808,36 +1060,33 @@ mod tests {
 
     #[test]
     fn backend_policy_prefers_auto_for_small_model_when_gpu_is_allowed() {
-        let backend = select_worker_backend_preference("small.en", false, false, false, false, true);
+        let backend = select_worker_backend_preference("small.en", false, false, false, true);
         assert_eq!(backend, "auto");
     }
 
     #[test]
     fn backend_policy_keeps_tiny_and_base_on_cpu_by_default() {
-        let tiny = select_worker_backend_preference("tiny.en", false, false, false, false, true);
-        let base = select_worker_backend_preference("base.en", false, false, false, false, true);
+        let tiny = select_worker_backend_preference("tiny.en", false, false, false, true);
+        let base = select_worker_backend_preference("base.en", false, false, false, true);
         assert_eq!(tiny, "cpu");
         assert_eq!(base, "cpu");
     }
 
     #[test]
     fn backend_policy_honors_force_flags_in_safe_order() {
-        let force_gpu = select_worker_backend_preference("small.en", false, true, true, true, false);
+        let force_gpu = select_worker_backend_preference("small.en", false, true, true, false);
         assert_eq!(force_gpu, "cuda");
 
-        let force_cpu = select_worker_backend_preference("small.en", true, true, false, false, true);
+        let force_cpu = select_worker_backend_preference("small.en", true, true, false, true);
         assert_eq!(force_cpu, "cpu");
     }
 
     #[test]
-    fn backend_policy_falls_back_to_cpu_when_gpu_session_is_blocked() {
-        let session_locked =
-            select_worker_backend_preference("small.en", false, false, true, false, true);
+    fn backend_policy_falls_back_to_cpu_when_gpu_is_persistently_disabled_or_auto_off() {
         let persistent_lock =
-            select_worker_backend_preference("small.en", false, false, false, true, true);
+            select_worker_backend_preference("small.en", false, false, true, true);
         let auto_disabled =
-            select_worker_backend_preference("small.en", false, false, false, false, false);
-        assert_eq!(session_locked, "cpu");
+            select_worker_backend_preference("small.en", false, false, false, false);
         assert_eq!(persistent_lock, "cpu");
         assert_eq!(auto_disabled, "cpu");
     }

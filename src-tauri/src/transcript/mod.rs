@@ -222,7 +222,10 @@ fn format_spoken_numbered_list(input: &str) -> Option<String> {
     if entries[0].0 != 1 {
         return None;
     }
-    if !entries.windows(2).all(|window| window[1].0 == window[0].0 + 1) {
+    if !entries
+        .windows(2)
+        .all(|window| window[1].0 == window[0].0 + 1)
+    {
         return None;
     }
     let list_intent_from_intro = if preamble_words.is_empty() {
@@ -233,13 +236,10 @@ fn format_spoken_numbered_list(input: &str) -> Option<String> {
     if !preamble_words.is_empty() && !list_intent_from_intro && !saw_compound_number_marker {
         return None;
     }
-    if entries
-        .iter()
-        .any(|(_, words)| {
-            words.is_empty()
-                || (!list_intent_from_intro && !saw_compound_number_marker && words.len() < 2)
-        })
-    {
+    if entries.iter().any(|(_, words)| {
+        words.is_empty()
+            || (!list_intent_from_intro && !saw_compound_number_marker && words.len() < 2)
+    }) {
         return None;
     }
 
@@ -472,15 +472,8 @@ fn apply_domain_corrections(input: &str, packs: &[DomainPackId]) -> String {
                 ("javascript", "JavaScript"),
                 ("rust", "Rust"),
             ],
-            DomainPackId::Student => &[
-                ("gpa", "GPA"),
-                ("phd", "PhD"),
-                ("masters", "Master's"),
-            ],
-            DomainPackId::Productivity => &[
-                ("to do", "to-do"),
-                ("follow up", "follow-up"),
-            ],
+            DomainPackId::Student => &[("gpa", "GPA"), ("phd", "PhD"), ("masters", "Master's")],
+            DomainPackId::Productivity => &[("to do", "to-do"), ("follow up", "follow-up")],
         };
 
         for (from, to) in replacements {
@@ -621,7 +614,9 @@ fn format_study_note_sections(input: &str) -> Option<String> {
     Some(
         sections
             .into_iter()
-            .map(|(label, words)| format!("{label}: {}", format_sentence_fragment(&words.join(" "))))
+            .map(|(label, words)| {
+                format!("{label}: {}", format_sentence_fragment(&words.join(" ")))
+            })
             .collect::<Vec<_>>()
             .join("\n"),
     )
@@ -656,7 +651,9 @@ fn apply_app_profile_behavior(input: &str, behavior: &AppProfileBehavior) -> Str
     }
 
     if behavior.punctuation_aggressiveness == 0 {
-        text = text.trim_end_matches(|ch| matches!(ch, '.' | '!' | '?')).to_string();
+        text = text
+            .trim_end_matches(|ch| matches!(ch, '.' | '!' | '?'))
+            .to_string();
     } else if behavior.punctuation_aggressiveness >= 2 {
         text = ensure_terminal_punctuation(&text);
     }
@@ -717,9 +714,9 @@ fn apply_code_mode(input: &str, settings: &CodeModeSettings) -> String {
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
 
-    let has_non_word_symbols = text.chars().any(|ch| {
-        !(ch.is_ascii_alphanumeric() || ch == '_' || ch.is_whitespace())
-    });
+    let has_non_word_symbols = text
+        .chars()
+        .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '_' || ch.is_whitespace()));
     if words.len() > 1 && words.len() <= 8 && !has_non_word_symbols {
         text = match settings.preferred_casing {
             CodeCasingStyle::Preserve => text,
@@ -775,7 +772,19 @@ fn compact_symbol_spacing(input: &str) -> String {
 fn is_tight_code_symbol(ch: char) -> bool {
     matches!(
         ch,
-        '(' | ')' | '[' | ']' | '{' | '}' | '_' | ',' | '.' | ':' | ';' | '=' | '+' | '-'
+        '(' | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '_'
+            | ','
+            | '.'
+            | ':'
+            | ';'
+            | '='
+            | '+'
+            | '-'
             | '*'
             | '/'
             | '<'
@@ -796,7 +805,11 @@ fn to_camel_case(words: &[&str]) -> String {
     out
 }
 
-fn replace_boundary_phrase_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
+fn replace_boundary_phrase_case_insensitive(
+    input: &str,
+    needle: &str,
+    replacement: &str,
+) -> String {
     let source_chars = input.chars().collect::<Vec<_>>();
     let source_lower = input.to_ascii_lowercase();
     let lower_chars = source_lower.chars().collect::<Vec<_>>();
@@ -813,7 +826,8 @@ fn replace_boundary_phrase_case_insensitive(input: &str, needle: &str, replaceme
         let end = idx + needle_chars.len();
         if end <= lower_chars.len() && lower_chars[idx..end] == needle_chars[..] {
             let boundary_before = idx == 0 || !source_chars[idx - 1].is_ascii_alphanumeric();
-            let boundary_after = end == source_chars.len() || !source_chars[end].is_ascii_alphanumeric();
+            let boundary_after =
+                end == source_chars.len() || !source_chars[end].is_ascii_alphanumeric();
             if boundary_before && boundary_after {
                 out.push_str(replacement);
                 idx = end;
@@ -898,8 +912,9 @@ mod tests {
 
     #[test]
     fn finalize_formats_spoken_numbered_lists() {
-        let output =
-            finalize_user_transcript("one fix microphone settings two check model install three run dictation test");
+        let output = finalize_user_transcript(
+            "one fix microphone settings two check model install three run dictation test",
+        );
         assert_eq!(
             output,
             "1. Fix microphone settings.\n2. Check model install.\n3. Run dictation test."
@@ -1007,7 +1022,8 @@ mod tests {
             custom_terms: &[],
         };
 
-        let output = finalize_pro_transcript("open paren user id close paren arrow result", &options);
+        let output =
+            finalize_pro_transcript("open paren user id close paren arrow result", &options);
         assert_eq!(output, "(user id)->result");
     }
 

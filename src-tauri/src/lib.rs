@@ -49,6 +49,8 @@ use state::{DictationMode, VoiceWaveController, VoiceWaveSnapshot};
 use std::sync::Arc;
 #[cfg(feature = "desktop")]
 use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     LogicalSize, Manager, PhysicalPosition, Position, Size, State, WebviewUrl,
     WebviewWindowBuilder, WindowEvent,
 };
@@ -69,6 +71,12 @@ const PILL_WINDOW_COMPACT_BOTTOM_MARGIN: f64 = 14.0;
 const PILL_WINDOW_REVIEW_BOTTOM_MARGIN: f64 = 54.0;
 #[cfg(feature = "desktop")]
 const PILL_WINDOW_NUDGE_X: i32 = -22;
+#[cfg(feature = "desktop")]
+const TRAY_ID: &str = "voicewave-tray";
+#[cfg(feature = "desktop")]
+const TRAY_SHOW_ID: &str = "show";
+#[cfg(feature = "desktop")]
+const TRAY_QUIT_ID: &str = "quit";
 
 #[cfg(feature = "desktop")]
 #[derive(Clone)]
@@ -96,25 +104,22 @@ fn ensure_pill_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, St
         return Ok(window);
     }
 
-    let builder = WebviewWindowBuilder::new(
-        app,
-        PILL_WINDOW_LABEL,
-        WebviewUrl::App("pill.html".into()),
-    )
-    .title("VoiceWave Pill")
-    .inner_size(PILL_WINDOW_COMPACT_WIDTH, PILL_WINDOW_COMPACT_HEIGHT)
-    .resizable(false)
-    .maximizable(false)
-    .minimizable(false)
-    .closable(false)
-    .focused(false)
-    .visible(false)
-    .transparent(true)
-    .decorations(false)
-    .always_on_top(true)
-    .visible_on_all_workspaces(true)
-    .skip_taskbar(true)
-    .shadow(false);
+    let builder =
+        WebviewWindowBuilder::new(app, PILL_WINDOW_LABEL, WebviewUrl::App("pill.html".into()))
+            .title("VoiceWave Pill")
+            .inner_size(PILL_WINDOW_COMPACT_WIDTH, PILL_WINDOW_COMPACT_HEIGHT)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .closable(false)
+            .focused(false)
+            .visible(false)
+            .transparent(true)
+            .decorations(false)
+            .always_on_top(true)
+            .visible_on_all_workspaces(true)
+            .skip_taskbar(true)
+            .shadow(false);
 
     let window = builder
         .build()
@@ -184,16 +189,73 @@ fn sync_pill_visibility(app: &tauri::AppHandle, visible: bool) -> Result<(), Str
 }
 
 #[cfg(feature = "desktop")]
-fn configure_main_window_close_behavior(app: &tauri::AppHandle) {
+fn configure_main_window_close_behavior(app: &tauri::AppHandle, hide_to_tray: bool) {
     if let Some(main_window) = app.get_webview_window("main") {
         let window_for_handler = main_window.clone();
         main_window.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window_for_handler.hide();
+                if hide_to_tray {
+                    api.prevent_close();
+                    let _ = window_for_handler.hide();
+                }
             }
         });
     }
+}
+
+#[cfg(feature = "desktop")]
+fn configure_system_tray(app: &tauri::AppHandle) -> Result<(), String> {
+    let show_item = MenuItemBuilder::with_id(TRAY_SHOW_ID, "Open VoiceWave")
+        .build(app)
+        .map_err(|err| format!("failed to build tray show item: {err}"))?;
+    let quit_item = MenuItemBuilder::with_id(TRAY_QUIT_ID, "Quit VoiceWave")
+        .build(app)
+        .map_err(|err| format!("failed to build tray quit item: {err}"))?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show_item, &quit_item])
+        .build()
+        .map_err(|err| format!("failed to build tray menu: {err}"))?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "default window icon is unavailable for tray".to_string())?;
+
+    TrayIconBuilder::with_id(TRAY_ID)
+        .icon(icon)
+        .tooltip("VoiceWave")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| {
+            match event.id().as_ref() {
+                TRAY_SHOW_ID => {
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = show_main_window(app_handle).await;
+                    });
+                }
+                TRAY_QUIT_ID => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event: TrayIconEvent| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = show_main_window(app).await;
+                });
+            }
+        })
+        .build(app)
+        .map_err(|err| format!("failed to create system tray icon: {err}"))?;
+    Ok(())
 }
 
 #[cfg(feature = "desktop")]
@@ -514,9 +576,7 @@ async fn get_permission_snapshot(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn list_input_devices(
-    runtime: State<'_, RuntimeContext>,
-) -> Result<Vec<String>, String> {
+async fn list_input_devices(runtime: State<'_, RuntimeContext>) -> Result<Vec<String>, String> {
     Ok(runtime.controller.list_input_devices().await)
 }
 
@@ -953,11 +1013,17 @@ pub fn run() {
                     .await;
             });
 
-            app.manage(RuntimeContext {
-                controller,
-            });
+            app.manage(RuntimeContext { controller });
 
-            configure_main_window_close_behavior(&app.handle().clone());
+            let app_handle = app.handle().clone();
+            let tray_ready = match configure_system_tray(&app_handle) {
+                Ok(_) => true,
+                Err(err) => {
+                    eprintln!("voicewave: tray setup failed, falling back to close-to-exit: {err}");
+                    false
+                }
+            };
+            configure_main_window_close_behavior(&app_handle, tray_ready);
             sync_pill_visibility(&app.handle().clone(), initial_settings.show_floating_hud)
                 .map_err(|err| -> Box<dyn std::error::Error> {
                     Box::new(std::io::Error::other(err))

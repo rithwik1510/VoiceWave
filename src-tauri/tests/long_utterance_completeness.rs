@@ -30,7 +30,9 @@ impl InsertionBackend for CaptureBackend {
         text: &str,
         _target_app: Option<&str>,
     ) -> Result<BackendInsertSuccess, String> {
-        *capture_slot().lock().expect("capture mutex should be available") = Some(text.to_string());
+        *capture_slot()
+            .lock()
+            .expect("capture mutex should be available") = Some(text.to_string());
         Ok(BackendInsertSuccess {
             message: None,
             undo_token: Some(UndoToken::KeyboardUndo),
@@ -71,8 +73,20 @@ fn build_long_utterance(target_seconds: usize, suffix_terms: &[&str]) -> String 
     let target_words = target_seconds * 25 / 10;
     let mut words = Vec::with_capacity(target_words + suffix_terms.len());
     let corpus = [
-        "this", "phase", "five", "reliability", "pass", "keeps", "dictation", "stable",
-        "through", "long", "sentences", "without", "tail", "loss",
+        "this",
+        "phase",
+        "five",
+        "reliability",
+        "pass",
+        "keeps",
+        "dictation",
+        "stable",
+        "through",
+        "long",
+        "sentences",
+        "without",
+        "tail",
+        "loss",
     ];
     for idx in 0..target_words {
         words.push(corpus[idx % corpus.len()].to_string());
@@ -90,7 +104,9 @@ fn assert_paths_receive_full_transcript(transcript: &str, suffix_terms: &[&str])
     };
 
     // Insertion path: backend receives full text without truncation.
-    *capture_slot().lock().expect("capture mutex should be available") = None;
+    *capture_slot()
+        .lock()
+        .expect("capture mutex should be available") = None;
     let mut insertion = InsertionEngine::new(Box::new(CaptureBackend));
     let insert_result = insertion
         .insert_text(InsertTextRequest {

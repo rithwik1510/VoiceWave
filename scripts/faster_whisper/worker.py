@@ -19,6 +19,54 @@ MODEL_CACHE = {}
 ALLOWED_MODELS = {"small.en", "large-v3"}
 GPU_CAPABILITY_CACHE = None
 CUDA_RUNTIME_LIBS_READY_CACHE = None
+CUDA_DLL_DIR_HANDLES = []
+
+
+def _candidate_cuda_bin_dirs() -> list[str]:
+    dirs: list[str] = []
+
+    cuda_root = os.getenv("CUDA_PATH")
+    if cuda_root:
+        dirs.append(str(Path(cuda_root) / "bin"))
+        dirs.append(str(Path(cuda_root) / "bin" / "x64"))
+
+    venv_root = Path(sys.executable).resolve().parent.parent
+    nvidia_root = venv_root / "Lib" / "site-packages" / "nvidia"
+    if nvidia_root.exists():
+        for entry in nvidia_root.iterdir():
+            bin_dir = entry / "bin"
+            if bin_dir.exists():
+                dirs.append(str(bin_dir))
+
+    deduped = []
+    seen = set()
+    for value in dirs:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        if not Path(normalized).exists():
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def register_cuda_dll_dirs() -> None:
+    if os.name != "nt":
+        return
+    if not hasattr(os, "add_dll_directory"):
+        return
+    if CUDA_DLL_DIR_HANDLES:
+        return
+
+    for path in _candidate_cuda_bin_dirs():
+        try:
+            handle = os.add_dll_directory(path)
+            CUDA_DLL_DIR_HANDLES.append(handle)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def env_flag(name: str, default_value: bool) -> bool:
@@ -41,6 +89,7 @@ def normalize_backend_preference(raw_backend: str | None) -> str:
 
 
 def cuda_available() -> bool:
+    register_cuda_dll_dirs()
     global GPU_CAPABILITY_CACHE
     if GPU_CAPABILITY_CACHE is not None:
         return GPU_CAPABILITY_CACHE
@@ -55,25 +104,27 @@ def cuda_available() -> bool:
 
 
 def cuda_runtime_libs_ready() -> bool:
+    register_cuda_dll_dirs()
     global CUDA_RUNTIME_LIBS_READY_CACHE
     if CUDA_RUNTIME_LIBS_READY_CACHE is not None:
         return CUDA_RUNTIME_LIBS_READY_CACHE
 
-    # CTranslate2 capability probing is the most reliable runtime signal on
-    # Windows because CUDA DLLs may be loaded from package-scoped paths.
-    if ctranslate2 is not None:
-        try:
-            supported = ctranslate2.get_supported_compute_types("cuda")
-            if supported:
-                CUDA_RUNTIME_LIBS_READY_CACHE = True
-                return CUDA_RUNTIME_LIBS_READY_CACHE
-        except Exception:  # noqa: BLE001
-            pass
-
+    # Avoid false positives: CTranslate2 may report CUDA support even when
+    # cublas runtime DLL cannot be loaded at decode time.
     required = ["cublas64_12.dll"]
     for dll in required:
         try:
             ctypes.WinDLL(dll)
+        except Exception:  # noqa: BLE001
+            CUDA_RUNTIME_LIBS_READY_CACHE = False
+            return CUDA_RUNTIME_LIBS_READY_CACHE
+
+    if ctranslate2 is not None:
+        try:
+            supported = ctranslate2.get_supported_compute_types("cuda")
+            if not supported:
+                CUDA_RUNTIME_LIBS_READY_CACHE = False
+                return CUDA_RUNTIME_LIBS_READY_CACHE
         except Exception:  # noqa: BLE001
             CUDA_RUNTIME_LIBS_READY_CACHE = False
             return CUDA_RUNTIME_LIBS_READY_CACHE

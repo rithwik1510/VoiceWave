@@ -495,8 +495,8 @@ fn encrypt_history_store(
     store: &HistoryStore,
     key: &[u8; 32],
 ) -> Result<EncryptedHistoryStore, HistoryError> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|err| HistoryError::Encrypt(err.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|err| HistoryError::Encrypt(err.to_string()))?;
     let mut nonce_bytes = [0_u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -533,8 +533,8 @@ fn decrypt_history_store(
         return Err(HistoryError::Decrypt("nonce must be 12 bytes".to_string()));
     }
 
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|err| HistoryError::Decrypt(err.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|err| HistoryError::Decrypt(err.to_string()))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let plaintext = cipher
         .decrypt(nonce, ciphertext.as_ref())
@@ -575,8 +575,10 @@ mod tests {
 
     #[test]
     fn persisted_history_is_encrypted() {
-        let temp = std::env::temp_dir().join(format!("voicewave-history-encrypted-{}.json", now_utc_ms()));
-        let key_path = std::env::temp_dir().join(format!("voicewave-history-encrypted-{}.key", now_utc_ms()));
+        let temp =
+            std::env::temp_dir().join(format!("voicewave-history-encrypted-{}.json", now_utc_ms()));
+        let key_path =
+            std::env::temp_dir().join(format!("voicewave-history-encrypted-{}.key", now_utc_ms()));
         let key = load_or_create_key(&key_path).expect("key");
         let mut manager = HistoryManager {
             path: temp.clone(),

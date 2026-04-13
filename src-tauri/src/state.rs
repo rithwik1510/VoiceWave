@@ -1277,8 +1277,8 @@ impl VoiceWaveController {
                     push_down_streak = 0;
                 }
 
-                // Debounce modifier-only hotkey polling edges (Ctrl+Windows) to avoid
-                // transient press/release oscillation on Windows key state sampling.
+                // Debounce polling edges to avoid transient press/release oscillation
+                // on Windows key state sampling.
                 if !push_was_down && push_down_streak >= PUSH_PRESS_CONFIRM_SAMPLES {
                     let controller_for_action = controller.clone();
                     let app_for_action = app.clone();
@@ -1761,7 +1761,7 @@ impl VoiceWaveController {
 
             ensure_faster_whisper_ready().await.map_err(|err| {
                         ControllerError::Runtime(format!(
-                            "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-gpu.ps1 first."
+                            "Faster-Whisper runtime is not ready: {err}. Reinstall the latest beta build or configure the bundled runtime."
                         ))
                     })?;
             let prefetching = ModelStatus {
@@ -3436,7 +3436,7 @@ impl VoiceWaveController {
                     if !assume_fw_ready {
                         ensure_faster_whisper_ready().await.map_err(|err| {
                             ControllerError::Runtime(format!(
-                                "Faster-Whisper runtime is not ready: {err}. Run scripts/faster_whisper/setup-faster-whisper-gpu.ps1."
+                                "Faster-Whisper runtime is not ready: {err}. Reinstall the latest beta build or configure the bundled runtime."
                             ))
                         })?;
                     }

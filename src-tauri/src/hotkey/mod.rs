@@ -295,21 +295,9 @@ fn is_parsed_pressed(parsed: &ParsedHotkey) -> bool {
             VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
         };
 
-        let ctrl_down = key_down_any(&[
-            VK_CONTROL as u16,
-            VK_LCONTROL as u16,
-            VK_RCONTROL as u16,
-        ]);
-        let shift_down = key_down_any(&[
-            VK_SHIFT as u16,
-            VK_LSHIFT as u16,
-            VK_RSHIFT as u16,
-        ]);
-        let alt_down = key_down_any(&[
-            VK_MENU as u16,
-            VK_LMENU as u16,
-            VK_RMENU as u16,
-        ]);
+        let ctrl_down = key_down_any(&[VK_CONTROL as u16, VK_LCONTROL as u16, VK_RCONTROL as u16]);
+        let shift_down = key_down_any(&[VK_SHIFT as u16, VK_LSHIFT as u16, VK_RSHIFT as u16]);
+        let alt_down = key_down_any(&[VK_MENU as u16, VK_LMENU as u16, VK_RMENU as u16]);
         let super_down = key_down(VK_LWIN as u16) || key_down(VK_RWIN as u16);
 
         if parsed.ctrl != ctrl_down

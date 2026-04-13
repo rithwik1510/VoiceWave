@@ -1,5 +1,5 @@
-use whisper_rs::WhisperContextParameters;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use whisper_rs::WhisperContextParameters;
 
 const DEFAULT_GPU_DEVICE_ID: i32 = 0;
 const GPU_FAILURE_LOCK_THRESHOLD: u8 = 2;

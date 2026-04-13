@@ -13,6 +13,7 @@ use backend::{
     context_params_for_backend, note_gpu_runtime_failure, preferred_backend_for_model,
     RuntimeBackend,
 };
+use directories::ProjectDirs;
 use faster_whisper::FasterWhisperRequestOverrides;
 use std::{
     collections::HashSet,
@@ -55,31 +56,74 @@ pub struct DecodeTelemetry {
 }
 
 fn debug_fw_gpu_log(hypothesis_id: &str, location: &str, message: &str, kvs: &[(&str, String)]) {
+    if !fw_debug_logs_enabled() {
+        return;
+    }
+
+    let Some(log_path) = fw_debug_log_path() else {
+        return;
+    };
+
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
-    let mut data_pairs = String::new();
-    for (i, (k, v)) in kvs.iter().enumerate() {
-        if i > 0 {
-            data_pairs.push(',');
-        }
-        data_pairs.push_str(&format!("\"{}\":\"{}\"", k, v));
+    let session_id = std::env::var("VOICEWAVE_FW_DEBUG_SESSION_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "local".to_string());
+    let run_id = std::env::var("VOICEWAVE_FW_DEBUG_RUN_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "gpu-debug".to_string());
+
+    let mut data = serde_json::Map::new();
+    for (key, value) in kvs {
+        data.insert((*key).to_string(), serde_json::Value::String(value.clone()));
     }
 
-    let payload = format!(
-        "{{\"sessionId\":\"c0db10\",\"runId\":\"gpu-debug\",\"hypothesisId\":\"{}\",\"location\":\"{}\",\"message\":\"{}\",\"data\":{{{}}},\"timestamp\":{}}}",
-        hypothesis_id, location, message, data_pairs, ts
-    );
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let payload = serde_json::json!({
+        "sessionId": session_id,
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": ts
+    });
 
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(".cursor/debug-c0db10.log")
+        .open(log_path)
     {
         let _ = writeln!(file, "{}", payload);
     }
+}
+
+fn fw_debug_logs_enabled() -> bool {
+    std::env::var("VOICEWAVE_ENABLE_FW_DEBUG_LOGS")
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn fw_debug_log_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("VOICEWAVE_FW_DEBUG_LOG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    ProjectDirs::from("com", "voicewave", "localcore")
+        .map(|dirs| dirs.data_dir().join("logs").join("fw-gpu-debug.log"))
 }
 
 #[derive(Debug, Clone)]

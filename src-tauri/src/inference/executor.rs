@@ -113,7 +113,11 @@ pub fn cpu_runtime_pool_enabled() -> bool {
     })
 }
 
-pub fn prewarm_runtime(model_id: impl Into<String>, model_path: impl Into<PathBuf>, decode_mode: DecodeMode) {
+pub fn prewarm_runtime(
+    model_id: impl Into<String>,
+    model_path: impl Into<PathBuf>,
+    decode_mode: DecodeMode,
+) {
     if !cpu_runtime_pool_enabled() {
         return;
     }
@@ -181,8 +185,14 @@ fn runtime_worker_loop(receiver: mpsc::Receiver<RuntimeCommand>) {
                 cancel_token,
                 response,
             } => {
-                let result =
-                    decode_with_cache(&mut cache, &samples, &model_id, &model_path, decode_mode, &cancel_token);
+                let result = decode_with_cache(
+                    &mut cache,
+                    &samples,
+                    &model_id,
+                    &model_path,
+                    decode_mode,
+                    &cancel_token,
+                );
                 let _ = response.send(result);
             }
         }

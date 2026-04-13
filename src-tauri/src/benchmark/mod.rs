@@ -139,12 +139,7 @@ pub fn recommend_model(
     })
 }
 
-fn rank_rows(
-    a: &BenchmarkRow,
-    b: &BenchmarkRow,
-    latency_gate: u64,
-    rtf_gate: f32,
-) -> Ordering {
+fn rank_rows(a: &BenchmarkRow, b: &BenchmarkRow, latency_gate: u64, rtf_gate: f32) -> Ordering {
     let a_gate_pass = a.p95_latency_ms <= latency_gate && a.average_rtf <= rtf_gate;
     let b_gate_pass = b.p95_latency_ms <= latency_gate && b.average_rtf <= rtf_gate;
     if a_gate_pass != b_gate_pass {
@@ -162,12 +157,14 @@ fn rank_rows(
     }
 
     if a.observed_sample_count >= 3 && b.observed_sample_count >= 3 {
-        if (a.observed_success_rate_percent - b.observed_success_rate_percent).abs() > f32::EPSILON {
+        if (a.observed_success_rate_percent - b.observed_success_rate_percent).abs() > f32::EPSILON
+        {
             return b
                 .observed_success_rate_percent
                 .total_cmp(&a.observed_success_rate_percent);
         }
-        if (a.observed_watchdog_recovery_rate_percent - b.observed_watchdog_recovery_rate_percent).abs()
+        if (a.observed_watchdog_recovery_rate_percent - b.observed_watchdog_recovery_rate_percent)
+            .abs()
             > f32::EPSILON
         {
             return a

@@ -139,8 +139,8 @@ impl InsertionEngine {
             .or_else(|| self.backend.detect_target_app());
         let target_ref = resolved_target.as_deref();
 
-        let prefer_clipboard = request.prefer_clipboard
-            || should_auto_prefer_clipboard(&request.text, target_ref);
+        let prefer_clipboard =
+            request.prefer_clipboard || should_auto_prefer_clipboard(&request.text, target_ref);
 
         let method_order = if prefer_clipboard {
             vec![
@@ -398,7 +398,9 @@ impl InsertionBackend for PlatformInsertionBackend {
                 .set_text(text.to_string())
                 .map_err(|err| format!("failed to write clipboard text: {err}"))?;
             send_ctrl_chord(b'V' as u16)?;
-            let restore_delay_ms = if target_app.map(is_clipboard_preferred_target).unwrap_or(true)
+            let restore_delay_ms = if target_app
+                .map(is_clipboard_preferred_target)
+                .unwrap_or(true)
             {
                 210
             } else {
