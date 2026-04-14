@@ -68,9 +68,20 @@ function Resolve-DllSourcePath([string]$dllName, [string[]]$releaseRoots, [strin
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $resourceDir = Join-Path $repoRoot "src-tauri\windows"
 $resourceDll = Join-Path $resourceDir "WebView2Loader.dll"
+$workerResourceDir = Join-Path $resourceDir "faster-whisper"
+$workerSource = Join-Path $repoRoot "scripts\faster_whisper\worker.py"
+$workerDestination = Join-Path $workerResourceDir "worker.py"
 
 if (-not (Test-Path $resourceDir)) {
   New-Item -ItemType Directory -Path $resourceDir | Out-Null
+}
+
+if (-not (Test-Path $workerResourceDir)) {
+  New-Item -ItemType Directory -Path $workerResourceDir | Out-Null
+}
+
+if (-not (Test-Path $workerSource)) {
+  throw "faster-whisper worker script was not found at $workerSource."
 }
 
 $targetRoot = if ($env:CARGO_TARGET_DIR) {
@@ -114,6 +125,9 @@ if (-not $loaderSource) {
 
 Copy-Item -Path $loaderSource -Destination $resourceDll -Force
 Write-Host "Prepared bundle resource: $resourceDll"
+
+Copy-Item -Path $workerSource -Destination $workerDestination -Force
+Write-Host "Prepared bundle resource: $workerDestination"
 
 $mingwRuntimeDir = Resolve-MingwRuntimeDirectory
 if (-not $mingwRuntimeDir) {
