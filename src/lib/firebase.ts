@@ -21,6 +21,8 @@ const hasAnyFirebaseConfig = Object.values(firebaseConfig).some(
 const isTestMode = import.meta.env.MODE === "test";
 const enableFirebaseDuringTests = import.meta.env.VITE_ENABLE_FIREBASE_IN_TEST === "true";
 const cloudSyncExplicitlyEnabled = import.meta.env.VITE_ENABLE_CLOUD_SYNC === "true";
+const cloudSyncRuntimeEnabled =
+  cloudSyncExplicitlyEnabled && (!isTestMode || enableFirebaseDuringTests);
 
 if (isProduction && cloudSyncExplicitlyEnabled && !hasFirebaseConfig) {
   throw new Error(
@@ -28,13 +30,13 @@ if (isProduction && cloudSyncExplicitlyEnabled && !hasFirebaseConfig) {
   );
 }
 
-if (isProduction && hasAnyFirebaseConfig && !hasFirebaseConfig) {
+if (hasAnyFirebaseConfig && !hasFirebaseConfig) {
   throw new Error(
-    "Partial Firebase configuration detected in production. Provide all required VITE_FIREBASE_* variables."
+    "Partial Firebase configuration detected. Provide all required VITE_FIREBASE_* variables."
   );
 }
 
-const shouldBootFirebase = hasFirebaseConfig && (!isTestMode || enableFirebaseDuringTests);
+const shouldBootFirebase = cloudSyncRuntimeEnabled && hasFirebaseConfig;
 
 const firebaseApp = shouldBootFirebase
   ? getApps().length > 0

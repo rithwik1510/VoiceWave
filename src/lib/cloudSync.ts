@@ -161,8 +161,7 @@ function isRetryableFirebaseCode(code: string): boolean {
     code === "resource-exhausted" ||
     code === "internal" ||
     code === "unknown" ||
-    code === "auth/network-request-failed" ||
-    code === "permission-denied"
+    code === "auth/network-request-failed"
   );
 }
 

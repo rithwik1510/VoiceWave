@@ -105,6 +105,19 @@ export interface LatencyBreakdownEvent {
   fwLowCoherence: boolean;
   fwRetryUsed: boolean;
   fwLiteralRetryUsed: boolean;
+  audioPipelineVersion?: string;
+  fwAvgLogprob?: number | null;
+  fwNoSpeechProb?: number | null;
+  fwCompressionRatio?: number | null;
+  fwShadowCandidateVersion?: string | null;
+  fwShadowQualityDelta?: number | null;
+  fwShadowCandidateAvgLogprob?: number | null;
+  fwShadowCandidateNoSpeechProb?: number | null;
+  fwShadowCandidateRetryUsed?: boolean | null;
+  fwShadowCandidateLowCoherence?: boolean | null;
+  fwShadowCandidateDecodeComputeMs?: number | null;
+  fwShadowCandidateWon?: boolean | null;
+  correctionCandidatesCount?: number;
   insertionMethod: InsertionMethod | string;
   insertionTargetClass: string;
 }

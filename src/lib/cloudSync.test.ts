@@ -99,4 +99,20 @@ describe("cloudSync", () => {
     expect(second).toHaveLength(1);
     expect(firestoreMocks.setDoc).toHaveBeenCalledTimes(1);
   });
+
+  it("does not retry permission-denied sentence writes", async () => {
+    firestoreMocks.setDoc.mockRejectedValueOnce({
+      code: "permission-denied",
+      message: "rules rejected"
+    });
+
+    await expect(saveCloudSentence("uid-1", "blocked write")).rejects.toMatchObject({
+      name: "CloudSyncError",
+      code: "permission-denied",
+      retryable: false,
+      context: "save-sentence",
+      message: "Cloud write blocked by server policy. Check account and payload constraints."
+    });
+    expect(firestoreMocks.setDoc).toHaveBeenCalledTimes(1);
+  });
 });
