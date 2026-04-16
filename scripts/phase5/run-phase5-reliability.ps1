@@ -28,6 +28,24 @@ function Add-CheckResult {
   }
 }
 
+function Get-ReleaseThresholds {
+  $thresholdPath = Join-Path $repoRoot "docs/testing/release-thresholds-windows.json"
+  if (-not (Test-Path $thresholdPath)) {
+    Add-CheckResult "Release thresholds config present" $false "Missing docs/testing/release-thresholds-windows.json"
+    return $null
+  }
+
+  try {
+    $config = Get-Content -Path $thresholdPath -Raw | ConvertFrom-Json
+    Add-CheckResult "Release thresholds config present" $true $thresholdPath
+    return $config
+  }
+  catch {
+    Add-CheckResult "Release thresholds config parse" $false $_.Exception.Message
+    return $null
+  }
+}
+
 function Get-LatestArtifact {
   param([string]$Pattern)
 
@@ -47,37 +65,64 @@ function Get-LatestArtifact {
   return $matches[0]
 }
 
+function Get-NumericMetricFromMarkdown {
+  param(
+    [string]$Raw,
+    [string]$MetricLabel
+  )
+
+  $pattern = "(?im)^$([regex]::Escape($MetricLabel)):\s*([0-9]+(?:\.[0-9]+)?)\s*$"
+  $match = [regex]::Match($Raw, $pattern)
+  if (-not $match.Success) {
+    return $null
+  }
+  return [double]$match.Groups[1].Value
+}
+
+$thresholds = Get-ReleaseThresholds
+
 $latencyArtifact = Get-LatestArtifact "latency-sweep-*.json"
 $compatArtifact = Get-LatestArtifact "compatibility-matrix-*.md"
 $reliabilityArtifact = Get-LatestArtifact "reliability-review-*.md"
+$reliabilityMetricsJson = Get-LatestArtifact "reliability-metrics-*.json"
 $usabilityArtifact = Get-LatestArtifact "usability-study-*.md"
 
 Add-CheckResult "Latency sweep artifact present" ($null -ne $latencyArtifact) "Expected docs/phase5/artifacts/latency-sweep-*.json"
 Add-CheckResult "Compatibility matrix artifact present" ($null -ne $compatArtifact) "Expected docs/phase5/artifacts/compatibility-matrix-*.md"
 Add-CheckResult "Reliability review artifact present" ($null -ne $reliabilityArtifact) "Expected docs/phase5/artifacts/reliability-review-*.md"
 Add-CheckResult "Usability study artifact present" ($null -ne $usabilityArtifact) "Expected docs/phase5/artifacts/usability-study-*.md"
+Add-CheckResult "Optional reliability metrics JSON mirror found" $true $(if ($null -ne $reliabilityMetricsJson) { $reliabilityMetricsJson.FullName } else { "Missing optional docs/phase5/artifacts/reliability-metrics-*.json" })
 
-if ($null -ne $latencyArtifact) {
+if (($null -ne $latencyArtifact) -and ($null -ne $thresholds)) {
   try {
     $latency = Get-Content -Path $latencyArtifact.FullName -Raw | ConvertFrom-Json
+
     $releaseP95 = [double]$latency.releaseToTranscribingP95Ms
-    Add-CheckResult "Release-to-transcribing p95 <= 300 ms" ($releaseP95 -le 300.0) "releaseToTranscribingP95Ms=$releaseP95"
+    $releaseP95Max = [double]$thresholds.latency.releaseToTranscribingP95MsMax
+    Add-CheckResult "Release-to-transcribing p95 <= $releaseP95Max ms" ($releaseP95 -le $releaseP95Max) "releaseToTranscribingP95Ms=$releaseP95"
 
     $tailLossCount = [int]$latency.longUtteranceTailLossCount
-    Add-CheckResult "Long-utterance tail loss count is zero" ($tailLossCount -eq 0) "longUtteranceTailLossCount=$tailLossCount"
+    $tailLossCountMax = [int]$thresholds.latency.longUtteranceTailLossCountMax
+    Add-CheckResult "Long-utterance tail loss count <= $tailLossCountMax" ($tailLossCount -le $tailLossCountMax) "longUtteranceTailLossCount=$tailLossCount"
 
-    $tiny = $latency.models | Where-Object { $_.modelId -eq "tiny.en" } | Select-Object -First 1
-    $small = $latency.models | Where-Object { $_.modelId -eq "small.en" } | Select-Object -First 1
-    Add-CheckResult "tiny.en model row present" ($null -ne $tiny) "latency models must include tiny.en"
-    Add-CheckResult "small.en model row present" ($null -ne $small) "latency models must include small.en"
+    $tinyModelId = [string]$thresholds.latency.tinyModelId
+    $smallModelId = [string]$thresholds.latency.smallModelId
+    $tiny = $latency.models | Where-Object { $_.modelId -eq $tinyModelId } | Select-Object -First 1
+    $small = $latency.models | Where-Object { $_.modelId -eq $smallModelId } | Select-Object -First 1
+
+    Add-CheckResult "$tinyModelId model row present" ($null -ne $tiny) "latency models must include $tinyModelId"
+    Add-CheckResult "$smallModelId model row present" ($null -ne $small) "latency models must include $smallModelId"
 
     if ($null -ne $tiny) {
       $tinyP95 = [double]$tiny.p95ReleaseToFinalMs
-      Add-CheckResult "tiny.en release-to-final p95 <= 3000 ms" ($tinyP95 -le 3000.0) "tiny.en p95ReleaseToFinalMs=$tinyP95"
+      $tinyP95Max = [double]$thresholds.latency.tinyModelReleaseToFinalP95MsMax
+      Add-CheckResult "$tinyModelId release-to-final p95 <= $tinyP95Max ms" ($tinyP95 -le $tinyP95Max) "$tinyModelId p95ReleaseToFinalMs=$tinyP95"
     }
+
     if ($null -ne $small) {
       $smallP95 = [double]$small.p95ReleaseToFinalMs
-      Add-CheckResult "small.en release-to-final p95 <= 6000 ms" ($smallP95 -le 6000.0) "small.en p95ReleaseToFinalMs=$smallP95"
+      $smallP95Max = [double]$thresholds.latency.smallModelReleaseToFinalP95MsMax
+      Add-CheckResult "$smallModelId release-to-final p95 <= $smallP95Max ms" ($smallP95 -le $smallP95Max) "$smallModelId p95ReleaseToFinalMs=$smallP95"
     }
   }
   catch {
@@ -85,16 +130,16 @@ if ($null -ne $latencyArtifact) {
   }
 }
 
-if ($null -ne $compatArtifact) {
+if (($null -ne $compatArtifact) -and ($null -ne $thresholds)) {
   try {
     $compatRaw = Get-Content -Path $compatArtifact.FullName -Raw
-    $match = [regex]::Match($compatRaw, "(?im)^Insertion Success Rate \(%\):\s*([0-9]+(?:\.[0-9]+)?)\s*$")
-    if (-not $match.Success) {
+    $insertion = Get-NumericMetricFromMarkdown -Raw $compatRaw -MetricLabel "Insertion Success Rate (%)"
+    if ($null -eq $insertion) {
       Add-CheckResult "Insertion success metric present in compatibility artifact" $false "Expected line: Insertion Success Rate (%): <value>"
     }
     else {
-      $value = [double]$match.Groups[1].Value
-      Add-CheckResult "Insertion success >= 97.0%" ($value -ge 97.0) "Insertion Success Rate (%)=$value"
+      $insertionMin = [double]$thresholds.reliability.insertionSuccessMinPercent
+      Add-CheckResult "Insertion success >= $insertionMin%" ($insertion -ge $insertionMin) "Insertion Success Rate (%)=$insertion"
     }
   }
   catch {
@@ -102,16 +147,35 @@ if ($null -ne $compatArtifact) {
   }
 }
 
-if ($null -ne $reliabilityArtifact) {
+if (($null -ne $reliabilityArtifact) -and ($null -ne $thresholds)) {
   try {
     $reliabilityRaw = Get-Content -Path $reliabilityArtifact.FullName -Raw
-    $match = [regex]::Match($reliabilityRaw, "(?im)^Correction rate \(%\):\s*([0-9]+(?:\.[0-9]+)?)\s*$")
-    if (-not $match.Success) {
+
+    $correction = Get-NumericMetricFromMarkdown -Raw $reliabilityRaw -MetricLabel "Correction rate (%)"
+    if ($null -eq $correction) {
       Add-CheckResult "Correction rate metric present in reliability artifact" $false "Expected line: Correction rate (%): <value>"
     }
     else {
-      $value = [double]$match.Groups[1].Value
-      Add-CheckResult "Correction rate <= 15.0%" ($value -le 15.0) "Correction rate (%)=$value"
+      $correctionMax = [double]$thresholds.reliability.correctionRateMaxPercent
+      Add-CheckResult "Correction rate <= $correctionMax%" ($correction -le $correctionMax) "Correction rate (%)=$correction"
+    }
+
+    $crashFree = Get-NumericMetricFromMarkdown -Raw $reliabilityRaw -MetricLabel "Crash-free sessions (%)"
+    if ($null -eq $crashFree) {
+      Add-CheckResult "Crash-free sessions metric present in reliability artifact" $false "Expected line: Crash-free sessions (%): <value>"
+    }
+    else {
+      $crashFreeMin = [double]$thresholds.reliability.crashFreeSessionsMinPercent
+      Add-CheckResult "Crash-free sessions >= $crashFreeMin%" ($crashFree -ge $crashFreeMin) "Crash-free sessions (%)=$crashFree"
+    }
+
+    $ttfsd = Get-NumericMetricFromMarkdown -Raw $reliabilityRaw -MetricLabel "TTFSD (minutes)"
+    if ($null -eq $ttfsd) {
+      Add-CheckResult "TTFSD metric present in reliability artifact" $false "Expected line: TTFSD (minutes): <value>"
+    }
+    else {
+      $ttfsdMax = [double]$thresholds.reliability.ttfsdMaxMinutes
+      Add-CheckResult "TTFSD <= $ttfsdMax minutes" ($ttfsd -le $ttfsdMax) "TTFSD (minutes)=$ttfsd"
     }
   }
   catch {

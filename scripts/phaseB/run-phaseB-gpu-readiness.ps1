@@ -83,6 +83,10 @@ function Resolve-CudaBinPath([string]$cudaRoot) {
   if (-not $cudaRoot) {
     return $null
   }
+  $binX64Path = Join-Path $cudaRoot "bin\\x64"
+  if (Test-Path $binX64Path) {
+    return $binX64Path
+  }
   $binPath = Join-Path $cudaRoot "bin"
   if (Test-Path $binPath) {
     return $binPath
