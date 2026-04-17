@@ -48,4 +48,5 @@ Define stable reference devices for performance and battery validation.
 
 1. Recommendation artifact: `docs/testing/hardware-tier-recommendation-windows.json`
 2. Current Tier M recommendation: `small.en` (highest-capability model within p95/RTF gates).
-3. Battery signoff is still pending because current capture duration is below 30 minutes.
+3. Battery evidence currently records `31.85` minutes in `docs/phase1/phase1-battery-thermal-windows.json`.
+4. Release gate freshness policy still requires recent battery evidence for release-candidate signoff.

@@ -1,0 +1,19 @@
+{
+  "freshness": {
+    "maxArtifactAgeDays": 7
+  },
+  "reliability": {
+    "insertionSuccessMinPercent": 98.0,
+    "correctionRateMaxPercent": 12.0,
+    "crashFreeSessionsMinPercent": 99.5,
+    "ttfsdMaxMinutes": 3.0
+  },
+  "latency": {
+    "releaseToTranscribingP95MsMax": 300,
+    "longUtteranceTailLossCountMax": 0,
+    "tinyModelId": "tiny.en",
+    "smallModelId": "small.en",
+    "tinyModelReleaseToFinalP95MsMax": 3000,
+    "smallModelReleaseToFinalP95MsMax": 6000
+  }
+}

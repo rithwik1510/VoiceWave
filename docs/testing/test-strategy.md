@@ -39,7 +39,8 @@
 
 1. Security-critical tests fail.
 2. Insertion success or crash-free thresholds regress below gate.
-3. Legal/compliance checklist incomplete.
+3. Legal/compliance checklist incomplete (`docs/testing/legal-compliance-checklist.md`).
+4. Release gate (`npm run release:gate`) fails.
 
 ## Metrics Linked to Gates
 
@@ -62,3 +63,4 @@ Phase 1+ will add:
 1. Rust compile/test/lint jobs.
 2. Frontend compile/test/lint jobs.
 3. Performance benchmark smoke checks.
+4. Release gate job with risk/compliance and artifact freshness checks.

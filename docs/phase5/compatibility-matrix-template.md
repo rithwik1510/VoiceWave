@@ -3,6 +3,8 @@
 Date:  
 Owner:
 
+Insertion Success Rate (%):
+
 | App Target | Dictation Start/Stop | Insertion Success | Undo Behavior | Notes |
 | --- | --- | --- | --- | --- |
 | Notepad |  |  |  |  |

@@ -36,6 +36,14 @@ Prepare for Phase V (`Beta Program and Feedback Loop`) with the operational docu
    - `npm run phase5:reliability`
 4. Reliability evidence gate (blocking):
    - `npm run phase5:reliability:gate`
+5. End-to-end release gate (blocking):
+   - `npm run release:gate`
+
+## Gate Behavior Notes
+
+1. In `-Enforce` mode, Phase 5 readiness now requires a passing Phase 4 validation dependency (no `-SkipValidation` bypass).
+2. Freshness enforcement is available via `-RequireFreshArtifacts` and defaults to enabled in enforce mode.
+3. Reliability thresholds are centralized in `docs/testing/release-thresholds-windows.json`.
 
 ## Notes
 

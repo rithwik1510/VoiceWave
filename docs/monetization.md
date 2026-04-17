@@ -36,7 +36,7 @@ Tauri command surface:
 
 - Hidden owner flow is in the `Pro` screen.
 - Owner verification uses `VOICEWAVE_OWNER_PASSPHRASE_HASH`.
-- Debug fallback (dev only): passphrase `Rishi`.
+- No built-in fallback passphrase is available in runtime builds.
 - When enabled, UI shows `Owner Pro (Device Override)` and all Pro gates unlock.
 
 ## Free vs Pro

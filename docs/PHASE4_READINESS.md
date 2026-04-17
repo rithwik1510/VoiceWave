@@ -20,9 +20,9 @@ Track and verify Phase IV (`Hardening, Security, and Release Pipeline`) readines
    - `docs/phase4/evidence/update-signing-verification.md`
    - `docs/phase4/evidence/rollback-drill.md`
 4. Battery gate handling for this phase:
-   - Current artifact still reports `duration_minutes=1.01`.
-   - Phase IV readiness accepts approved deferment marker at `docs/phase4/evidence/battery-deferment.md`.
-   - Full >=30 minute sustained battery run remains mandatory before GA.
+   - Current artifact reports `duration_minutes=31.85`.
+   - Battery duration requirement is satisfied for Phase IV gate inputs.
+   - New release flow still requires fresh battery evidence at release-candidate time.
 
 ## Phase IV Start Checklist
 
@@ -35,8 +35,7 @@ Track and verify Phase IV (`Hardening, Security, and Release Pipeline`) readines
 3. Manual dictation acceptance recorded:
    - Latest `docs/phase3/artifacts/windows-manual-acceptance-*.md`
 4. Battery evidence meets gate:
-   - `docs/phase1/phase1-battery-thermal-windows.json` shows >=30.0 minutes with hardware context, or
-   - approved temporary deferment marker exists at `docs/phase4/evidence/battery-deferment.md`.
+   - `docs/phase1/phase1-battery-thermal-windows.json` shows >=30.0 minutes with hardware context.
 5. Phase IV evidence docs completed:
    - `docs/phase4/evidence/global-hotkey-windows.md`
    - `docs/phase4/evidence/update-signing-verification.md`
@@ -52,4 +51,4 @@ Track and verify Phase IV (`Hardening, Security, and Release Pipeline`) readines
 ## Notes
 
 1. This document tracks readiness and execution evidence only; broader release milestones remain in `Idea.md`.
-2. Battery deferment is temporary for implementation velocity and must be closed before GA (Phase VI pre-GA hardening).
+2. Battery deferment marker remains historical context only; active release gates now require fresh evidence windows.
