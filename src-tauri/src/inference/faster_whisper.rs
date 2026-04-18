@@ -650,7 +650,13 @@ fn installed_system_python_candidates() -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(output) = Command::new("where.exe").arg("python").output() {
+    let mut where_cmd = Command::new("where.exe");
+    where_cmd.arg("python");
+    #[cfg(target_os = "windows")]
+    {
+        where_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    if let Ok(output) = where_cmd.output() {
         if output.status.success() {
             for line in String::from_utf8_lossy(&output.stdout).lines() {
                 let trimmed = line.trim();
