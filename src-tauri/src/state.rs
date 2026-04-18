@@ -524,15 +524,15 @@ fn should_reject_low_confidence_transcript_as_no_speech(
         return true;
     }
 
-    if no_speech_prob >= 0.86 {
+    if no_speech_prob >= 0.92 {
         return true;
     }
 
-    if captured_audio_ms <= 1_800 && word_count <= 3 && no_speech_prob >= 0.68 {
+    if captured_audio_ms <= 1_200 && word_count <= 2 && no_speech_prob >= 0.78 {
         return true;
     }
 
-    captured_audio_ms <= 1_200 && word_count <= 5 && no_speech_prob >= 0.60
+    captured_audio_ms <= 700 && word_count <= 3 && no_speech_prob >= 0.72
 }
 
 fn build_terminology_hint_from_texts(terms: &[String], limit: usize) -> Option<String> {
@@ -3824,6 +3824,53 @@ mod tests {
             1_200,
             "start recording",
             Some(0.22),
+        ));
+    }
+
+    #[test]
+    fn no_speech_guard_accepts_normal_length_utterance_with_borderline_probability() {
+        // Normal-length speech (e.g. "what time is it") sometimes produces a
+        // borderline no_speech_prob just above 0.86. The previous threshold
+        // silently discarded the text and the pill closed with no paste.
+        assert!(!should_reject_low_confidence_transcript_as_no_speech(
+            true,
+            2_500,
+            "what time is it",
+            Some(0.87),
+        ));
+    }
+
+    #[test]
+    fn no_speech_guard_accepts_short_soft_utterance() {
+        // Soft two-word utterances like "hello there" can sit around 0.70
+        // no_speech_prob without being hallucinations. Accept them.
+        assert!(!should_reject_low_confidence_transcript_as_no_speech(
+            true,
+            1_100,
+            "hello there",
+            Some(0.70),
+        ));
+    }
+
+    #[test]
+    fn no_speech_guard_accepts_brief_multiword_utterance_with_moderate_probability() {
+        // Quick "thank you very much" at ~1.1s should not be rejected at 0.65.
+        assert!(!should_reject_low_confidence_transcript_as_no_speech(
+            true,
+            1_100,
+            "thank you very much",
+            Some(0.65),
+        ));
+    }
+
+    #[test]
+    fn no_speech_guard_still_rejects_very_high_confidence_silence() {
+        // Keep rejecting clear hallucinations: near-silence with very high prob.
+        assert!(should_reject_low_confidence_transcript_as_no_speech(
+            true,
+            2_500,
+            "okay",
+            Some(0.95),
         ));
     }
 
