@@ -50,11 +50,6 @@ function Resolve-DllSourcePath([string]$dllName, [string[]]$releaseRoots, [strin
     $candidateDirectories += $releaseRoot
   }
 
-  $venvAvLibs = Join-Path $repoRoot ".venv-faster-whisper\Lib\site-packages\av.libs"
-  if (Test-Path $venvAvLibs) {
-    $candidateDirectories += $venvAvLibs
-  }
-
   foreach ($directory in $candidateDirectories) {
     $candidatePath = Join-Path $directory $dllName
     if (Test-Path $candidatePath) {

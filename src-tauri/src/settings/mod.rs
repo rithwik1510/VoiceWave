@@ -154,7 +154,7 @@ impl Default for VoiceWaveSettings {
             show_floating_hud: true,
             vad_threshold: 0.014,
             max_utterance_ms: 120_000,
-            release_tail_ms: 350,
+            release_tail_ms: 500,
             decode_mode: DecodeMode::Balanced,
             diagnostics_opt_in: false,
             toggle_hotkey: LOCKED_TOGGLE_HOTKEY.to_string(),

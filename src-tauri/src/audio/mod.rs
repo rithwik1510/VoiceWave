@@ -760,7 +760,7 @@ fn trim_capture_edges(samples: &[f32], frame_size: usize, threshold: f32) -> Vec
     let last = last_voiced_frame.unwrap_or(first);
 
     let start_frame = first.saturating_sub(1);
-    let end_frame_exclusive = last.saturating_add(2);
+    let end_frame_exclusive = last.saturating_add(4);
     let start = start_frame.saturating_mul(frame_size).min(samples.len());
     let end = end_frame_exclusive
         .saturating_mul(frame_size)

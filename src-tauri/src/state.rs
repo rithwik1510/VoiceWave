@@ -746,9 +746,9 @@ fn incremental_pre_release_decode_enabled() -> bool {
     std::env::var("VOICEWAVE_INCREMENTAL_PRE_RELEASE_DECODE_ENABLED")
         .map(|value| {
             let normalized = value.trim().to_ascii_lowercase();
-            !(normalized == "0" || normalized == "false" || normalized == "off")
+            normalized == "1" || normalized == "true" || normalized == "on"
         })
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn clamp_max_utterance_ms(value: u64) -> u64 {
