@@ -173,6 +173,26 @@ pub fn decode_profile_for_mode(model_id: &str, decode_mode: DecodeMode) -> Model
             thread_cap: 12,
             no_context: false,
         },
+        "wcpp-small.en" => ModelDecodeProfile {
+            partial_delay_ms: 70,
+            strategy: DecodeStrategy::BeamSearch {
+                beam_size: 2,
+                patience: -1.0,
+            },
+            no_speech_thold: 0.5,
+            thread_cap: 12,
+            no_context: false,
+        },
+        "wcpp-large-v3-turbo" => ModelDecodeProfile {
+            partial_delay_ms: 110,
+            strategy: DecodeStrategy::BeamSearch {
+                beam_size: 3,
+                patience: -1.0,
+            },
+            no_speech_thold: 0.45,
+            thread_cap: 12,
+            no_context: false,
+        },
         "tiny.en" => ModelDecodeProfile {
             partial_delay_ms: 60,
             strategy: DecodeStrategy::Greedy { best_of: 2 },
@@ -549,6 +569,10 @@ pub fn estimate_rtf(elapsed_ms: u64, sample_count: usize) -> f32 {
 
 pub fn is_faster_whisper_model(model_id: &str) -> bool {
     faster_whisper_runtime_model_id(model_id).is_some()
+}
+
+pub fn is_whisper_cpp_model(model_id: &str) -> bool {
+    model_id.starts_with("wcpp-")
 }
 
 pub fn faster_whisper_runtime_model_id(model_id: &str) -> Option<&'static str> {
@@ -1654,6 +1678,33 @@ fn rms(samples: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_whisper_cpp_model_identifies_wcpp_prefix() {
+        assert!(is_whisper_cpp_model("wcpp-small.en"));
+        assert!(is_whisper_cpp_model("wcpp-large-v3-turbo"));
+        assert!(!is_whisper_cpp_model("fw-small.en"));
+        assert!(!is_whisper_cpp_model("fw-large-v3"));
+        assert!(!is_whisper_cpp_model(""));
+    }
+
+    #[test]
+    fn wcpp_models_use_beam_search_not_greedy_default() {
+        // Greedy is the default fallback profile and produces noticeably worse
+        // accuracy on Whisper. wcpp models must opt into BeamSearch like fw.
+        let small = decode_profile_for_mode("wcpp-small.en", DecodeMode::Balanced);
+        assert!(
+            matches!(small.strategy, DecodeStrategy::BeamSearch { .. }),
+            "wcpp-small.en should use BeamSearch, got {:?}",
+            small.strategy
+        );
+        let large = decode_profile_for_mode("wcpp-large-v3-turbo", DecodeMode::Balanced);
+        assert!(
+            matches!(large.strategy, DecodeStrategy::BeamSearch { .. }),
+            "wcpp-large-v3-turbo should use BeamSearch, got {:?}",
+            large.strategy
+        );
+    }
 
     fn fw_decode(
         text: &str,

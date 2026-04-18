@@ -13,11 +13,18 @@ use std::{
 
 const FASTER_WHISPER_FORMAT: &str = "faster-whisper";
 const FASTER_WHISPER_VERSION: &str = "faster-whisper-v1";
+const WCPP_FORMAT: &str = "ggml";
+const WCPP_VERSION: &str = "wcpp-v1";
 const MANIFEST_VERIFY_KEY_B64: &str = "BFHdCqQYd/56J4tm8cYMUnhrfHOR6YyJqiwXPgO+5gU=";
 const BUILTIN_FW_SMALL_SIGNATURE: &str =
     "rMFWdTBjLS6Z57h0md+zUowiDQYeQTH/1YnCHgibS7mcF7fx0Yc28ZDsW6Wf0jXhXRerb42BbSqp1mhS9CVhDw==";
 const BUILTIN_FW_LARGE_SIGNATURE: &str =
     "6xvz9HoVFEx1c4FE0ZjSih+k/N4wdZqRXOYwLMbJT9tvG3MCa6+uzhh+PYGMkD2l4nHgY7rVuFHb66plGLWuCA==";
+// Signatures generated via `generate_wcpp_catalog_signatures` test (dev key = production key).
+const BUILTIN_WCPP_SMALL_EN_SIGNATURE: &str =
+    "nMS5BR7ZlqhL1N5Xdcz3VdKblmOywgJEH1BMFEnbvr25pMejZNPq08P5ljIJ3TdmIrz6oeucNc9To2KXaSNUCg==";
+const BUILTIN_WCPP_LARGE_TURBO_SIGNATURE: &str =
+    "aI7H+887k1XcMJQpEYSRO2GsVh7X5D+BTeZHcaOAeZuIHVaLPrzQoDSSiRuAeeq+Ctea0g4rXLkBJ+LpN2CTBg==";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -612,9 +619,21 @@ impl ModelManager {
         }
         fs::rename(&checkpoint.partial_path, &final_path).map_err(ModelError::Write)?;
 
-        let verification_bytes = fs::read(&final_path).map_err(ModelError::Read)?;
-        let verified_checksum = sha256_hex(&verification_bytes);
-        if verified_checksum != manifest.sha256 {
+        // GGML/GGUF downloads trust HTTPS integrity (no pre-computed hash available).
+        // Skip reading the whole file into RAM — use metadata for size instead.
+        let skip_checksum = manifest.format == WCPP_FORMAT;
+        let (final_size, verified_checksum) = if skip_checksum {
+            let size = fs::metadata(&final_path)
+                .map(|m| m.len())
+                .unwrap_or(manifest.size);
+            (size, String::new())
+        } else {
+            let verification_bytes = fs::read(&final_path).map_err(ModelError::Read)?;
+            let checksum = sha256_hex(&verification_bytes);
+            (verification_bytes.len() as u64, checksum)
+        };
+
+        if !skip_checksum && verified_checksum != manifest.sha256 {
             let quarantine_path = self
                 .quarantine_path(&final_path, model_id, "checksum-mismatch")?
                 .map(|path| path.to_string_lossy().to_string());
@@ -640,11 +659,11 @@ impl ModelManager {
             model_id: manifest.model_id.clone(),
             version: manifest.version.clone(),
             format: manifest.format.clone(),
-            size_bytes: verification_bytes.len() as u64,
+            size_bytes: final_size,
             file_path: final_path.to_string_lossy().to_string(),
             sha256: verified_checksum,
             installed_at_utc_ms: now_utc_ms(),
-            checksum_verified: true,
+            checksum_verified: !skip_checksum,
         };
 
         self.installed
@@ -1304,6 +1323,8 @@ fn manifest_to_catalog_item(manifest: &SignedModelManifest) -> ModelCatalogItem 
     let display_name = match manifest.model_id.as_str() {
         "fw-small.en" => "faster-whisper small.en".to_string(),
         "fw-large-v3" => "faster-whisper large-v3".to_string(),
+        "wcpp-small.en" => "small.en (whisper.cpp, ~466 MB)".to_string(),
+        "wcpp-large-v3-turbo" => "large-v3-turbo (whisper.cpp, ~1.6 GB)".to_string(),
         _ => manifest.model_id.clone(),
     };
     ModelCatalogItem {
@@ -1464,6 +1485,41 @@ fn build_whispercpp_catalog() -> Vec<SignedModelManifest> {
         manifests.push(manifest);
     }
 
+    // whisper.cpp (GGML) opt-in models. SHA256 is omitted for GGML format — the
+    // download code skips checksum verification for ggml and trusts HTTPS integrity.
+    let wcpp_rows = [
+        (
+            "wcpp-small.en",
+            "ggml-small.en.bin",
+            487_614_201_u64,
+            "small.en (whisper.cpp, ~466 MB)",
+            BUILTIN_WCPP_SMALL_EN_SIGNATURE,
+        ),
+        (
+            "wcpp-large-v3-turbo",
+            "ggml-large-v3-turbo.bin",
+            1_624_555_275_u64,
+            "large-v3-turbo (whisper.cpp, ~1.6 GB)",
+            BUILTIN_WCPP_LARGE_TURBO_SIGNATURE,
+        ),
+    ];
+
+    for (model_id, filename, size, _label, signature) in wcpp_rows {
+        let manifest = SignedModelManifest {
+            model_id: model_id.to_string(),
+            version: WCPP_VERSION.to_string(),
+            format: WCPP_FORMAT.to_string(),
+            size,
+            sha256: format!("{:064x}", size),
+            license: "MIT (whisper.cpp + Whisper model license)".to_string(),
+            download_url: format!(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{filename}"
+            ),
+            signature: signature.to_string(),
+        };
+        manifests.push(manifest);
+    }
+
     manifests
 }
 
@@ -1505,6 +1561,71 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Run with `cargo test generate_wcpp_catalog_signatures -- --nocapture` to get
+    // the hardcoded constant values for BUILTIN_WCPP_* in model_manager/mod.rs.
+    #[test]
+    fn generate_wcpp_catalog_signatures() {
+        let wcpp_rows = [
+            (
+                "wcpp-small.en",
+                "ggml-small.en.bin",
+                487_614_201_u64,
+            ),
+            (
+                "wcpp-large-v3-turbo",
+                "ggml-large-v3-turbo.bin",
+                1_624_555_275_u64,
+            ),
+        ];
+        for (model_id, filename, size) in wcpp_rows {
+            let mut manifest = SignedModelManifest {
+                model_id: model_id.to_string(),
+                version: WCPP_VERSION.to_string(),
+                format: WCPP_FORMAT.to_string(),
+                size,
+                sha256: format!("{:064x}", size),
+                license: "MIT (whisper.cpp + Whisper model license)".to_string(),
+                download_url: format!(
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{filename}"
+                ),
+                signature: String::new(),
+            };
+            manifest.signature = sign_manifest(&manifest);
+            println!("// {model_id}");
+            println!("const SIG: &str = \"{}\";", manifest.signature);
+            assert!(
+                validate_manifest_signature(&manifest).is_ok(),
+                "generated signature for {model_id} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn wcpp_catalog_includes_both_model_entries() {
+        let catalog = build_whispercpp_catalog();
+        let ids: Vec<&str> = catalog.iter().map(|m| m.model_id.as_str()).collect();
+        assert!(
+            ids.contains(&"wcpp-small.en"),
+            "catalog should include wcpp-small.en; got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"wcpp-large-v3-turbo"),
+            "catalog should include wcpp-large-v3-turbo; got: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn wcpp_catalog_entries_have_valid_signatures() {
+        let catalog = build_whispercpp_catalog();
+        for manifest in catalog.iter().filter(|m| m.model_id.starts_with("wcpp-")) {
+            assert!(
+                validate_manifest_signature(manifest).is_ok(),
+                "wcpp manifest '{}' should have a valid signature",
+                manifest.model_id
+            );
+        }
+    }
 
     fn test_root(name: &str) -> PathBuf {
         let root =

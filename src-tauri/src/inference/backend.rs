@@ -10,6 +10,7 @@ static GPU_SESSION_CPU_LOCK: AtomicBool = AtomicBool::new(false);
 pub(crate) enum RuntimeBackend {
     Cpu,
     Cuda,
+    Vulkan,
 }
 
 impl RuntimeBackend {
@@ -17,6 +18,7 @@ impl RuntimeBackend {
         match self {
             Self::Cpu => "cpu",
             Self::Cuda => "cuda",
+            Self::Vulkan => "vulkan",
         }
     }
 }
@@ -41,17 +43,17 @@ pub(crate) fn preferred_backend_for_model(model_id: &str) -> RuntimeBackend {
     if gpu_session_cpu_locked() {
         return RuntimeBackend::Cpu;
     }
-    if !cuda_backend_compiled() {
+    if !any_gpu_backend_compiled() {
         return RuntimeBackend::Cpu;
     }
     if force_gpu_enabled() {
-        return RuntimeBackend::Cuda;
+        return preferred_gpu_backend();
     }
     if !auto_gpu_enabled() {
         return RuntimeBackend::Cpu;
     }
     if is_gpu_preferred_model(model_id) {
-        return RuntimeBackend::Cuda;
+        return preferred_gpu_backend();
     }
     RuntimeBackend::Cpu
 }
@@ -60,7 +62,11 @@ pub(crate) fn context_params_for_backend(
     backend: RuntimeBackend,
 ) -> WhisperContextParameters<'static> {
     let mut params = WhisperContextParameters::default();
-    let use_gpu = matches!(backend, RuntimeBackend::Cuda) && cuda_backend_compiled();
+    let use_gpu = match backend {
+        RuntimeBackend::Cuda => cuda_backend_compiled(),
+        RuntimeBackend::Vulkan => vulkan_backend_compiled(),
+        RuntimeBackend::Cpu => false,
+    };
     params.use_gpu(use_gpu);
     params.gpu_device(gpu_device_id());
     params
@@ -68,6 +74,24 @@ pub(crate) fn context_params_for_backend(
 
 pub(crate) fn cuda_backend_compiled() -> bool {
     cfg!(feature = "whisper-cuda")
+}
+
+pub(crate) fn vulkan_backend_compiled() -> bool {
+    cfg!(feature = "whisper-vulkan")
+}
+
+fn any_gpu_backend_compiled() -> bool {
+    cuda_backend_compiled() || vulkan_backend_compiled()
+}
+
+// Prefer Vulkan: works on NVIDIA/AMD/Intel with no DLL bundling. CUDA is
+// available only when explicitly compiled with whisper-cuda feature.
+fn preferred_gpu_backend() -> RuntimeBackend {
+    if vulkan_backend_compiled() {
+        RuntimeBackend::Vulkan
+    } else {
+        RuntimeBackend::Cuda
+    }
 }
 
 pub(crate) fn gpu_session_cpu_locked() -> bool {
@@ -133,7 +157,23 @@ mod tests {
     #[test]
     fn policy_version_includes_backend_name() {
         let version = backend_policy_version("small.en");
-        assert!(version.contains("cpu") || version.contains("cuda"));
+        assert!(
+            version.contains("cpu") || version.contains("cuda") || version.contains("vulkan")
+        );
+    }
+
+    #[test]
+    fn vulkan_backend_string_is_vulkan() {
+        assert_eq!(RuntimeBackend::Vulkan.as_str(), "vulkan");
+    }
+
+    #[cfg(feature = "whisper-vulkan")]
+    #[test]
+    fn small_prefers_vulkan_when_vulkan_compiled() {
+        GPU_SESSION_CPU_LOCK.store(false, std::sync::atomic::Ordering::Relaxed);
+        GPU_SESSION_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+        let backend = preferred_backend_for_model("wcpp-small.en");
+        assert_eq!(backend, RuntimeBackend::Vulkan);
     }
 
     #[test]

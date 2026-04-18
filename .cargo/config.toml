@@ -1,2 +1,7 @@
 [env]
 LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+
+[build]
+# Short target dir avoids MAX_PATH overflow in whisper.cpp's Vulkan
+# ExternalProject (vulkan-shaders-gen) which nests cmake ~6 levels deep.
+target-dir = "C:\\vwbuild"

@@ -119,7 +119,7 @@ fn main() {
         let _: u64 = std::fs::copy("src/bindings.rs", out.join("bindings.rs"))
             .expect("Failed to copy bindings.rs");
     } else {
-        let bindings = bindgen::Builder::default().header("wrapper.h");
+        let mut bindings = bindgen::Builder::default().header("wrapper.h");
 
         #[cfg(feature = "metal")]
         {
@@ -178,6 +178,27 @@ fn main() {
             config.cxxflag("/utf-8");
         }
         println!("cargo:rustc-link-lib=advapi32");
+
+        // Vulkan's ExternalProject (vulkan-shaders-gen) fails under the VS generator
+        // because the sub-cmake runs without the MSVC Developer environment. Ninja
+        // inherits the compiler from the cargo/rustc MSVC environment correctly.
+        #[cfg(feature = "vulkan")]
+        {
+            let ninja_path = if let Ok(p) = env::var("NINJA_PATH") {
+                Some(p)
+            } else {
+                // VS Build Tools ships ninja alongside cmake
+                let vs_ninja = "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe";
+                if std::path::Path::new(vs_ninja).exists() {
+                    Some(vs_ninja.to_string())
+                } else {
+                    None
+                }
+            };
+            if let Some(ninja) = ninja_path {
+                config.generator("Ninja").define("CMAKE_MAKE_PROGRAM", &ninja);
+            }
+        }
     }
 
     if cfg!(feature = "coreml") {

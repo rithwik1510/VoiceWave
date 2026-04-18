@@ -1094,6 +1094,11 @@ function App() {
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="text-sm font-semibold text-[#09090B]">{model.displayName}</p>
+                          {model.modelId === "fw-small.en" && (
+                            <span className="vw-chip" title="Default model. Fast, accurate, works on any machine.">
+                              Recommended
+                            </span>
+                          )}
                           <span className="vw-chip">
                             {statusRow?.state ?? (isInstalled ? "installed" : "idle")}
                           </span>

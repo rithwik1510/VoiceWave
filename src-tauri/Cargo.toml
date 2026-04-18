@@ -16,6 +16,7 @@ tauri-build = { version = "2.0.2", features = [] }
 default = ["desktop"]
 desktop = ["dep:tauri"]
 whisper-cuda = ["whisper-rs/cuda"]
+whisper-vulkan = ["whisper-rs/vulkan"]
 
 [dependencies]
 aes-gcm = "0.10.3"

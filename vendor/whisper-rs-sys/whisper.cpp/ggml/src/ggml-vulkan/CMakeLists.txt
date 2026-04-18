@@ -136,6 +136,25 @@ if (Vulkan_FOUND)
         message(STATUS "vulkan-shaders-gen toolchain file: ${HOST_CMAKE_TOOLCHAIN_FILE}")
     endif()
 
+    # Forward generator and compiler to the sub-cmake so it works when invoked
+    # outside a Developer Command Prompt (e.g. from Cargo's build script).
+    # Use /Z7 instead of /Zi so each object carries its own debug info and
+    # parallel Ninja try-compile steps don't race on a shared vc140.pdb.
+    list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS
+        -G "${CMAKE_GENERATOR}"
+        -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+    )
+    if (MSVC)
+        # Use embedded (/Z7) instead of PDB (/Zi) debug info so parallel
+        # Ninja try-compile steps don't race on a shared vc140.pdb.
+        list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS
+            "-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+            "-DCMAKE_POLICY_DEFAULT_CMP0141=NEW"
+        )
+    endif()
+
     ExternalProject_Add(
         vulkan-shaders-gen
         SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders
