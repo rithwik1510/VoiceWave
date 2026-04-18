@@ -886,7 +886,12 @@ fn worker_compute_type_for_backend(backend_preference: &str) -> String {
             .map(|value| value.trim().to_string())
             .ok()
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "int8".to_string())
+            // int8 activations quantize the matmul inputs and amplify small
+            // phoneme ambiguities into hallucinations ("error"->"header").
+            // int8_float32 keeps the quantized weights for speed but runs
+            // activations at full float32 precision, meaningfully improving
+            // accuracy with only a small latency hit on modern CPUs.
+            .unwrap_or_else(|| "int8_float32".to_string())
     } else {
         std::env::var("VOICEWAVE_FW_GPU_COMPUTE_TYPE")
             .map(|value| value.trim().to_string())

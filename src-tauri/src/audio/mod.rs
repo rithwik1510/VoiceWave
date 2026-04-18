@@ -591,19 +591,63 @@ pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32
         return samples.to_vec();
     }
 
-    let ratio = to_rate as f64 / from_rate as f64;
-    let output_len = (samples.len() as f64 * ratio).round().max(1.0) as usize;
+    // Upsampling keeps linear interpolation since no aliasing risk exists
+    // when widening the spectrum.
+    if to_rate > from_rate {
+        let ratio = to_rate as f64 / from_rate as f64;
+        let output_len = (samples.len() as f64 * ratio).round().max(1.0) as usize;
+        let mut out = Vec::with_capacity(output_len);
+        for idx in 0..output_len {
+            let src_pos = idx as f64 / ratio;
+            let left_idx = src_pos.floor() as usize;
+            let right_idx = (left_idx + 1).min(samples.len() - 1);
+            let alpha = (src_pos - left_idx as f64) as f32;
+            let left = samples[left_idx];
+            let right = samples[right_idx];
+            out.push(left + alpha * (right - left));
+        }
+        return out;
+    }
+
+    // Downsampling: integrate source samples over each output window so we
+    // get a natural low-pass filter. Pure linear interpolation without the
+    // integration aliases frequencies above the target Nyquist back into the
+    // speech band and muddies phonemes, producing classic "error"->"header"
+    // style mistranscriptions.
+    let src_per_out = from_rate as f64 / to_rate as f64;
+    let output_len = (samples.len() as f64 / src_per_out).round().max(1.0) as usize;
     let mut out = Vec::with_capacity(output_len);
 
     for idx in 0..output_len {
-        let src_pos = idx as f64 / ratio;
-        let left_idx = src_pos.floor() as usize;
-        let right_idx = (left_idx + 1).min(samples.len() - 1);
-        let alpha = (src_pos - left_idx as f64) as f32;
-        let left = samples[left_idx];
-        let right = samples[right_idx];
-        out.push(left + alpha * (right - left));
+        let window_start = idx as f64 * src_per_out;
+        let window_end = (idx + 1) as f64 * src_per_out;
+        let start_idx = (window_start as usize).min(samples.len());
+        let end_idx = (window_end.ceil() as usize).min(samples.len());
+
+        if start_idx >= end_idx {
+            out.push(0.0);
+            continue;
+        }
+
+        let mut sum = 0.0_f64;
+        let mut weight = 0.0_f64;
+        for i in start_idx..end_idx {
+            let sample_start = i as f64;
+            let sample_end = (i + 1) as f64;
+            let overlap = sample_end.min(window_end) - sample_start.max(window_start);
+            if overlap > 0.0 {
+                sum += samples[i] as f64 * overlap;
+                weight += overlap;
+            }
+        }
+
+        if weight > 0.0 {
+            out.push((sum / weight) as f32);
+        } else {
+            out.push(samples[start_idx]);
+        }
     }
+
     out
 }
 
@@ -1035,6 +1079,55 @@ mod tests {
         let samples = vec![0.0, 1.0, 0.0, -1.0];
         let out = resample_linear(&samples, 8_000, 16_000);
         assert!(out.len() > samples.len());
+    }
+
+    #[test]
+    fn resample_attenuates_frequencies_above_target_nyquist() {
+        // Generate a 12 kHz sine at 48 kHz. After downsampling to 16 kHz
+        // (whose Nyquist is 8 kHz) the 12 kHz content must be strongly
+        // attenuated. Pure linear interpolation aliases it back into audible
+        // band; a proper low-pass resampler kills it.
+        let duration_samples = 48_000 / 10; // 100 ms of audio
+        let high_freq = (0..duration_samples)
+            .map(|i| (2.0 * std::f32::consts::PI * 12_000.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect::<Vec<f32>>();
+
+        let resampled = resample_linear(&high_freq, 48_000, 16_000);
+
+        let input_rms = (high_freq.iter().map(|s| s * s).sum::<f32>() / high_freq.len() as f32)
+            .sqrt();
+        let output_rms = (resampled.iter().map(|s| s * s).sum::<f32>() / resampled.len() as f32)
+            .sqrt();
+
+        assert!(
+            output_rms < input_rms * 0.35,
+            "above-Nyquist content should be strongly attenuated: input_rms={input_rms:.4}, \
+             output_rms={output_rms:.4}"
+        );
+    }
+
+    #[test]
+    fn resample_preserves_speech_band_content() {
+        // A 1 kHz tone is well inside the speech band and must pass through
+        // the resampler with similar energy (no excessive attenuation).
+        let duration_samples = 48_000 / 10;
+        let speech_tone = (0..duration_samples)
+            .map(|i| (2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect::<Vec<f32>>();
+
+        let resampled = resample_linear(&speech_tone, 48_000, 16_000);
+
+        let input_rms = (speech_tone.iter().map(|s| s * s).sum::<f32>()
+            / speech_tone.len() as f32)
+            .sqrt();
+        let output_rms = (resampled.iter().map(|s| s * s).sum::<f32>() / resampled.len() as f32)
+            .sqrt();
+
+        assert!(
+            output_rms > input_rms * 0.75,
+            "speech-band content should pass through with minimal loss: \
+             input_rms={input_rms:.4}, output_rms={output_rms:.4}"
+        );
     }
 
     #[test]
