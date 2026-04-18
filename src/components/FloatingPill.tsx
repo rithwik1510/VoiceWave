@@ -11,6 +11,8 @@ import {
   showMainWindow
 } from "../lib/tauri";
 import type { DictionaryQueueItem, VoiceWaveHudState } from "../types/voicewave";
+import pillOpenSoundUrl from "../assets/audio/cue_press.wav";
+import pillCloseSoundUrl from "../assets/audio/cue_release.wav";
 
 type VisualState = "idle" | "listening" | "transcribing" | "inserted" | "error";
 
@@ -31,6 +33,55 @@ export function FloatingPill() {
   const reviewWindowStartRef = useRef(0);
   const reviewModeActive = Boolean(reviewItem);
   const visualState: VisualState = displayState;
+
+  const openAudioRef = useRef<HTMLAudioElement | null>(null);
+  const closeAudioRef = useRef<HTMLAudioElement | null>(null);
+  const soundPreviousStateRef = useRef<VoiceWaveHudState>("idle");
+
+  useEffect(() => {
+    const open = new Audio(pillOpenSoundUrl);
+    open.preload = "auto";
+    open.volume = 0.85;
+    const close = new Audio(pillCloseSoundUrl);
+    close.preload = "auto";
+    close.volume = 0.85;
+    openAudioRef.current = open;
+    closeAudioRef.current = close;
+    return () => {
+      openAudioRef.current = null;
+      closeAudioRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const previous = soundPreviousStateRef.current;
+    soundPreviousStateRef.current = rawState;
+
+    if (previous === rawState) {
+      return;
+    }
+
+    // Pill opening: Idle -> Listening. Fire on the same commit as the pill
+    // becomes visible so the sound and the visual onset line up.
+    if (previous === "idle" && rawState === "listening") {
+      const audio = openAudioRef.current;
+      if (audio) {
+        audio.currentTime = 0;
+        audio.play().catch(() => undefined);
+      }
+      return;
+    }
+
+    // Pill closing: any active state back to Idle. Fires on the render that
+    // drives the pill fade-out, not when the hotkey was released.
+    if (rawState === "idle" && previous !== "idle") {
+      const audio = closeAudioRef.current;
+      if (audio) {
+        audio.currentTime = 0;
+        audio.play().catch(() => undefined);
+      }
+    }
+  }, [rawState]);
 
   const resetReview = useCallback(() => {
     reviewRequestRef.current += 1;

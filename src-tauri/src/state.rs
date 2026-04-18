@@ -2534,7 +2534,8 @@ impl VoiceWaveController {
     ) -> Result<(), ControllerError> {
         let flow_started = Instant::now();
         if mode == DictationMode::Fixture {
-            play_hotkey_listening_ready_cue(trigger);
+            // Sound cue is now played from the pill renderer on state commit
+            // so the sound lines up with the visible pill onset.
             self.update_state(
                 &app,
                 VoiceWaveHudState::Listening,
@@ -2662,7 +2663,8 @@ impl VoiceWaveController {
                     )
                 });
                 if ready_rx.await.is_ok() {
-                    play_hotkey_listening_ready_cue(trigger);
+                    // Sound cue is driven from the pill renderer for precise
+                    // sync with the visible listening onset.
                     self.update_state(
                         &app,
                         VoiceWaveHudState::Listening,
@@ -3488,14 +3490,9 @@ impl VoiceWaveController {
             prev
         };
 
-        // Play the pill close cue when the HUD actually returns to Idle from an
-        // active state. Keeps the sound in sync with the visual fade-out.
-        if matches!(state, VoiceWaveHudState::Idle)
-            && !matches!(previous_state, VoiceWaveHudState::Idle)
-        {
-            play_pill_close_cue();
-        }
-
+        let _ = previous_state;
+        // Close cue is played by the pill renderer when React commits the
+        // Idle transition, so sound and fade-out land on the same frame.
         self.emit_state(app, state, message);
     }
 

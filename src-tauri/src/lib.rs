@@ -58,13 +58,16 @@ use tauri::{
 #[cfg(feature = "desktop")]
 const PILL_WINDOW_LABEL: &str = "voicewave-pill";
 #[cfg(feature = "desktop")]
-const PILL_WINDOW_COMPACT_WIDTH: f64 = 112.0;
+// Compact window dimensions are intentionally larger than the pill surface
+// (52x20 idle, 96x36 listening) so the drop shadow can fully fade out
+// instead of being clipped into a visible rectangular edge.
+const PILL_WINDOW_COMPACT_WIDTH: f64 = 200.0;
 #[cfg(feature = "desktop")]
-const PILL_WINDOW_COMPACT_HEIGHT: f64 = 40.0;
+const PILL_WINDOW_COMPACT_HEIGHT: f64 = 96.0;
 #[cfg(feature = "desktop")]
-const PILL_WINDOW_REVIEW_WIDTH: f64 = 420.0;
+const PILL_WINDOW_REVIEW_WIDTH: f64 = 500.0;
 #[cfg(feature = "desktop")]
-const PILL_WINDOW_REVIEW_HEIGHT: f64 = 104.0;
+const PILL_WINDOW_REVIEW_HEIGHT: f64 = 160.0;
 #[cfg(feature = "desktop")]
 const PILL_WINDOW_COMPACT_BOTTOM_MARGIN: f64 = 14.0;
 #[cfg(feature = "desktop")]

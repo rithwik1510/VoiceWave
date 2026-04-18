@@ -816,10 +816,21 @@ fn worker_request_for(
             .without_timestamps
             .unwrap_or_else(fw_without_timestamps_enabled),
         initial_prompt,
-        temperature: overrides.temperature,
-        no_speech_threshold: overrides.no_speech_threshold,
+        // Lock temperature to 0 (greedy / deterministic beam search). The
+        // faster-whisper default is a fallback ladder [0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        // that kicks in when the primary decode "fails" a sanity check. Those
+        // high-temperature retries are the main source of hallucinations on
+        // short utterances because they invent words when the model is uncertain.
+        temperature: Some(overrides.temperature.unwrap_or(0.0)),
+        // Raise the no-speech confidence needed to blank out a segment so short
+        // valid words are not dropped into empty strings.
+        no_speech_threshold: Some(overrides.no_speech_threshold.unwrap_or(0.72)),
         log_prob_threshold: overrides.log_prob_threshold,
-        compression_ratio_threshold: overrides.compression_ratio_threshold,
+        // Tighter compression-ratio ceiling flags repeat-word hallucinations
+        // ("the the the...") so the decoder rejects them instead of pasting.
+        compression_ratio_threshold: Some(
+            overrides.compression_ratio_threshold.unwrap_or(2.2),
+        ),
     }
 }
 
@@ -1035,6 +1046,34 @@ mod tests {
         assert_eq!(
             request.without_timestamps,
             super::fw_without_timestamps_enabled()
+        );
+    }
+
+    #[test]
+    fn fw_request_defaults_suppress_hallucination_fallback() {
+        // Hallucinations mostly come from the faster-whisper temperature
+        // fallback ladder. The default request must lock temperature to 0,
+        // keep a strong no_speech threshold, and cap compression ratio so
+        // repeat-word hallucinations are rejected instead of pasted.
+        let request = worker_request_for(
+            "small.en",
+            DecodeMode::Balanced,
+            FasterWhisperRequestOverrides::default(),
+            "AQID".to_string(),
+        );
+        assert_eq!(request.temperature, Some(0.0));
+        assert!(
+            request.no_speech_threshold.unwrap_or(0.0) >= 0.70,
+            "no_speech_threshold was {:?}, expected >= 0.70",
+            request.no_speech_threshold
+        );
+        assert!(
+            request
+                .compression_ratio_threshold
+                .unwrap_or(f32::MAX)
+                <= 2.3,
+            "compression_ratio_threshold was {:?}, expected <= 2.3",
+            request.compression_ratio_threshold
         );
     }
 
