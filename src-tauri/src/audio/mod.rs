@@ -591,8 +591,7 @@ pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32
         return samples.to_vec();
     }
 
-    // Upsampling keeps linear interpolation since no aliasing risk exists
-    // when widening the spectrum.
+    // Upsampling: linear interpolation is fine (no aliasing risk when widening).
     if to_rate > from_rate {
         let ratio = to_rate as f64 / from_rate as f64;
         let output_len = (samples.len() as f64 * ratio).round().max(1.0) as usize;
@@ -609,11 +608,12 @@ pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32
         return out;
     }
 
-    // Downsampling: integrate source samples over each output window so we
-    // get a natural low-pass filter. Pure linear interpolation without the
-    // integration aliases frequencies above the target Nyquist back into the
-    // speech band and muddies phonemes, producing classic "error"->"header"
-    // style mistranscriptions.
+    // Downsampling: windowed integrator (box filter) — integrates source
+    // samples over each output window, acting as a natural low-pass filter.
+    // Stateless per-call, which is critical: `normalize_frame` calls this on
+    // every small mic callback buffer; a stateful resampler (e.g. rubato's
+    // SincFixedIn) would introduce a warmup transient and tail truncation at
+    // every frame boundary, corrupting the audio.
     let src_per_out = from_rate as f64 / to_rate as f64;
     let output_len = (samples.len() as f64 / src_per_out).round().max(1.0) as usize;
     let mut out = Vec::with_capacity(output_len);
@@ -694,9 +694,9 @@ impl VadSegmenter {
         if frame.is_empty() {
             return None;
         }
-        let energy = rms(frame);
+        let is_voiced = rms(frame) >= self.config.threshold;
 
-        if energy >= self.config.threshold {
+        if is_voiced {
             if !self.in_speech
                 && self.voiced_frames == 0
                 && self.active_buffer.is_empty()

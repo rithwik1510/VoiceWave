@@ -260,22 +260,31 @@ fn condition_audio_v2(samples: &[f32]) -> Vec<f32> {
         .iter()
         .map(|sample| sample - mean)
         .collect::<Vec<f32>>();
-    high_pass_filter_in_place(&mut staged, 90.0, 16_000.0);
-    if env_flag("VOICEWAVE_AP2_ENABLE_PREEMPHASIS", true) {
+    // Steps 5-9 below are all OFF by default. Whisper expects the audio as
+    // captured: varying loudness, full low-end, unboosted highs. Each step
+    // stays behind an env flag so it can be re-enabled for experimentation,
+    // but none of them run on the clean default path.
+    if env_flag("VOICEWAVE_AP2_ENABLE_HIGHPASS", false) {
+        high_pass_filter_in_place(&mut staged, 90.0, 16_000.0);
+    }
+    if env_flag("VOICEWAVE_AP2_ENABLE_PREEMPHASIS", false) {
         pre_emphasis_in_place(&mut staged, 0.95);
     }
     if env_flag("VOICEWAVE_AP2_ENABLE_HUM_NOTCH", false) {
         notch_filter_in_place(&mut staged, 50.0, 16_000.0, 15.0);
         notch_filter_in_place(&mut staged, 60.0, 16_000.0, 15.0);
     }
-    if env_flag("VOICEWAVE_AP2_ENABLE_DYNAMIC_NOISE_ATTENUATION", true) {
-        attenuate_low_noise_frames_dynamic(&mut staged);
-    } else {
-        attenuate_low_noise_frames(&mut staged);
+    if env_flag("VOICEWAVE_AP2_ENABLE_NOISE_ATTENUATION", false) {
+        if env_flag("VOICEWAVE_AP2_ENABLE_DYNAMIC_NOISE_ATTENUATION", true) {
+            attenuate_low_noise_frames_dynamic(&mut staged);
+        } else {
+            attenuate_low_noise_frames(&mut staged);
+        }
     }
-
-    normalize_gain_in_place(&mut staged, TARGET_RMS, MAX_PEAK, MIN_GAIN, MAX_GAIN);
-    if env_flag("VOICEWAVE_AP2_ENABLE_SOFT_LIMITER", true) {
+    if env_flag("VOICEWAVE_AP2_ENABLE_GAIN_NORMALIZATION", false) {
+        normalize_gain_in_place(&mut staged, TARGET_RMS, MAX_PEAK, MIN_GAIN, MAX_GAIN);
+    }
+    if env_flag("VOICEWAVE_AP2_ENABLE_SOFT_LIMITER", false) {
         soft_limiter_in_place(&mut staged, 0.95);
     }
     staged
@@ -446,10 +455,21 @@ fn trim_low_energy_edges(samples: &[f32], frame_size: usize, threshold: f32) -> 
     };
     let last = last_voiced_frame.unwrap_or(first);
 
-    let start_frame = first.saturating_sub(1);
-    let end_frame_exclusive = last + 2;
-    let start = (start_frame * frame_size).min(samples.len());
-    let end = (end_frame_exclusive * frame_size).min(samples.len());
+    // Head padding: 4 frames (~80 ms) so leading plosives (p/t/k) and
+    // aspirated onsets are not clipped.
+    const HEAD_PAD_FRAMES: usize = 4;
+    // Tail padding: 15 frames (~300 ms) so soft word endings that drop below
+    // the RMS threshold ("...house", "...about", "...thing") survive, AND so
+    // Whisper receives an unambiguous trailing-silence cue instead of an
+    // audio cliff — which is what was causing the last 2-3 words to drop.
+    const TAIL_PAD_FRAMES: usize = 15;
+
+    let start_frame = first.saturating_sub(HEAD_PAD_FRAMES);
+    let end_frame_exclusive = last.saturating_add(1).saturating_add(TAIL_PAD_FRAMES);
+    let start = start_frame.saturating_mul(frame_size).min(samples.len());
+    let end = end_frame_exclusive
+        .saturating_mul(frame_size)
+        .min(samples.len());
     if start >= end {
         return samples.to_vec();
     }
@@ -487,7 +507,7 @@ fn env_flag(key: &str, default_value: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{process_for_version, AudioPipelineVersion};
+    use super::{process_for_version, trim_low_energy_edges, AudioPipelineVersion};
 
     fn fixture_samples() -> Vec<f32> {
         let mut out = vec![0.0_f32; 320 * 4];
@@ -514,5 +534,80 @@ mod tests {
         let v1 = process_for_version(&source, AudioPipelineVersion::V1);
         let v2 = process_for_version(&source, AudioPipelineVersion::V2);
         assert_ne!(v1, v2);
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+        (sum_sq / samples.len().max(1) as f32).sqrt()
+    }
+
+    #[test]
+    fn trim_low_energy_edges_keeps_generous_tail_for_soft_word_endings() {
+        // Soft word endings ("...house", "...about", "...thing") live in the
+        // final 150-300 ms of an utterance, often below the RMS trim
+        // threshold. We must keep ~300 ms of tail past the last voiced frame
+        // so those consonants aren't clipped — and so Whisper sees a proper
+        // trailing-silence cue instead of an audio cliff.
+        let frame_size = 320_usize;
+        let voiced_frames = 60; // ~1.2 s of loud speech-band tone
+        let trailing_silence_frames = 30; // ~600 ms of room to keep
+        let threshold = 0.02_f32;
+        let voiced_amplitude = 0.3_f32;
+
+        let mut samples = Vec::new();
+        for _ in 0..voiced_frames {
+            for i in 0..frame_size {
+                samples.push(
+                    voiced_amplitude
+                        * (2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 16_000.0).sin(),
+                );
+            }
+        }
+        samples.extend(vec![0.0_f32; frame_size * trailing_silence_frames]);
+
+        let trimmed = trim_low_energy_edges(&samples, frame_size, threshold);
+        let trimmed_frames = trimmed.len() / frame_size;
+
+        // We need at least 10 frames (~200 ms) of tail past the last voiced
+        // frame. Current code keeps 1 frame (~20 ms) which clips soft endings.
+        assert!(
+            trimmed_frames >= voiced_frames + 10,
+            "trim must keep at least 10 frames of tail past last voiced frame; \
+             kept {trimmed_frames} frames total (voiced={voiced_frames}, \
+             min expected total = {})",
+            voiced_frames + 10
+        );
+    }
+
+    #[test]
+    fn v2_defaults_preserve_input_loudness_within_10_percent() {
+        // Whisper wants the audio as captured — no forced gain normalization,
+        // no pre-emphasis, no 90 Hz high-pass. A clean speech-band tone at
+        // moderate loudness must pass through with its RMS essentially intact.
+        //
+        // If any of the legacy aggressive DSP steps (gain norm to 0.07 RMS,
+        // pre-emphasis, high-pass, noise attenuation, soft limiter) are on
+        // by default, this test fails because the output RMS is forcibly
+        // rewritten or spectrally filtered.
+        let duration_samples = 16_000 * 2; // 2 s at 16 kHz, well above trim window
+        let input_amplitude = 0.3_f32;
+        let input: Vec<f32> = (0..duration_samples)
+            .map(|i| {
+                input_amplitude
+                    * (2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 16_000.0).sin()
+            })
+            .collect();
+
+        let input_rms = rms(&input);
+        let output = process_for_version(&input, AudioPipelineVersion::V2);
+        let output_rms = rms(&output);
+        let ratio = output_rms / input_rms;
+
+        assert!(
+            ratio > 0.9 && ratio < 1.1,
+            "V2 default must preserve input RMS (no forced normalization / no pre-emphasis / \
+             no 90 Hz high-pass); got ratio {ratio:.3} (input_rms={input_rms:.4}, \
+             output_rms={output_rms:.4})"
+        );
     }
 }
