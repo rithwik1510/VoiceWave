@@ -759,8 +759,13 @@ fn trim_capture_edges(samples: &[f32], frame_size: usize, threshold: f32) -> Vec
     };
     let last = last_voiced_frame.unwrap_or(first);
 
-    let start_frame = first.saturating_sub(1);
-    let end_frame_exclusive = last.saturating_add(4);
+    // Head padding: keep 2 leading silent frames so leading consonants
+    // (plosives like "p", "t", "k") are not clipped.
+    let start_frame = first.saturating_sub(2);
+    // Tail padding: keep 8 trailing frames (~160 ms at 16 kHz with 20 ms
+    // frames) so soft word endings ("s", "th", "f") that drop below the
+    // VAD threshold still get delivered to the decoder.
+    let end_frame_exclusive = last.saturating_add(8);
     let start = start_frame.saturating_mul(frame_size).min(samples.len());
     let end = end_frame_exclusive
         .saturating_mul(frame_size)
@@ -978,6 +983,51 @@ mod tests {
         let stereo = vec![1.0, -1.0, 0.5, 0.5];
         let mono = downmix_to_mono(&stereo, 2);
         assert_eq!(mono, vec![0.0, 0.5]);
+    }
+
+    #[test]
+    fn trim_capture_edges_preserves_generous_tail_padding_for_soft_word_endings() {
+        // Simulate two silent head frames, three voiced frames, then a long
+        // trailing silence. The trim logic should keep enough trailing frames
+        // past the last voiced frame to capture soft word endings ("s", "th")
+        // that drop below the VAD threshold. Expected: >= 8 trailing frames
+        // are preserved after the last voiced frame.
+        let frame_size = FRAME_SIZE;
+        let mut samples = vec![0.0_f32; frame_size * 2];
+        samples.extend(vec![0.05_f32; frame_size * 3]);
+        samples.extend(vec![0.0_f32; frame_size * 15]);
+
+        let trimmed = trim_capture_edges(&samples, frame_size, 0.01);
+
+        let last_voiced_frame = 4; // frames 2..=4 are voiced
+        let min_expected_trailing_frames = 8;
+        let min_expected_len = (last_voiced_frame + min_expected_trailing_frames) * frame_size;
+        assert!(
+            trimmed.len() >= min_expected_len,
+            "expected at least {min_expected_len} samples of trailing padding, got {}",
+            trimmed.len()
+        );
+    }
+
+    #[test]
+    fn trim_capture_edges_preserves_extra_head_padding_for_leading_consonants() {
+        // Capture should keep at least two silent frames before the first
+        // voiced frame so leading consonants are not clipped.
+        let frame_size = FRAME_SIZE;
+        let mut samples = vec![0.0_f32; frame_size * 4];
+        samples.extend(vec![0.05_f32; frame_size * 3]);
+        samples.extend(vec![0.0_f32; frame_size * 4]);
+
+        let trimmed = trim_capture_edges(&samples, frame_size, 0.01);
+
+        // Trim should never chop more than 2 head frames (leaving >= 9 frames).
+        let min_expected_len = (samples.len() / frame_size - 2) * frame_size;
+        assert!(
+            trimmed.len() >= min_expected_len,
+            "head padding eaten too much: got {} samples, expected at least {}",
+            trimmed.len(),
+            min_expected_len
+        );
     }
 
     #[test]
