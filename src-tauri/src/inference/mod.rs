@@ -5,7 +5,7 @@ mod faster_whisper;
 mod policy;
 
 pub use executor::{cpu_runtime_pool_enabled, prewarm_runtime};
-pub use faster_whisper::ensure_faster_whisper_ready;
+pub use faster_whisper::{cache_hint_for_model as faster_whisper_cache_hint, ensure_faster_whisper_ready};
 pub use policy::RuntimeDecodePolicy;
 
 use crate::settings::DecodeMode;

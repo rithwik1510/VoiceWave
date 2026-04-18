@@ -20,7 +20,8 @@ use crate::{
     },
     hotkey::{HotkeyAction, HotkeyConfig, HotkeyError, HotkeyManager, HotkeyPhase, HotkeySnapshot},
     inference::{
-        cpu_runtime_pool_enabled, ensure_faster_whisper_ready, is_faster_whisper_model,
+        cpu_runtime_pool_enabled, ensure_faster_whisper_ready, faster_whisper_cache_hint,
+        faster_whisper_runtime_model_id, is_faster_whisper_model,
         note_audio_pipeline_decode_hard_failure, note_audio_pipeline_decode_success,
         prefetch_faster_whisper_model, prewarm_runtime, InferenceError, InferenceWorker,
         RuntimeDecodePolicy,
@@ -213,6 +214,24 @@ pub enum ControllerError {
 const RECOMMENDED_VAD_THRESHOLD: f32 = 0.014;
 const MIN_VAD_THRESHOLD: f32 = 0.005;
 const MAX_VAD_THRESHOLD: f32 = 0.04;
+
+fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    let mut total = 0_u64;
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            total = total.saturating_add(dir_size_bytes(&entry.path()));
+        }
+    }
+    total
+}
 
 fn clamp_vad_threshold(value: f32) -> f32 {
     if !value.is_finite() {
@@ -1739,10 +1758,18 @@ impl VoiceWaveController {
         let model_id = request.model_id.clone();
         let active_model = self.settings.lock().await.active_model.clone();
         if is_faster_whisper_model(&model_id) {
+            let expected_total_bytes: u64 = self
+                .model_manager
+                .lock()
+                .await
+                .get_catalog_item(&model_id)
+                .map(|item| item.size_bytes)
+                .unwrap_or(0);
+
             let preparing = ModelStatus {
                 model_id: model_id.clone(),
                 state: ModelStatusState::Downloading,
-                progress: 15,
+                progress: 1,
                 active: active_model == model_id,
                 installed: false,
                 message: Some(
@@ -1750,7 +1777,7 @@ impl VoiceWaveController {
                 ),
                 installed_model: None,
                 downloaded_bytes: Some(0),
-                total_bytes: Some(100),
+                total_bytes: Some(expected_total_bytes.max(1)),
                 resumable: false,
             };
             self.model_statuses
@@ -1764,32 +1791,64 @@ impl VoiceWaveController {
                             "Faster-Whisper runtime is not ready: {err}. Reinstall the latest beta build or configure the bundled runtime."
                         ))
                     })?;
-            let prefetching = ModelStatus {
-                model_id: model_id.clone(),
-                state: ModelStatusState::Downloading,
-                progress: 65,
-                active: active_model == model_id,
-                installed: false,
-                message: Some(
-                    "Downloading Faster-Whisper model weights to local cache...".to_string(),
-                ),
-                installed_model: None,
-                downloaded_bytes: Some(0),
-                total_bytes: Some(100),
-                resumable: false,
-            };
-            self.model_statuses
-                .lock()
-                .await
-                .insert(model_id.clone(), prefetching.clone());
-            self.emit_model_status(&app, &prefetching);
-            let prefetch = prefetch_faster_whisper_model(&model_id)
-                .await
-                .map_err(|err| {
-                    ControllerError::Runtime(format!(
+
+            let runtime_model = faster_whisper_runtime_model_id(&model_id).unwrap_or("");
+            let cache_dir = faster_whisper_cache_hint(runtime_model);
+
+            let progress_cancel = Arc::new(AtomicBool::new(false));
+            let progress_cancel_task = progress_cancel.clone();
+            let app_progress = app.clone();
+            let model_id_progress = model_id.clone();
+            let active_model_progress = active_model.clone();
+            let cache_dir_progress = cache_dir.clone();
+
+            let progress_handle = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(750)).await;
+                    if progress_cancel_task.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let downloaded = dir_size_bytes(&cache_dir_progress);
+                    let progress = if expected_total_bytes > 0 {
+                        ((downloaded.saturating_mul(100) / expected_total_bytes).min(99)) as u8
+                    } else {
+                        50
+                    };
+                    let message = if expected_total_bytes > 0 {
+                        format!(
+                            "Downloading model weights ({} MB of {} MB)...",
+                            downloaded / 1_048_576,
+                            expected_total_bytes / 1_048_576,
+                        )
+                    } else {
+                        "Downloading Faster-Whisper model weights...".to_string()
+                    };
+                    let status = ModelStatus {
+                        model_id: model_id_progress.clone(),
+                        state: ModelStatusState::Downloading,
+                        progress,
+                        active: active_model_progress == model_id_progress,
+                        installed: false,
+                        message: Some(message),
+                        installed_model: None,
+                        downloaded_bytes: Some(downloaded),
+                        total_bytes: Some(expected_total_bytes.max(1)),
+                        resumable: false,
+                    };
+                    let _ =
+                        app_progress.emit("voicewave://model", ModelEvent::from_status(&status));
+                }
+            });
+
+            let prefetch_result = prefetch_faster_whisper_model(&model_id).await;
+            progress_cancel.store(true, Ordering::Relaxed);
+            let _ = progress_handle.await;
+
+            let prefetch = prefetch_result.map_err(|err| {
+                ControllerError::Runtime(format!(
                     "Faster-Whisper model prefetch failed: {err}. Check internet access and retry."
                 ))
-                })?;
+            })?;
             let installed = {
                 let mut manager = self.model_manager.lock().await;
                 manager.install_faster_whisper_model(&model_id, &prefetch.cache_hint_path)?
@@ -1808,8 +1867,8 @@ impl VoiceWaveController {
                     .to_string(),
                 ),
                 installed_model: Some(installed),
-                downloaded_bytes: Some(100),
-                total_bytes: Some(100),
+                downloaded_bytes: Some(expected_total_bytes.max(1)),
+                total_bytes: Some(expected_total_bytes.max(1)),
                 resumable: false,
             };
             self.model_statuses
