@@ -1,0 +1,24 @@
+name: Publish to winget
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish (e.g. v0.2.0)"
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - name: Submit manifest to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: VoiceWave.LocalCore
+          installers-regex: 'VoiceWave\.Local\.Core_.*_x64-setup\.exe$'
+          version: ${{ inputs.version || github.event.release.tag_name }}
+          release-tag: ${{ inputs.version || github.event.release.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
