@@ -976,13 +976,13 @@ fn encode_pcm16_base64(samples: &[f32]) -> String {
 fn decode_hyperparams_for(model_id: &str, decode_mode: DecodeMode) -> (u32, u32) {
     match (model_id, decode_mode) {
         ("small.en", DecodeMode::Fast) => (1, 1),
-        ("small.en", DecodeMode::Balanced) => (3, 2),
+        ("small.en", DecodeMode::Balanced) => (5, 3),
         ("small.en", DecodeMode::Quality) => (5, 3),
         ("large-v3", DecodeMode::Fast) => (1, 1),
-        ("large-v3", DecodeMode::Balanced) => (4, 2),
+        ("large-v3", DecodeMode::Balanced) => (5, 3),
         ("large-v3", DecodeMode::Quality) => (5, 3),
         (_, DecodeMode::Fast) => (1, 1),
-        (_, DecodeMode::Balanced) => (3, 2),
+        (_, DecodeMode::Balanced) => (4, 3),
         (_, DecodeMode::Quality) => (5, 3),
     }
 }
@@ -998,8 +998,17 @@ mod tests {
     #[test]
     fn fw_balanced_profile_has_quality_floor_for_small() {
         let (beam, best_of) = decode_hyperparams_for("small.en", DecodeMode::Balanced);
-        assert!(beam >= 2);
-        assert!(best_of >= 2);
+        // Users saw roughly one minor error per sentence on Balanced.
+        // Raise the floor so the default decode uses wider beam search.
+        assert!(beam >= 4, "beam was {beam}, expected at least 4");
+        assert!(best_of >= 3, "best_of was {best_of}, expected at least 3");
+    }
+
+    #[test]
+    fn fw_balanced_profile_has_quality_floor_for_large() {
+        let (beam, best_of) = decode_hyperparams_for("large-v3", DecodeMode::Balanced);
+        assert!(beam >= 5, "beam was {beam}, expected at least 5");
+        assert!(best_of >= 3, "best_of was {best_of}, expected at least 3");
     }
 
     #[test]

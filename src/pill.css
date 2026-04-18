@@ -15,11 +15,24 @@ body,
   height: 100%;
   overflow: hidden;
   background: transparent;
+  background-color: transparent;
   font-family: "DM Sans", "Segoe UI", sans-serif;
+}
+
+* {
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+*:focus,
+*:focus-visible,
+*:focus-within {
+  outline: none;
 }
 
 .vw-pill-body {
   background: transparent;
+  background-color: transparent;
 }
 
 .vw-pill-shell {
