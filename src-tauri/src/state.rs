@@ -651,6 +651,22 @@ fn final_decode_timeout(sample_count: usize, sample_rate: u32) -> Duration {
     Duration::from_millis(adaptive.clamp(FINAL_DECODE_TIMEOUT_MS_MIN, FINAL_DECODE_TIMEOUT_MS_MAX))
 }
 
+fn play_pill_close_cue() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::Media::Audio::{
+            PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
+        };
+
+        // SAFETY: HOTKEY_CUE_RELEASE_WAV is static WAV data for the process lifetime.
+        PlaySoundA(
+            HOTKEY_CUE_RELEASE_WAV.as_ptr(),
+            std::ptr::null_mut(),
+            SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+        );
+    }
+}
+
 fn play_hotkey_phase_cue(action: &HotkeyAction, phase: &HotkeyPhase) {
     let _ = (action, phase);
     #[cfg(target_os = "windows")]
@@ -1707,7 +1723,6 @@ impl VoiceWaveController {
                 }
             }
             (HotkeyAction::PushToTalk, HotkeyPhase::Released) => {
-                play_hotkey_phase_cue(&HotkeyAction::PushToTalk, &HotkeyPhase::Released);
                 let still_pressed = {
                     let manager = self.hotkey_manager.lock().await;
                     manager.is_action_pressed(HotkeyAction::PushToTalk)
@@ -3460,8 +3475,9 @@ impl VoiceWaveController {
         state: VoiceWaveHudState,
         message: Option<String>,
     ) {
-        {
+        let previous_state = {
             let mut snapshot = self.snapshot.lock().await;
+            let prev = snapshot.state.clone();
             snapshot.state = state.clone();
             if matches!(
                 state,
@@ -3469,7 +3485,17 @@ impl VoiceWaveController {
             ) {
                 snapshot.last_partial = None;
             }
+            prev
+        };
+
+        // Play the pill close cue when the HUD actually returns to Idle from an
+        // active state. Keeps the sound in sync with the visual fade-out.
+        if matches!(state, VoiceWaveHudState::Idle)
+            && !matches!(previous_state, VoiceWaveHudState::Idle)
+        {
+            play_pill_close_cue();
         }
+
         self.emit_state(app, state, message);
     }
 
