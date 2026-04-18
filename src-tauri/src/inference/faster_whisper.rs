@@ -8,6 +8,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
@@ -329,6 +331,12 @@ fn spawn_worker() -> Result<WorkerProcess, InferenceError> {
         } else {
             command.env("PATH", prepend);
         }
+    }
+    #[cfg(windows)]
+    {
+        // Prevent python.exe from flashing a console window when invoked from the Tauri GUI.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = command.spawn().map_err(|err| {
         InferenceError::RuntimeJoin(format!(
