@@ -123,6 +123,11 @@ const FW_GPU_DISABLED_MARKER: &str = "fw-gpu-disabled.marker";
 const FW_WORKER_RESPONSE_TIMEOUT_MS_DEFAULT: u64 = 75_000;
 const FW_WORKER_RESPONSE_TIMEOUT_MS_MIN: u64 = 3_000;
 const FW_WORKER_RESPONSE_TIMEOUT_MS_MAX: u64 = 300_000;
+// Prefetch downloads the model weights from HuggingFace (up to ~3 GB for large-v3).
+// Use a much longer ceiling so slow connections can finish the first-time download.
+const FW_WORKER_PREFETCH_TIMEOUT_MS_DEFAULT: u64 = 1_800_000;
+const FW_WORKER_PREFETCH_TIMEOUT_MS_MIN: u64 = 60_000;
+const FW_WORKER_PREFETCH_TIMEOUT_MS_MAX: u64 = 7_200_000;
 
 pub async fn ensure_faster_whisper_ready() -> Result<(), InferenceError> {
     tokio::task::spawn_blocking(ensure_worker_ready_blocking)
@@ -254,8 +259,12 @@ fn send_worker_request_blocking(request: WorkerRequest) -> Result<WorkerResponse
         .flush()
         .map_err(|err| InferenceError::RuntimeJoin(format!("worker stdin flush failed: {err}")))?;
 
-    let line = match read_worker_response_line_with_timeout(&mut worker, worker_response_timeout())
-    {
+    let timeout = if request.command == "prefetch" {
+        worker_prefetch_timeout()
+    } else {
+        worker_response_timeout()
+    };
+    let line = match read_worker_response_line_with_timeout(&mut worker, timeout) {
         Ok(value) => value,
         Err(err) => {
             let _ = worker.child.kill();
@@ -330,6 +339,20 @@ fn worker_response_timeout() -> Duration {
             )
         })
         .unwrap_or(FW_WORKER_RESPONSE_TIMEOUT_MS_DEFAULT);
+    Duration::from_millis(timeout_ms)
+}
+
+fn worker_prefetch_timeout() -> Duration {
+    let timeout_ms = std::env::var("VOICEWAVE_FW_PREFETCH_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| {
+            value.clamp(
+                FW_WORKER_PREFETCH_TIMEOUT_MS_MIN,
+                FW_WORKER_PREFETCH_TIMEOUT_MS_MAX,
+            )
+        })
+        .unwrap_or(FW_WORKER_PREFETCH_TIMEOUT_MS_DEFAULT);
     Duration::from_millis(timeout_ms)
 }
 
