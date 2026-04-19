@@ -45,6 +45,15 @@ function Prepend-PathEntryIfExists([string]$pathEntry) {
   $env:PATH = "$pathEntry;$env:PATH"
 }
 
+function Add-VsCmakeToPath {
+  $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+  if (-not (Test-Path $vswhere)) { return }
+  $installPath = & $vswhere -latest -products * -property installationPath 2>$null
+  if ([string]::IsNullOrWhiteSpace($installPath)) { return }
+  $cmakeBin = Join-Path $installPath.Trim() "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+  Prepend-PathEntryIfExists $cmakeBin
+}
+
 function Add-BundlerToolsToPath {
   $candidatePaths = @(
     "C:\\Program Files (x86)\\NSIS",
@@ -169,6 +178,7 @@ function Resolve-WhisperFeatureArgs {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Ensure-GnuRustToolchain
 Add-MingwToPathIfAvailable
+Add-VsCmakeToPath
 Add-BundlerToolsToPath
 Ensure-NoSpaceTargetDir
 
