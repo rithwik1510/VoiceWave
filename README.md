@@ -4,7 +4,36 @@
 
 VoiceWave is a privacy-first desktop dictation system built for low-latency local transcription and reliable text insertion.
 
-Current v1 runtime path is local-only (`whisper.cpp` through Rust) with a Windows-first execution scope in this branch.
+All transcription runs on-device. The default runtime is `faster-whisper` (CTranslate2) with optional CUDA acceleration; `whisper.cpp` (via `whisper-rs`) ships as an opt-in backend. Windows-first execution scope.
+
+## What's new in 0.3.0
+
+Download: [v0.3.0 installer](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/download/v0.3.0/VoiceWave.Local.Core_0.3.0_x64-setup.exe)
+
+Audio pipeline
+
+1. Soft word endings ("s", "th", "f", drifted "e") no longer clipped — post-release capture window lifted to 300 ms, with a matching 300 ms trim pad on both capture and inference layers.
+1. Volume-adaptive trim thresholds — quiet speakers and post-pause resumptions now land fully instead of being truncated as silence.
+1. All aggressive DSP (pre-emphasis, gain normalization, noise attenuation, hum notch, soft limiter) defaults to off. Whisper receives audio as captured.
+
+Inference
+
+1. Cold-start prewarm at app launch — first dictation drops from 2-5 s to ~500 ms.
+1. Extra hallucination guard: `log_prob_threshold = -1.0` on the primary decode alongside the existing `no_speech` and `compression_ratio` floors.
+1. Opt-in `whisper.cpp` models: `wcpp-small.en` (~466 MB) and `wcpp-large-v3-turbo` (~1.6 GB). `Vulkan` backend available behind the `whisper-vulkan` cargo feature.
+
+Reliability
+
+1. Push-to-talk release no longer drops silently on key bounce.
+1. Clipboard paste keeps the dictated text — no more "old content pasted" after delayed Ctrl+V.
+1. SendInput refuses to type into Windows security dialogs (UAC, Credential Manager, PIN prompts).
+1. Worker stdout drained between requests to prevent ID-mismatch stalls after cancel/retry.
+1. Decode threads reserve one CPU core for the UI to stop taskbar stutter during transcription.
+
+Website and distribution
+
+1. `v0.3.0` NSIS installer published to GitHub Releases.
+1. Marketing site refreshed: real app logos in the marquee, editorial section rhythm, "Out Now" particle text.
 
 ## ![Overview](docs/assets/readme/section-overview.svg) Live Demo
 
@@ -23,9 +52,11 @@ Full-quality recording: [voicewave-demo.mp4](docs/assets/readme/voicewave-demo.m
 | Area | Summary |
 | --- | --- |
 | Runtime | `Tauri 2` shell + `Rust` core + `React/Tailwind` frontend |
-| ASR | `whisper.cpp` runtime via `whisper-rs` (local models, no cloud audio path) |
+| ASR (default) | `faster-whisper` via Python subprocess (`fw-small.en` / `fw-large-v3`), CUDA auto-detected |
+| ASR (opt-in) | `whisper.cpp` via `whisper-rs` (`wcpp-small.en` / `wcpp-large-v3-turbo`), Vulkan feature flag |
+| Privacy Path | No outbound audio transport, no cloud transcription path in v1 |
 | UX Contract | Explicit state model: `idle -> listening -> transcribing -> inserted/error` |
-| Insertion Reliability | Direct insert -> clipboard fallback -> history fallback |
+| Insertion Reliability | Direct insert -> clipboard fallback -> history fallback (blocked on Windows security dialogs) |
 | Platform Scope | Windows implementation/validation active since `2026-02-10` |
 
 ## ![Capabilities](docs/assets/readme/section-capabilities.svg) Core Capabilities
@@ -85,7 +116,8 @@ References:
 1. Frontend: `React 18` + `Tailwind` + `Vite`
 1. Desktop shell: `Tauri 2`
 1. Core runtime: `Rust`
-1. ASR runtime target: `whisper.cpp` via `whisper-rs`
+1. ASR (default): `faster-whisper` (CTranslate2) via Python subprocess; CUDA auto-detected
+1. ASR (opt-in): `whisper.cpp` via `whisper-rs`; Vulkan behind `whisper-vulkan` cargo feature
 1. Local storage/ops: encrypted billing files + local runtime state/history artifacts
 
 ## ![Quick Start](docs/assets/readme/section-quickstart.svg) Quick Start
@@ -138,7 +170,7 @@ npm run build
 npm run tauri:dev
 ```
 
-1. In app: open `Models`, install `tiny.en` or `base.en`, then run dictation from `Home`.
+1. In app: open `Models`, install `fw-small.en` (recommended default, ~466 MB) or `fw-large-v3` for highest accuracy. Optional: `wcpp-*` whisper.cpp variants live alongside them. Then run dictation from `Home`.
 
 ## ![Validation](docs/assets/readme/section-validation.svg) Validation and Gates
 
@@ -220,12 +252,12 @@ References:
 
 ## ![Evidence](docs/assets/readme/section-evidence.svg) Latest Recorded Validation Evidence
 
-Latest summary currently documented in this branch: `2026-02-17`.
+Latest recorded run: `2026-04-23` (against `0.3.0` baseline).
 
-1. `npm run test -- --run` recorded pass (`3` test files / `12` tests).
-1. `npm run build` recorded pass.
-1. `npm run phase3:validate` recorded pass.
-1. `npm run phase4:gate` recorded pass.
+1. Rust library test suite: **180 pass / 1 pre-existing failure** (`state::tests::insertion_target_classification_covers_known_app_families`, unrelated to `0.3.x` changes).
+1. `npm run build` (voicewave-website): recorded pass.
+1. `cargo check --no-default-features --release`: recorded pass.
+1. `npm run phase3:validate`, `npm run phase4:gate`: last recorded pass from phase artifacts.
 
 Reference artifact trail:
 
