@@ -11,7 +11,15 @@ use std::{
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 const FRAME_SIZE: usize = 320;
 const STOP_SIGNAL_DEBOUNCE_MS: u64 = 160;
-const RELEASE_TAIL_MIN_WAIT_MS: u64 = 70;
+// Minimum wait after the user releases the hotkey before we allow the
+// capture loop to break on silence. This IS the effective post-release
+// capture window for soft word endings ("s", "th", "f", drifted "d")
+// that trail below the RMS VAD threshold and therefore never reset
+// `post_release_last_voiced_at`. Must stay >= the 300 ms tail pad in
+// trim_capture_edges (and trim_low_energy_edges in
+// inference/audio_pipeline.rs); otherwise neither pad has samples to
+// work with and the user sees the last 2-3 words clipped.
+const RELEASE_TAIL_MIN_WAIT_MS: u64 = 300;
 const RELEASE_TAIL_SILENCE_CONFIRM_MS: u64 = 60;
 const VAD_PRE_ROLL_FRAMES: usize = 4;
 
@@ -1027,6 +1035,35 @@ fn percentile(sorted: &[f32], quantile: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_tail_min_wait_is_long_enough_for_soft_consonants() {
+        // Root-cause regression for the "last 2-3 words missing" bug that
+        // persisted after trim_capture_edges was bumped to a 300 ms tail
+        // pad.
+        //
+        // Capture flow: when the user releases the hotkey, the loop waits
+        // for `RELEASE_TAIL_MIN_WAIT_MS`, then breaks if no voiced frame
+        // has been heard in the last `RELEASE_TAIL_SILENCE_CONFIRM_MS`.
+        //
+        // Soft word endings ("s", "th", "f", drifted "d") trail below the
+        // RMS VAD threshold, so `post_release_last_voiced_at` is never set
+        // during the soft tail. Result: the loop always breaks at exactly
+        // `RELEASE_TAIL_MIN_WAIT_MS` for soft endings — that constant IS
+        // the effective post-release capture window for the problematic
+        // case.
+        //
+        // It must therefore be >= the 300 ms tail pad in trim_capture_edges,
+        // or the pad has no samples to operate on and the downstream
+        // trim_low_energy_edges pad is equally useless.
+        assert!(
+            RELEASE_TAIL_MIN_WAIT_MS >= 300,
+            "RELEASE_TAIL_MIN_WAIT_MS={} is less than the 300 ms tail pad \
+             used by trim_capture_edges. Soft word endings will be clipped \
+             before the pad can restore them.",
+            RELEASE_TAIL_MIN_WAIT_MS
+        );
+    }
 
     #[test]
     fn stereo_downmix_is_averaged() {
