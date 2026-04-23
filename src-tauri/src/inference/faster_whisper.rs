@@ -870,7 +870,13 @@ fn worker_request_for(
         // Raise the no-speech confidence needed to blank out a segment so short
         // valid words are not dropped into empty strings.
         no_speech_threshold: Some(overrides.no_speech_threshold.unwrap_or(0.72)),
-        log_prob_threshold: overrides.log_prob_threshold,
+        // Floor on mean token log-probability of the decoded segment.
+        // Low-confidence hallucinations (background hum decoded as "thank
+        // you for watching", TV bleed-through, etc.) are coherent enough
+        // to slip past the no_speech and compression_ratio guards because
+        // they are grammatical but low-probability. A -1.0 floor rejects
+        // those segments and returns empty text instead.
+        log_prob_threshold: Some(overrides.log_prob_threshold.unwrap_or(-1.0)),
         // Tighter compression-ratio ceiling flags repeat-word hallucinations
         // ("the the the...") so the decoder rejects them instead of pasting.
         compression_ratio_threshold: Some(
@@ -1204,6 +1210,18 @@ mod tests {
                 <= 2.3,
             "compression_ratio_threshold was {:?}, expected <= 2.3",
             request.compression_ratio_threshold
+        );
+        // log_prob_threshold puts a floor on the mean token log-probability
+        // of the decoded segment. Low-confidence decodes (background hum
+        // interpreted as "thank you for watching", TV bleed-through etc.)
+        // score below -1.0. Without this floor they slip past the
+        // no_speech and compression_ratio guards because they are coherent
+        // but low-probability. Must be Some(value) <= -0.8.
+        assert!(
+            request.log_prob_threshold.unwrap_or(f32::MAX) <= -0.8,
+            "log_prob_threshold was {:?}, expected Some(<= -0.8) to reject \
+             low-confidence hallucinations",
+            request.log_prob_threshold
         );
     }
 
