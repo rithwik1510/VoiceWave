@@ -375,6 +375,38 @@ fn schedule_clipboard_restore(
 ) {
 }
 
+/// Decide whether the currently focused window is a system security dialog
+/// that must NEVER receive a SendInput keystroke. If the user's dictation
+/// happened to contain sensitive text (password, PIN) and the focus shifted
+/// to e.g. a UAC prompt between hotkey release and insertion, typing the
+/// text directly would leak it into the wrong field.
+///
+/// Returns `true` if we should refuse Direct (SendInput) insertion and fall
+/// back to the clipboard paths. Windows' built-in UI Privilege Isolation
+/// (UIPI) already blocks most cross-integrity SendInput calls, so this is
+/// defense in depth. We match on the foreground window title because that
+/// doesn't require process enumeration and covers every dialog we care about.
+fn foreground_is_dangerous_for_send_input(window_title: Option<&str>) -> bool {
+    let Some(title) = window_title else {
+        return false;
+    };
+    let lowered = title.to_ascii_lowercase();
+    // Keep this list tight to avoid false positives. Any phrase here will
+    // cause the dictation to route through the clipboard fallback instead
+    // of typing keystrokes into the foreground app.
+    const DANGEROUS_TITLE_FRAGMENTS: &[&str] = &[
+        "user account control",      // UAC prompt (class #32770 with consent.exe)
+        "windows security",          // Windows Security Center prompts
+        "credential manager",        // stored credentials UI
+        "enter your credentials",    // network / RDP credential prompt
+        "enter your pin",            // Windows Hello PIN
+        "sign in to windows",        // lock screen / login
+    ];
+    DANGEROUS_TITLE_FRAGMENTS
+        .iter()
+        .any(|fragment| lowered.contains(fragment))
+}
+
 #[derive(Default)]
 pub struct PlatformInsertionBackend;
 
@@ -424,6 +456,19 @@ impl InsertionBackend for PlatformInsertionBackend {
     ) -> Result<BackendInsertSuccess, String> {
         #[cfg(target_os = "windows")]
         {
+            // Defense in depth: if a system security dialog stole focus
+            // between hotkey release and here, refuse SendInput so we don't
+            // type potentially-sensitive dictation into its fields.
+            // Callers will fall back to clipboard paths which are gated
+            // by Windows UIPI across integrity levels.
+            let current_title = self.detect_target_app();
+            if foreground_is_dangerous_for_send_input(current_title.as_deref()) {
+                return Err(format!(
+                    "Refusing SendInput into system security dialog ({:?}); \
+                     falling back to clipboard.",
+                    current_title
+                ));
+            }
             send_unicode_text(text)?;
             return Ok(BackendInsertSuccess {
                 message: None,
@@ -799,6 +844,81 @@ mod tests {
         let decision =
             clipboard_restore_decision(None, "the dictated sentence", Some("anything"));
         assert_eq!(decision, ClipboardRestoreDecision::SkipNoPrevious);
+    }
+
+    #[test]
+    fn refuse_send_input_into_uac_prompt() {
+        // UAC prompts run at high integrity and typing the user's dictation
+        // into their password field would be a disaster. Windows UIPI already
+        // blocks this at the OS level, but we add an application-layer guard
+        // so we never attempt it.
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "User Account Control"
+        )));
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "Windows Security"
+        )));
+    }
+
+    #[test]
+    fn refuse_send_input_into_credential_and_pin_prompts() {
+        // Windows Hello PIN entry, Credential Manager, RDP credential
+        // prompts — none of these should ever receive dictation keystrokes.
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "Credential Manager"
+        )));
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "Enter your PIN"
+        )));
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "Enter your credentials"
+        )));
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "Sign in to Windows"
+        )));
+    }
+
+    #[test]
+    fn allow_send_input_into_normal_apps() {
+        // Regression: the dangerous-title check must not false-positive on
+        // ordinary user apps, even if their titles happen to contain other
+        // words. The allowlist is implicit (nothing in DANGEROUS_TITLE_FRAGMENTS
+        // matches).
+        assert!(!foreground_is_dangerous_for_send_input(Some("Notepad")));
+        assert!(!foreground_is_dangerous_for_send_input(Some(
+            "Slack | #general - My Workspace"
+        )));
+        assert!(!foreground_is_dangerous_for_send_input(Some(
+            "VS Code - main.rs"
+        )));
+        assert!(!foreground_is_dangerous_for_send_input(Some(
+            "Gmail - Inbox (12)"
+        )));
+    }
+
+    #[test]
+    fn allow_send_input_when_no_foreground_title_available() {
+        // If we can't read a foreground title (window has no title, or
+        // GetWindowTextW returned empty), we fall back to allowing the
+        // SendInput. A blanket refusal would break the common case where
+        // the target app simply has no visible title bar.
+        assert!(!foreground_is_dangerous_for_send_input(None));
+        assert!(!foreground_is_dangerous_for_send_input(Some("")));
+    }
+
+    #[test]
+    fn dangerous_title_matching_is_case_insensitive() {
+        // Windows dialog titles can vary in case across locales / versions.
+        // Match on lowercased substrings so we don't miss variants.
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "USER ACCOUNT CONTROL"
+        )));
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "user account control"
+        )));
+        assert!(foreground_is_dangerous_for_send_input(Some(
+            "windows SECURITY"
+        )));
     }
 
     #[test]
