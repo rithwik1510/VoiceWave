@@ -959,15 +959,16 @@ fn preferred_worker_thread_cap() -> usize {
     let available = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(4);
-    if available >= 14 {
-        12
-    } else if available >= 10 {
-        10
-    } else if available >= 8 {
-        8
-    } else {
-        available.clamp(2, 6)
-    }
+    thread_cap_for_cores(available)
+}
+
+/// Pure helper: given the machine's logical core count, return the number
+/// of threads to hand to the faster-whisper worker for decode. Reserves
+/// one core for the UI thread so the Windows taskbar / main window don't
+/// stutter during the 500-1500 ms of CPU inference. Caps at 12 to avoid
+/// diminishing returns and cache pressure on high-core machines.
+fn thread_cap_for_cores(cores: usize) -> usize {
+    cores.saturating_sub(1).clamp(2, 12)
 }
 
 fn fw_without_timestamps_enabled() -> bool {
@@ -1007,9 +1008,39 @@ fn decode_hyperparams_for(model_id: &str, decode_mode: DecodeMode) -> (u32, u32)
 mod tests {
     use super::{
         decode_hyperparams_for, encode_pcm16_base64, select_worker_backend_preference,
-        worker_request_for, FasterWhisperRequestOverrides,
+        thread_cap_for_cores, worker_request_for, FasterWhisperRequestOverrides,
     };
     use crate::settings::DecodeMode;
+
+    #[test]
+    fn thread_cap_reserves_one_core_for_ui_on_common_laptops() {
+        // Regression: on a 4-core laptop the old tier table returned 4,
+        // pinning all cores and causing Windows UI jank (taskbar stutter)
+        // for the 500-1500 ms of CPU decode. We must always leave at least
+        // one core free for the UI thread.
+        assert_eq!(thread_cap_for_cores(4), 3, "4-core should use 3, leaving 1 for UI");
+        assert_eq!(thread_cap_for_cores(6), 5, "6-core should use 5, leaving 1 for UI");
+        assert_eq!(thread_cap_for_cores(8), 7, "8-core should use 7, leaving 1 for UI");
+        assert_eq!(thread_cap_for_cores(10), 9, "10-core should use 9, leaving 1 for UI");
+    }
+
+    #[test]
+    fn thread_cap_still_caps_at_twelve_on_high_core_machines() {
+        // On 14+ core machines, more threads hit diminishing returns and
+        // cache pressure. Keep the hard ceiling at 12 from the old logic.
+        assert_eq!(thread_cap_for_cores(14), 12);
+        assert_eq!(thread_cap_for_cores(24), 12);
+        assert_eq!(thread_cap_for_cores(64), 12);
+    }
+
+    #[test]
+    fn thread_cap_never_drops_below_two_even_on_tiny_machines() {
+        // Floor: if someone runs on a 1-core VM or core count probe fails,
+        // we still need at least 2 threads for the worker to be usable.
+        assert_eq!(thread_cap_for_cores(0), 2);
+        assert_eq!(thread_cap_for_cores(1), 2);
+        assert_eq!(thread_cap_for_cores(2), 2);
+    }
 
     #[test]
     fn fw_balanced_profile_has_quality_floor_for_small() {
