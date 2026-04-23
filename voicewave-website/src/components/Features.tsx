@@ -79,7 +79,7 @@ function FeaturesD() {
                   <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-[linear-gradient(180deg,#0032b8_0%,#1b8eff_58%,#7ed8ff_100%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100 group-active:opacity-100" />
 
                   <div className="relative z-10">
-                    <div className="w-12 h-12 vw-radius-tab bg-[#09090B] group-hover:bg-[#1b8eff] group-active:bg-[#0050d2] flex items-center justify-center text-[#FFFFFF] mb-5 shadow-inner ring-1 ring-[#09090B]/10 transition-colors duration-300">
+                    <div className="feature-icon-glow w-12 h-12 vw-radius-tab bg-[#09090B] group-hover:bg-[#1b8eff] group-active:bg-[#0050d2] flex items-center justify-center text-[#FFFFFF] mb-5 shadow-inner ring-1 ring-[#09090B]/10 transition-colors duration-300">
                       {feature.icon}
                     </div>
                     <h3 className="text-xl sm:text-2xl font-bold font-display tracking-tight text-[#09090B] mb-3">{feature.title}</h3>

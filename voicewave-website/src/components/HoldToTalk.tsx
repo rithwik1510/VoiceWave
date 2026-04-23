@@ -127,7 +127,7 @@ export default function HoldToTalk() {
           : 'Inserted'
 
   return (
-    <section className="border-t border-[#e4edf8] py-16 sm:py-20">
+    <section className="py-16 sm:py-20">
       <div className="site-shell-tight flex flex-col items-center gap-6 text-center">
         <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#64748b]">
           Interactive Demo
@@ -210,20 +210,32 @@ export default function HoldToTalk() {
               </span>
             )}
             {state === 'inserted' && displayText && (
-              <p
-                className="rounded-2xl px-5 py-2.5 text-base font-medium text-[#0a1020] sm:text-lg"
-                style={{
-                  background: 'rgba(190, 242, 100, 0.13)',
-                  border: '1px solid rgba(190, 242, 100, 0.36)',
-                }}
-              >
-                &ldquo;{displayText}
-                <span
-                  className="ml-0.5 inline-block h-4 w-0.5 animate-pulse align-middle"
-                  style={{ background: '#bef264' }}
+              <div className="flex flex-col items-center gap-2.5">
+                <p
+                  className="rounded-2xl px-5 py-2.5 text-base font-medium text-[#0a1020] sm:text-lg"
+                  style={{
+                    background: 'rgba(190, 242, 100, 0.13)',
+                    border: '1px solid rgba(190, 242, 100, 0.36)',
+                  }}
+                >
+                  &ldquo;{displayText}
+                  <span
+                    className="ml-0.5 inline-block h-4 w-0.5 animate-pulse align-middle"
+                    style={{ background: '#bef264' }}
                 />
-                &rdquo;
-              </p>
+                  &rdquo;
+                </p>
+                {displayText === SAMPLES[sampleIdx] && (
+                  <span
+                    key={`saved-${sampleIdx}`}
+                    className="hold-saved-badge inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-[#355478] sm:text-[11px]"
+                  >
+                    <span aria-hidden="true" className="hold-saved-tick" />
+                    Saved ~{Math.max(4, Math.round(SAMPLES[sampleIdx].length / 4.5 - 2))}s vs typing
+                    <span aria-hidden="true" className="hold-saved-tick" />
+                  </span>
+                )}
+              </div>
             )}
           </div>
 

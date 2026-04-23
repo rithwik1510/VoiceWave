@@ -240,13 +240,13 @@ function DeepDiveD() {
           </div>
         </div>
 
-        <div className="lg:col-span-7 flex flex-col gap-10 sm:gap-16 mt-8 lg:mt-0 relative pb-24 sm:pb-36">
+        <div className="lg:col-span-7 flex flex-col gap-10 sm:gap-14 mt-8 lg:mt-0 relative pb-6 sm:pb-10">
           <motion.div
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
             viewport={{ once: true, margin: '-80px' }}
             transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
-            className="group lg:sticky lg:top-32 z-10 w-full bg-[#FFFFFF] vw-radius-shell p-6 sm:p-8 lg:p-10 shadow-[0_-10px_40px_-10px_rgba(0,0,0,0.05)] border border-[#d8e5f4] transform-gpu transition-[border-color,box-shadow] duration-300 hover:border-[#1b8eff]/58 hover:shadow-[0_-10px_48px_-10px_rgba(27,142,255,0.25)]"
+            className="group relative z-10 w-full bg-[#FFFFFF] vw-radius-shell p-6 sm:p-8 lg:p-10 shadow-[0_10px_40px_-18px_rgba(10,30,90,0.18)] border border-[#d8e5f4] transform-gpu transition-[border-color,box-shadow,transform] duration-300 hover:border-[#1b8eff]/58 hover:shadow-[0_18px_48px_-16px_rgba(27,142,255,0.24)]"
           >
             <div className="flex justify-between items-start mb-8 sm:mb-12">
               <div className="w-14 h-14 sm:w-16 sm:h-16 vw-radius-tab bg-[#FAFCFF] border border-[#d8e5f5] flex items-center justify-center shadow-inner transition-colors duration-300 group-hover:border-[#7ed8ff] group-hover:bg-[#ebf6ff]">
@@ -275,7 +275,7 @@ function DeepDiveD() {
             whileInView={{ opacity: 1 }}
             viewport={{ once: true, margin: '-80px' }}
             transition={{ duration: 0.55, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
-            className="group lg:sticky lg:top-40 z-20 w-full bg-[#f7fbff] vw-radius-shell p-6 sm:p-8 lg:p-10 shadow-[0_-20px_40px_-10px_rgba(0,0,0,0.08)] border border-[#d4e2f2] transform-gpu transition-[border-color,box-shadow] duration-300 hover:border-[#1b8eff]/58 hover:shadow-[0_-20px_52px_-12px_rgba(27,142,255,0.26)]"
+            className="group relative z-20 w-full bg-[#f7fbff] vw-radius-shell p-6 sm:p-8 lg:p-10 shadow-[0_12px_44px_-18px_rgba(10,30,90,0.22)] border border-[#d4e2f2] transform-gpu transition-[border-color,box-shadow,transform] duration-300 hover:border-[#1b8eff]/58 hover:shadow-[0_20px_52px_-16px_rgba(27,142,255,0.26)]"
           >
             <div className="flex justify-between items-start mb-8 sm:mb-12">
               <div className="w-14 h-14 sm:w-16 sm:h-16 vw-radius-tab bg-[#FFFFFF] border border-[#d8e5f5] flex items-center justify-center shadow-sm transition-colors duration-300 group-hover:border-[#7ed8ff] group-hover:bg-[#ebf6ff]">
@@ -298,7 +298,7 @@ function DeepDiveD() {
             whileInView={{ opacity: 1 }}
             viewport={{ once: true, margin: '-80px' }}
             transition={{ duration: 0.55, delay: 0.16, ease: [0.16, 1, 0.3, 1] }}
-            className="group lg:sticky lg:top-48 z-30 w-full bg-[#09090B] vw-radius-shell p-6 sm:p-8 lg:p-10 shadow-[0_-30px_60px_-10px_rgba(0,0,0,0.2)] border border-[#20345f] transform-gpu text-[#FAFAFA] transition-[border-color,box-shadow] duration-300 hover:border-[#3f8dff] hover:shadow-[0_-30px_72px_-12px_rgba(27,142,255,0.32)]"
+            className="group relative z-30 w-full bg-[#09090B] vw-radius-shell p-6 sm:p-8 lg:p-10 shadow-[0_18px_56px_-20px_rgba(6,14,36,0.55)] border border-[#20345f] transform-gpu text-[#FAFAFA] transition-[border-color,box-shadow,transform] duration-300 hover:border-[#3f8dff] hover:shadow-[0_26px_70px_-20px_rgba(27,142,255,0.36)]"
           >
             <div className="flex justify-between items-start mb-8 sm:mb-12">
               <div className="w-14 h-14 sm:w-16 sm:h-16 vw-radius-tab bg-[#111a2b] border border-[#223b6f] flex items-center justify-center shadow-inner transition-colors duration-300 group-hover:border-[#7ed8ff]/55 group-hover:bg-[#0f2448]">

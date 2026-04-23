@@ -207,16 +207,20 @@ export default function ScrollDemo() {
   return (
     <section id="demo" className="px-0 py-10 sm:py-14">
       <div className="site-shell">
-        <h2 className="text-[clamp(2.1rem,5.2vw,3.85rem)] leading-[1.02] text-[#0a1020]">App-realistic live demo</h2>
+        <p className="section-eyebrow font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-[#61758f] sm:text-xs">
+          <span aria-hidden="true" className="section-eyebrow-tick" />
+          See It In Action
+        </p>
+        <h2 className="mt-4 text-[clamp(2.1rem,5.2vw,3.85rem)] leading-[1.02] text-[#0a1020]">App-realistic live demo</h2>
         <p className="mt-3 max-w-3xl text-base text-[#475569] sm:text-lg">
           This preview uses the same app UI components with simulated input, so users see truthful VoiceWave behavior.
         </p>
 
         <motion.div
-          initial={{ opacity: 0, y: isReducedMotion ? 0 : 10 }}
-          whileInView={{ opacity: 1, y: 0 }}
+          initial={{ opacity: 0, y: isReducedMotion ? 0 : 18, scale: isReducedMotion ? 1 : 0.955 }}
+          whileInView={{ opacity: 1, y: 0, scale: 1 }}
           viewport={{ once: true, amount: 0.22 }}
-          transition={{ duration: isReducedMotion ? 0.01 : 0.32, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: isReducedMotion ? 0.01 : 0.62, ease: [0.16, 1, 0.3, 1], delay: isReducedMotion ? 0 : 0.08 }}
           className="panel-card mt-8 overflow-hidden border-[#d6e5f8]"
         >
           <div className="flex items-center justify-between gap-3 border-b border-[#d7e6f8] bg-[linear-gradient(132deg,rgba(247,251,255,0.98),rgba(233,244,255,0.95))] px-4 py-2.5">
@@ -237,8 +241,13 @@ export default function ScrollDemo() {
             <p className="mt-2 text-sm text-[#475569] leading-relaxed">Best experienced on a larger screen. Open VoiceWave on desktop to see the full app UI in action.</p>
           </div>
 
-          {/* Desktop demo */}
-          <div className="hidden md:block" style={{ overflow: 'hidden', height: '496px' }}>
+          {/* Desktop demo
+             * Container height is the VISUAL height (after scale 0.8 is applied).
+             * Inner Layout renders at its natural width & height, then gets
+             * scaled to 80%. With the updated TODAY list the natural content
+             * is roughly 900px tall, so visual height = 900 * 0.8 = 720.
+             * Keep overflow hidden so the card doesn't leak. */}
+          <div className="hidden md:block" style={{ overflow: 'hidden', height: '720px' }}>
             <div style={{ transform: 'scale(0.8)', transformOrigin: 'top left', width: 'calc(100% / 0.8)' }}>
               <Layout
                 theme={THEME}

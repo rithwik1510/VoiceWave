@@ -91,13 +91,19 @@ function App() {
         <WhereItWorks />
       </section>
 
+      <hr className="site-divider" aria-hidden="true" />
+
       <section className="bg-[#f7fbff]">
         <HoldToTalk />
       </section>
 
+      <hr className="site-divider" aria-hidden="true" />
+
       <section className="bg-[#f7fbff] py-12 sm:py-16">
         <ScrollDemo />
       </section>
+
+      <hr className="site-divider" aria-hidden="true" />
 
       <section className="bg-[#f7fbff] py-10 sm:py-14">
         <CapabilityDeepDive />
@@ -107,6 +113,8 @@ function App() {
       <section className="coming-soon-band">
         <ComingSoonDots />
       </section>
+
+      <hr className="site-divider" aria-hidden="true" />
 
       <section className="bg-[#f7fbff] pb-10 sm:pb-14">
         <TrustProof />

@@ -11,8 +11,11 @@ const HERO_SUBTEXTS = [
   'Hold to talk. Release to insert. Local by design, fast by default.',
 ]
 
+// Short positioning markers under the subtext. Keeping this brand-forward
+// (not metric-forward) so the hero reads as a product, not a spec sheet.
+const HERO_POINTS = ['Windows', 'Free preview', 'Offline-first']
+
 export default function Hero() {
-  const heroPoints = ['Windows-first rollout', 'Local-only v1', 'Fallback-safe insertion']
   const [subtextIdx, setSubtextIdx] = useState(0)
   const heroSectionRef = useRef<HTMLElement | null>(null)
   const copyStackRef = useRef<HTMLDivElement | null>(null)
@@ -144,7 +147,7 @@ export default function Hero() {
           </div>
 
           <ul className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#dff0ff] sm:text-xs">
-            {heroPoints.map((point) => (
+            {HERO_POINTS.map((point) => (
               <li key={point} className="inline-flex items-center gap-1.5">
                 <span className="inline-block h-1 w-1 rounded-full bg-[#7ed8ff]" />
                 {point}
