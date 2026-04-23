@@ -575,6 +575,34 @@ pub fn is_whisper_cpp_model(model_id: &str) -> bool {
     model_id.starts_with("wcpp-")
 }
 
+/// Classification of how a given active model should be warmed up at app
+/// startup so the first transcription doesn't pay a cold-start penalty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmupPlan {
+    /// Spawn the Python faster-whisper worker and call `prefetch_model` to
+    /// load the weights into the worker's MODEL_CACHE. After this, the first
+    /// real transcription hits the cache path (~500 ms instead of 2-5 s).
+    FasterWhisper,
+    /// whisper.cpp backend: load the ggml weights via `prewarm_runtime` so
+    /// the first real transcription uses the pre-initialized WhisperContext.
+    WhisperCpp,
+    /// Model ID we don't know how to warm up. Skip silently.
+    Unsupported,
+}
+
+/// Pure dispatch helper: decide how to warm up the given active model at
+/// app launch. No I/O; safe to unit test. Actual warmup is performed by
+/// `VoiceWaveController::prewarm_active_model`.
+pub fn warmup_plan_for_model(model_id: &str) -> WarmupPlan {
+    if is_faster_whisper_model(model_id) {
+        return WarmupPlan::FasterWhisper;
+    }
+    if is_whisper_cpp_model(model_id) {
+        return WarmupPlan::WhisperCpp;
+    }
+    WarmupPlan::Unsupported
+}
+
 pub fn faster_whisper_runtime_model_id(model_id: &str) -> Option<&'static str> {
     match model_id {
         "fw-small.en" => Some("small.en"),
@@ -1686,6 +1714,33 @@ mod tests {
         assert!(!is_whisper_cpp_model("fw-small.en"));
         assert!(!is_whisper_cpp_model("fw-large-v3"));
         assert!(!is_whisper_cpp_model(""));
+    }
+
+    #[test]
+    fn warmup_plan_routes_faster_whisper_models_to_python_prefetch() {
+        // fw-* models must be routed to the Python worker prefetch path so
+        // the model is loaded into MODEL_CACHE at app startup.
+        assert_eq!(warmup_plan_for_model("fw-small.en"), WarmupPlan::FasterWhisper);
+        assert_eq!(warmup_plan_for_model("fw-large-v3"), WarmupPlan::FasterWhisper);
+    }
+
+    #[test]
+    fn warmup_plan_routes_whisper_cpp_models_to_prewarm_runtime() {
+        // wcpp-* models use the existing Rust prewarm_runtime path so the
+        // WhisperContext is initialized before the first transcription.
+        assert_eq!(warmup_plan_for_model("wcpp-small.en"), WarmupPlan::WhisperCpp);
+        assert_eq!(
+            warmup_plan_for_model("wcpp-large-v3-turbo"),
+            WarmupPlan::WhisperCpp
+        );
+    }
+
+    #[test]
+    fn warmup_plan_skips_unknown_or_empty_model_ids() {
+        // Unknown or unset model IDs should not crash startup. Return
+        // Unsupported and let the caller skip the warmup call.
+        assert_eq!(warmup_plan_for_model(""), WarmupPlan::Unsupported);
+        assert_eq!(warmup_plan_for_model("some-future-backend"), WarmupPlan::Unsupported);
     }
 
     #[test]

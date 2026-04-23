@@ -1016,6 +1016,16 @@ pub fn run() {
                     .await;
             });
 
+            // Cold-start fix: pre-load the active model's weights into its
+            // runtime cache in the background. Without this, the first
+            // dictation after app launch costs ~2-5 s of model deserialization
+            // + CUDA context init + kernel compilation. After warmup it drops
+            // to ~500 ms. Fire-and-forget; never blocks startup.
+            let controller_for_prewarm = controller.clone();
+            tauri::async_runtime::spawn(async move {
+                controller_for_prewarm.prewarm_active_model().await;
+            });
+
             app.manage(RuntimeContext { controller });
 
             let app_handle = app.handle().clone();

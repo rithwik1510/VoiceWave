@@ -23,8 +23,8 @@ use crate::{
         cpu_runtime_pool_enabled, ensure_faster_whisper_ready, faster_whisper_cache_hint,
         faster_whisper_runtime_model_id, is_faster_whisper_model,
         note_audio_pipeline_decode_hard_failure, note_audio_pipeline_decode_success,
-        prefetch_faster_whisper_model, prewarm_runtime, InferenceError, InferenceWorker,
-        RuntimeDecodePolicy,
+        prefetch_faster_whisper_model, prewarm_runtime, warmup_plan_for_model, InferenceError,
+        InferenceWorker, RuntimeDecodePolicy, WarmupPlan,
     },
     insertion::{
         InsertResult, InsertTextRequest, InsertionEngine, InsertionError, InsertionMethod,
@@ -1018,6 +1018,60 @@ impl VoiceWaveController {
         }
 
         Ok(settings)
+    }
+
+    /// Pre-load the active model into its runtime cache at app startup so the
+    /// first transcription doesn't pay a cold-start penalty (model deserialize
+    /// + CUDA context init + CTranslate2 kernel compile, typically 2-5 s).
+    /// Fire-and-forget — errors are logged, never propagated. Safe to call
+    /// before any hotkey press.
+    pub async fn prewarm_active_model(&self) {
+        let active_model = {
+            let settings = self.settings.lock().await;
+            settings.active_model.clone()
+        };
+
+        match warmup_plan_for_model(&active_model) {
+            WarmupPlan::FasterWhisper => {
+                if let Err(err) = ensure_faster_whisper_ready().await {
+                    eprintln!(
+                        "voicewave: cold-start warmup skipped (worker spawn failed for {active_model}): {err}"
+                    );
+                    return;
+                }
+                match prefetch_faster_whisper_model(&active_model).await {
+                    Ok(result) => {
+                        eprintln!(
+                            "voicewave: cold-start warmup complete for {active_model} \
+                             (model_init={}ms, cache_hit={})",
+                            result.model_init_ms, result.runtime_cache_hit
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "voicewave: cold-start prefetch failed for {active_model}: {err}"
+                        );
+                    }
+                }
+            }
+            WarmupPlan::WhisperCpp => {
+                if !cpu_runtime_pool_enabled() {
+                    return;
+                }
+                let model_path = {
+                    let manager = self.model_manager.lock().await;
+                    manager
+                        .get_installed(&active_model)
+                        .map(|row| row.file_path.clone())
+                };
+                if let Some(path) = model_path {
+                    prewarm_runtime(active_model, path, DecodeMode::Balanced);
+                }
+            }
+            WarmupPlan::Unsupported => {
+                // Unknown model — skip warmup silently.
+            }
+        }
     }
 
     pub async fn get_entitlement_snapshot(&self) -> Result<EntitlementSnapshot, ControllerError> {
