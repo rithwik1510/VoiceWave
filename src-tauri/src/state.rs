@@ -626,6 +626,38 @@ fn push_release_allowed(trigger: DictationStartTrigger, _session_age: Duration) 
     trigger == DictationStartTrigger::PushToTalk
 }
 
+/// Decision emitted by `trigger_hotkey_action` for a PushToTalk Release event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushReleaseDecision {
+    /// Stop the active dictation session.
+    Stop,
+    /// No eligible push session — ignore the event (probably a duplicate
+    /// release, or the active session was started by a different trigger).
+    IgnoreNoEligibleSession,
+}
+
+/// Decide what to do with a push-to-talk Release hotkey event.
+///
+/// Historically this also re-checked `GetAsyncKeyState` live and bailed out
+/// if the key still read as pressed. That re-check raced against the hotkey
+/// monitor which had already debounced the release over ~45 ms (3 consecutive
+/// "released" samples). A single racy read during key bounce or a fast
+/// re-press could cause the release to be silently dropped, leaving the
+/// dictation session running until the 12 s max-capture timeout. The user
+/// symptom was "I released but the pill didn't stop."
+///
+/// The monitor's 3-sample debounce is the authoritative source of truth for
+/// release. If the user genuinely re-pressed immediately after releasing,
+/// the monitor will emit a subsequent Pressed event for the new session —
+/// we don't lose anything by acting on the Released event we received.
+fn push_to_talk_release_decision(session_eligible: bool) -> PushReleaseDecision {
+    if session_eligible {
+        PushReleaseDecision::Stop
+    } else {
+        PushReleaseDecision::IgnoreNoEligibleSession
+    }
+}
+
 fn fw_min_decode_audio_ms() -> u64 {
     std::env::var("VOICEWAVE_FW_MIN_DECODE_AUDIO_MS")
         .ok()
@@ -1777,18 +1809,21 @@ impl VoiceWaveController {
                 }
             }
             (HotkeyAction::PushToTalk, HotkeyPhase::Released) => {
-                let still_pressed = {
-                    let manager = self.hotkey_manager.lock().await;
-                    manager.is_action_pressed(HotkeyAction::PushToTalk)
-                };
-                if still_pressed {
-                    eprintln!("voicewave: ignored push-to-talk release (key still down)");
-                    return Ok(());
-                }
-                if self.active_push_session_ready_for_release().await {
-                    self.stop_dictation(app).await;
-                } else {
-                    eprintln!("voicewave: ignored push-to-talk release (no eligible push session)");
+                // Trust the monitor's ~45 ms release debounce. A re-check of
+                // GetAsyncKeyState here used to drop the event if it caught a
+                // transient re-press, leaving capture running until the 12 s
+                // max timeout. See push_to_talk_release_decision for full
+                // rationale.
+                let session_eligible = self.active_push_session_ready_for_release().await;
+                match push_to_talk_release_decision(session_eligible) {
+                    PushReleaseDecision::Stop => {
+                        self.stop_dictation(app).await;
+                    }
+                    PushReleaseDecision::IgnoreNoEligibleSession => {
+                        eprintln!(
+                            "voicewave: ignored push-to-talk release (no eligible push session)"
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -3842,9 +3877,9 @@ mod tests {
         asr_integrity_metrics, build_terminology_hint_from_texts, clamp_vad_threshold,
         classify_insertion_target, decode_mode_key, derive_correction_candidates,
         floor_decode_mode, insertion_method_key, is_likely_low_quality_input_name, now_utc_ms,
-        push_release_allowed, should_reject_low_confidence_transcript_as_no_speech,
-        DictationStartTrigger, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD,
-        RECOMMENDED_VAD_THRESHOLD,
+        push_release_allowed, push_to_talk_release_decision,
+        should_reject_low_confidence_transcript_as_no_speech, DictationStartTrigger,
+        PushReleaseDecision, MAX_VAD_THRESHOLD, MIN_VAD_THRESHOLD, RECOMMENDED_VAD_THRESHOLD,
     };
     use crate::insertion::InsertionMethod;
     use crate::settings::DecodeMode;
@@ -3882,6 +3917,42 @@ mod tests {
             DictationStartTrigger::PushToTalk,
             Duration::from_millis(0)
         ));
+    }
+
+    #[test]
+    fn push_to_talk_release_stops_eligible_session() {
+        // The hotkey monitor debounces release over ~45 ms (3 consecutive
+        // "released" samples) before emitting a Released event. When we
+        // reach push_to_talk_release_decision the release is already
+        // confirmed — we should trust it and stop the dictation.
+        assert_eq!(
+            push_to_talk_release_decision(true),
+            PushReleaseDecision::Stop
+        );
+    }
+
+    #[test]
+    fn push_to_talk_release_ignores_when_no_eligible_session() {
+        // If the active session was started by a non-push trigger (toggle
+        // or manual), or there is no active session at all, a stray push
+        // release must not tear down whatever is running. This also guards
+        // against duplicate Released events.
+        assert_eq!(
+            push_to_talk_release_decision(false),
+            PushReleaseDecision::IgnoreNoEligibleSession
+        );
+    }
+
+    #[test]
+    fn push_to_talk_release_does_not_depend_on_live_key_state() {
+        // Regression: we must not bail out based on a live GetAsyncKeyState
+        // read. The old handler re-checked the key after the monitor had
+        // already debounced the release and silently dropped the event if
+        // the key happened to read as pressed (bounce / fast re-press),
+        // leaving capture running until the 12 s max timeout. The decision
+        // function now takes only `session_eligible` — key state cannot
+        // sneak back into its signature without breaking this test.
+        let _: fn(bool) -> PushReleaseDecision = push_to_talk_release_decision;
     }
 
     #[test]
