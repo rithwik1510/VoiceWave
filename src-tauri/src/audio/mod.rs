@@ -803,13 +803,19 @@ fn trim_capture_edges(samples: &[f32], frame_size: usize, threshold: f32) -> Vec
     };
     let last = last_voiced_frame.unwrap_or(first);
 
-    // Head padding: keep 2 leading silent frames so leading consonants
-    // (plosives like "p", "t", "k") are not clipped.
-    let start_frame = first.saturating_sub(2);
-    // Tail padding: keep 8 trailing frames (~160 ms at 16 kHz with 20 ms
-    // frames) so soft word endings ("s", "th", "f") that drop below the
-    // VAD threshold still get delivered to the decoder.
-    let end_frame_exclusive = last.saturating_add(8);
+    // Head padding: keep 4 leading silent frames (~80 ms) so leading
+    // consonants (plosives like "p", "t", "k") are not clipped.
+    const HEAD_PAD_FRAMES: usize = 4;
+    // Tail padding: keep 15 trailing frames (~300 ms at 16 kHz with 20 ms
+    // frames) past the last voiced frame so soft word endings ("s", "th",
+    // "f", drifted "e") that drop below the VAD threshold still get
+    // delivered to the decoder. This must stay >= TAIL_PAD_FRAMES in
+    // trim_low_energy_edges (inference/audio_pipeline.rs) — otherwise the
+    // inference-layer trim has nothing to pad with and soft word endings
+    // are lost.
+    const TAIL_PAD_FRAMES: usize = 15;
+    let start_frame = first.saturating_sub(HEAD_PAD_FRAMES);
+    let end_frame_exclusive = last.saturating_add(1).saturating_add(TAIL_PAD_FRAMES);
     let start = start_frame.saturating_mul(frame_size).min(samples.len());
     let end = end_frame_exclusive
         .saturating_mul(frame_size)
@@ -1049,6 +1055,36 @@ mod tests {
         assert!(
             trimmed.len() >= min_expected_len,
             "expected at least {min_expected_len} samples of trailing padding, got {}",
+            trimmed.len()
+        );
+    }
+
+    #[test]
+    fn trim_capture_edges_tail_padding_matches_inference_layer_generosity() {
+        // Regression: the capture-layer tail trim must keep at least 15
+        // frames (300 ms at 16 kHz / 20 ms frames) past the last voiced
+        // frame, matching trim_low_energy_edges in inference/audio_pipeline.rs.
+        // Otherwise soft word endings are clipped at the capture layer
+        // before the inference pipeline ever sees them, and the 300 ms
+        // padding in the inference-layer trim cannot recover samples that
+        // were already truncated upstream.
+        let frame_size = FRAME_SIZE;
+        let mut samples = vec![0.0_f32; frame_size * 2];
+        samples.extend(vec![0.05_f32; frame_size * 3]);
+        samples.extend(vec![0.0_f32; frame_size * 30]);
+
+        let trimmed = trim_capture_edges(&samples, frame_size, 0.01);
+
+        let last_voiced_frame = 4; // frames 2..=4 are voiced (0-indexed)
+        let min_tail_frames = 15;
+        let min_expected_len = (last_voiced_frame + 1 + min_tail_frames) * frame_size;
+        let actual_tail_frames = (trimmed.len() / frame_size)
+            .saturating_sub(last_voiced_frame + 1);
+        assert!(
+            trimmed.len() >= min_expected_len,
+            "capture-layer tail pad too aggressive: kept only {actual_tail_frames} frames \
+             past last voiced frame (len={}); need at least {min_tail_frames} frames \
+             (len >= {min_expected_len}) to match inference-layer trim",
             trimmed.len()
         );
     }
