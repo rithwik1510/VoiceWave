@@ -436,7 +436,11 @@ impl AudioCaptureService {
         }
 
         if options.preserve_full_capture && !capture_accum.is_empty() {
-            let preserve_threshold = (options.vad_config.threshold * 0.55).clamp(0.0015, 0.02);
+            // Volume-adaptive: a fixed 0.0055 threshold was catastrophic
+            // for quiet speakers whose soft syllables fell below it and
+            // got trimmed as silence. See adaptive_preserve_threshold.
+            let preserve_threshold =
+                adaptive_preserve_threshold(&capture_accum, options.vad_config.threshold);
             let trimmed = trim_capture_edges(&capture_accum, FRAME_SIZE, preserve_threshold);
             if !trimmed.is_empty() {
                 return Ok(vec![trimmed]);
@@ -790,6 +794,35 @@ fn rms(samples: &[f32]) -> f32 {
     (power_sum / samples.len() as f32).sqrt()
 }
 
+/// Compute the RMS threshold used by `trim_capture_edges` to decide which
+/// frames are "voiced" enough to avoid trimming.
+///
+/// The threshold must adapt to the user's actual speaking volume. A fixed
+/// threshold like `vad_threshold * 0.55 = 0.0055` is fine for normal-volume
+/// speakers but catastrophically high for quiet speakers whose syllables
+/// often sit at 0.003-0.008 RMS. With a fixed threshold the last voiced
+/// frame gets pinned to the last LOUD syllable, so the 300 ms tail pad
+/// starts there — any quieter trailing words are truncated, especially
+/// after a mid-utterance silence gap when the user resumes quieter than
+/// their opening.
+///
+/// Formula: take the lower of (15% of utterance RMS) and (55% of VAD
+/// threshold), then clamp into a safe range. This mirrors the adaptive
+/// logic in `condition_audio_v1::edge_threshold` and means loud speakers
+/// get the expected ~0.0055 threshold while quiet speakers automatically
+/// drop to ~0.0008 so their soft syllables are still seen as voiced.
+pub fn adaptive_preserve_threshold(samples: &[f32], vad_threshold: f32) -> f32 {
+    // Clamp bounds: 0.0008 is below typical ambient office noise (~0.001)
+    // so we won't pick up mic hum as voiced. 0.02 is the ceiling used
+    // previously; keep it to avoid cutting very loud content.
+    const MIN_THRESHOLD: f32 = 0.0008;
+    const MAX_THRESHOLD: f32 = 0.02;
+    let global = rms(samples);
+    let adaptive = global * 0.15;
+    let vad_derived = vad_threshold * 0.55;
+    adaptive.min(vad_derived).clamp(MIN_THRESHOLD, MAX_THRESHOLD)
+}
+
 fn trim_capture_edges(samples: &[f32], frame_size: usize, threshold: f32) -> Vec<f32> {
     if samples.is_empty() || frame_size == 0 {
         return Vec::new();
@@ -1035,6 +1068,58 @@ fn percentile(sorted: &[f32], quantile: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_threshold_drops_for_quiet_speakers_so_soft_syllables_survive() {
+        // Regression for the "quiet resumption after pause gets clipped" bug.
+        //
+        // A quiet speaker's utterance RMS sits around 0.005. With a fixed
+        // threshold of vad_threshold * 0.55 = 0.0055 (the old behaviour),
+        // soft syllables at 0.003-0.005 are flagged as silence and the
+        // trim's last_voiced_frame stops at the last loud syllable. The
+        // 300 ms tail pad then starts from that point and the quieter
+        // trailing words get truncated.
+        //
+        // The adaptive formula must return a threshold LOWER than the
+        // speaker's own soft syllables so they are preserved.
+        let quiet_utterance = vec![0.005_f32; 320 * 50]; // ~1 s of quiet speech
+        let vad_threshold = 0.01;
+        let threshold = adaptive_preserve_threshold(&quiet_utterance, vad_threshold);
+        assert!(
+            threshold <= 0.0015,
+            "quiet speaker (RMS 0.005) got threshold {threshold}; must be <= \
+             0.0015 so their soft syllables are not trimmed",
+        );
+    }
+
+    #[test]
+    fn adaptive_threshold_stays_tight_for_normal_volume_speakers() {
+        // A normal-volume speaker (RMS 0.04) should still get roughly the
+        // old 0.0055 threshold so loud-speaker behaviour is unchanged.
+        // The adaptive side gives 0.006, vad-derived gives 0.0055 — min
+        // is 0.0055.
+        let normal_utterance = vec![0.04_f32; 320 * 50];
+        let threshold = adaptive_preserve_threshold(&normal_utterance, 0.01);
+        assert!(
+            (0.0045..=0.0060).contains(&threshold),
+            "normal speaker (RMS 0.04) got unexpected threshold {threshold}; \
+             expected near 0.0055 (no regression for loud speakers)",
+        );
+    }
+
+    #[test]
+    fn adaptive_threshold_never_drops_below_ambient_noise_floor() {
+        // Silent utterance (just ambient mic noise) must NOT send the
+        // threshold to effectively zero, or trim_capture_edges would
+        // flag every frame as voiced and never trim anything.
+        let silence = vec![0.0005_f32; 320 * 50];
+        let threshold = adaptive_preserve_threshold(&silence, 0.01);
+        assert!(
+            threshold >= 0.0008,
+            "silence threshold {threshold} fell below the 0.0008 ambient \
+             noise floor — would defeat trimming entirely",
+        );
+    }
 
     #[test]
     fn release_tail_min_wait_is_long_enough_for_soft_consonants() {

@@ -223,7 +223,13 @@ fn condition_audio_v1(samples: &[f32]) -> Vec<f32> {
 
 fn condition_audio_v2(samples: &[f32]) -> Vec<f32> {
     const FRAME_SIZE: usize = 320;
-    const MIN_EDGE_RMS: f32 = 0.0018;
+    // Lowered from 0.0018 to 0.0008 to match audio::adaptive_preserve_threshold
+    // at the capture layer. The old floor was too aggressive for quiet
+    // speakers: their soft tails (RMS 0.002-0.004) fell below the floor
+    // and `trim_low_energy_edges` clipped the last 2-3 words even though
+    // the capture layer had preserved them. Must stay >= typical ambient
+    // mic noise (~0.0005) so silence isn't classified as voiced.
+    const MIN_EDGE_RMS: f32 = 0.0008;
     const MAX_EDGE_RMS: f32 = 0.028;
     const TARGET_RMS: f32 = 0.07;
     const MAX_PEAK: f32 = 0.94;
