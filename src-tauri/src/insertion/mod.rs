@@ -305,21 +305,75 @@ fn is_clipboard_preferred_target(app: &str) -> bool {
         || normalized.contains("notion")
 }
 
+/// Decision emitted by the clipboard-restore thread after it wakes up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardRestoreDecision {
+    /// Overwrite the clipboard with the previously-saved value.
+    Restore,
+    /// Current clipboard contents differ from what we wrote — user or
+    /// another thread has since touched the clipboard. Leave it alone.
+    SkipClipboardChanged,
+    /// No previous value to restore (first paste, or clipboard was empty
+    /// before dictation started). Nothing to do.
+    SkipNoPrevious,
+}
+
+/// Decide whether the restore thread should write `previous` back to the
+/// clipboard, based on what the clipboard currently contains.
+///
+/// The restore is scheduled on a thread that sleeps 90-210 ms before firing.
+/// If the user starts a second dictation and its paste lands during that
+/// sleep, the restore used to unconditionally overwrite the new paste,
+/// clobbering the user's text. We now only restore if the clipboard still
+/// contains exactly what we wrote — a verify-before-write guard.
+fn clipboard_restore_decision(
+    previous_text: Option<&str>,
+    wrote: &str,
+    current_clipboard: Option<&str>,
+) -> ClipboardRestoreDecision {
+    if previous_text.is_none() {
+        return ClipboardRestoreDecision::SkipNoPrevious;
+    }
+    match current_clipboard {
+        Some(current) if current == wrote => ClipboardRestoreDecision::Restore,
+        _ => ClipboardRestoreDecision::SkipClipboardChanged,
+    }
+}
+
 #[cfg(target_os = "windows")]
-fn schedule_clipboard_restore(previous_text: Option<String>, restore_delay_ms: u64) {
-    let Some(previous) = previous_text else {
+fn schedule_clipboard_restore(
+    previous_text: Option<String>,
+    wrote: String,
+    restore_delay_ms: u64,
+) {
+    if previous_text.is_none() {
         return;
-    };
+    }
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(restore_delay_ms));
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            let _ = clipboard.set_text(previous);
+        let Ok(mut clipboard) = arboard::Clipboard::new() else {
+            return;
+        };
+        let current = clipboard.get_text().ok();
+        match clipboard_restore_decision(previous_text.as_deref(), &wrote, current.as_deref()) {
+            ClipboardRestoreDecision::Restore => {
+                if let Some(previous) = previous_text {
+                    let _ = clipboard.set_text(previous);
+                }
+            }
+            ClipboardRestoreDecision::SkipClipboardChanged
+            | ClipboardRestoreDecision::SkipNoPrevious => {}
         }
     });
 }
 
 #[cfg(not(target_os = "windows"))]
-fn schedule_clipboard_restore(_previous_text: Option<String>, _restore_delay_ms: u64) {}
+fn schedule_clipboard_restore(
+    _previous_text: Option<String>,
+    _wrote: String,
+    _restore_delay_ms: u64,
+) {
+}
 
 #[derive(Default)]
 pub struct PlatformInsertionBackend;
@@ -406,7 +460,7 @@ impl InsertionBackend for PlatformInsertionBackend {
             } else {
                 90
             };
-            schedule_clipboard_restore(previous_text, restore_delay_ms);
+            schedule_clipboard_restore(previous_text, text.to_string(), restore_delay_ms);
             return Ok(BackendInsertSuccess {
                 message: Some("Inserted via clipboard fallback.".to_string()),
                 undo_token: Some(UndoToken::KeyboardUndo),
@@ -697,6 +751,69 @@ impl InsertionBackend for DeterministicMatrixBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_restore_writes_previous_when_current_still_matches_our_write() {
+        // Happy path: no other writer has touched the clipboard since our
+        // paste. The clipboard still holds the dictation text we wrote, so
+        // restoring the previous value is safe.
+        let decision = clipboard_restore_decision(
+            Some("user's old copied text"),
+            "the dictated sentence",
+            Some("the dictated sentence"),
+        );
+        assert_eq!(decision, ClipboardRestoreDecision::Restore);
+    }
+
+    #[test]
+    fn clipboard_restore_skips_when_user_or_another_app_changed_clipboard() {
+        // Regression: the restore thread sleeps 90-210 ms after paste. If
+        // the user (or another app) writes to the clipboard during that
+        // window, blindly restoring the old value would clobber their new
+        // text. The decision must detect this and leave the clipboard alone.
+        let decision = clipboard_restore_decision(
+            Some("user's old copied text"),
+            "the dictated sentence",
+            Some("user typed something entirely new"),
+        );
+        assert_eq!(decision, ClipboardRestoreDecision::SkipClipboardChanged);
+    }
+
+    #[test]
+    fn clipboard_restore_skips_when_clipboard_is_now_empty_or_unreadable() {
+        // If we can't read the current clipboard (arboard get_text failed,
+        // or clipboard was cleared), we don't know if our paste is still
+        // there. Safe default: don't restore.
+        let decision = clipboard_restore_decision(
+            Some("user's old copied text"),
+            "the dictated sentence",
+            None,
+        );
+        assert_eq!(decision, ClipboardRestoreDecision::SkipClipboardChanged);
+    }
+
+    #[test]
+    fn clipboard_restore_skips_when_no_previous_text_was_saved() {
+        // If the clipboard was empty or unreadable before dictation, there
+        // is nothing to restore. Nothing to do.
+        let decision =
+            clipboard_restore_decision(None, "the dictated sentence", Some("anything"));
+        assert_eq!(decision, ClipboardRestoreDecision::SkipNoPrevious);
+    }
+
+    #[test]
+    fn clipboard_restore_restores_even_when_previous_and_wrote_are_identical() {
+        // Edge case: user had previously copied the exact same text we
+        // dictated. previous == wrote. The restore is idempotent so this
+        // is still the Restore path (writing back the same value is a no-op
+        // on clipboard but we should not classify it as "changed").
+        let decision = clipboard_restore_decision(
+            Some("same text"),
+            "same text",
+            Some("same text"),
+        );
+        assert_eq!(decision, ClipboardRestoreDecision::Restore);
+    }
 
     fn matrix_backend() -> DeterministicMatrixBackend {
         DeterministicMatrixBackend::new()
