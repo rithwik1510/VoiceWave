@@ -242,8 +242,53 @@ fn ensure_worker_ready_blocking() -> Result<(), InferenceError> {
     Ok(())
 }
 
+/// Drain any complete lines already buffered inside a BufReader.
+///
+/// Defense in depth against stdout pollution between requests: if a prior
+/// request finished after its caller had already given up (e.g., the async
+/// side observed a cancel), the worker's response line may still be sitting
+/// in the BufReader's internal buffer. The next request would then read
+/// that stale response and hit the ID-mismatch branch, killing the worker
+/// and forcing a fresh spawn (visible to the user as a 300-600 ms stall).
+///
+/// This function only consumes bytes that are ALREADY inside the BufReader's
+/// buffer — it never issues a new read to the underlying pipe, so it cannot
+/// block even if the pipe is idle. Returns the number of complete lines
+/// drained; non-zero is a signal that something went out of sync.
+fn drain_buffered_stdout_lines<R: Read>(reader: &mut BufReader<R>) -> usize {
+    let mut drained = 0;
+    loop {
+        // Only loop while the internal buffer contains a complete line.
+        // If there's a partial line (no newline) or the buffer is empty,
+        // stop — reading further would block on the underlying pipe.
+        if !reader.buffer().contains(&b'\n') {
+            break;
+        }
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() {
+            break;
+        }
+        drained += 1;
+    }
+    drained
+}
+
 fn send_worker_request_blocking(request: WorkerRequest) -> Result<WorkerResponse, InferenceError> {
     let mut worker = checkout_worker()?;
+
+    // Before writing a new request, drain any stale response lines that a
+    // prior cancelled request may have left buffered. See
+    // drain_buffered_stdout_lines docs for the race this protects against.
+    if let Some(reader) = worker.stdout.as_mut() {
+        let drained = drain_buffered_stdout_lines(reader);
+        if drained > 0 {
+            eprintln!(
+                "voicewave: drained {drained} stale worker response line(s) before request {}",
+                request.id
+            );
+        }
+    }
+
     let payload = serde_json::to_string(&request).map_err(|err| {
         InferenceError::RuntimeJoin(format!("encode worker request failed: {err}"))
     })?;
@@ -1007,10 +1052,59 @@ fn decode_hyperparams_for(model_id: &str, decode_mode: DecodeMode) -> (u32, u32)
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_hyperparams_for, encode_pcm16_base64, select_worker_backend_preference,
-        thread_cap_for_cores, worker_request_for, FasterWhisperRequestOverrides,
+        decode_hyperparams_for, drain_buffered_stdout_lines, encode_pcm16_base64,
+        select_worker_backend_preference, thread_cap_for_cores, worker_request_for,
+        FasterWhisperRequestOverrides,
     };
     use crate::settings::DecodeMode;
+    use std::io::{BufRead, BufReader, Cursor};
+
+    #[test]
+    fn drain_consumes_complete_lines_already_in_bufreader() {
+        // A prior cancelled request left two response lines buffered. The
+        // drain must consume both so the next request reads its own reply.
+        let data = b"{\"id\":1,\"ok\":true}\n{\"id\":2,\"ok\":true}\n";
+        let mut reader = BufReader::new(Cursor::new(data.to_vec()));
+        // Force the BufReader to fill its internal buffer so buffer() is populated.
+        let _ = reader.fill_buf().expect("fill ok");
+        let drained = drain_buffered_stdout_lines(&mut reader);
+        assert_eq!(drained, 2, "both buffered lines must be drained");
+    }
+
+    #[test]
+    fn drain_is_noop_when_buffer_is_empty() {
+        // Normal case: worker is in sync, no stale data buffered. Drain
+        // must return 0 immediately without blocking or touching the
+        // underlying reader.
+        let data: &[u8] = b"";
+        let mut reader = BufReader::new(Cursor::new(data.to_vec()));
+        let drained = drain_buffered_stdout_lines(&mut reader);
+        assert_eq!(drained, 0);
+    }
+
+    #[test]
+    fn drain_does_not_consume_partial_line_without_newline() {
+        // Regression: drain must NEVER trigger a pipe read to complete a
+        // partial line. If the BufReader has bytes but no newline, stop
+        // immediately — issuing read_line would block on the worker's
+        // stdout pipe, which is exactly what this helper is meant to avoid.
+        let data = b"partial_response_no_newline_yet";
+        let mut reader = BufReader::new(Cursor::new(data.to_vec()));
+        let _ = reader.fill_buf().expect("fill ok");
+        let drained = drain_buffered_stdout_lines(&mut reader);
+        assert_eq!(drained, 0, "partial line must stay buffered, not drained");
+    }
+
+    #[test]
+    fn drain_handles_mixed_complete_and_partial_lines() {
+        // One complete line followed by a partial. Should drain the
+        // complete one and leave the partial alone.
+        let data = b"{\"stale\":true}\npartial_no_newline";
+        let mut reader = BufReader::new(Cursor::new(data.to_vec()));
+        let _ = reader.fill_buf().expect("fill ok");
+        let drained = drain_buffered_stdout_lines(&mut reader);
+        assert_eq!(drained, 1, "complete line drained, partial preserved");
+    }
 
     #[test]
     fn thread_cap_reserves_one_core_for_ui_on_common_laptops() {
