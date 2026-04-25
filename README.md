@@ -6,9 +6,19 @@ VoiceWave is a privacy-first desktop dictation system built for low-latency loca
 
 All transcription runs on-device. The default runtime is `faster-whisper` (CTranslate2) with optional CUDA acceleration; `whisper.cpp` (via `whisper-rs`) ships as an opt-in backend. Windows-first execution scope.
 
-## What's new in 0.3.1
+## Install
 
-Download: [v0.3.1 installer](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/download/v0.3.1/VoiceWave.Local.Core_0.3.1_x64-setup.exe)
+Via [Microsoft winget](https://learn.microsoft.com/windows/package-manager/) (one line, recommended):
+
+```powershell
+winget install VoiceWave.LocalCore
+```
+
+`winget upgrade VoiceWave.LocalCore` keeps you current on every future release.
+
+Or grab the [v0.3.1 installer directly](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/download/v0.3.1/VoiceWave.Local.Core_0.3.1_x64-setup.exe) and run it.
+
+## What's new in 0.3.1
 
 Audio pipeline
 
