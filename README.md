@@ -49,7 +49,7 @@ Or grab the [v0.3.1 installer directly](https://github.com/rithwik1510/VoiceWave
 
 | | **VoiceWave** | Wispr Flow Pro | Dragon Professional | Windows Speech |
 |---|:---:|:---:|:---:|:---:|
-| **Price** | **$4/mo** *(launch: $1.50/mo)* | $15/mo | ~$500 one-time | Free |
+| **Price** | **Free** | $15/mo | ~$500 one-time | Free |
 | **Works Offline** | ✅ Always | ❌ Cloud-only | ✅ Yes | ✅ Yes |
 | **Audio stays on device** | ✅ Never leaves | ❌ Sent to servers | ✅ Local | ✅ Local |
 | **Accuracy engine** | Whisper (local) | Whisper (cloud) | Proprietary | Proprietary |
@@ -258,22 +258,7 @@ See full contract list in [docs/rfc/0001-system-architecture.md](docs/rfc/0001-s
 
 ## ![Monetization](docs/assets/readme/section-monetization.svg) Monetization and Entitlements
 
-Windows baseline monetization is implemented with local encrypted entitlement storage.
-
-Pricing baseline:
-
-1. Base: `~$4/mo~`
-1. Launch offer: `$1.50/mo` for first 3 months, then `$4/mo`
-
-Entitlement statuses:
-
-1. `free`
-1. `pro_active`
-1. `grace`
-1. `expired`
-1. `owner_override`
-
-Pro-gated features include advanced formatting profiles, domain packs, code mode, app-aware profiles, and advanced history controls.
+VoiceWave is free to use. Download, install, and run — no subscription required.
 
 Reference: [docs/monetization.md](docs/monetization.md)
 
