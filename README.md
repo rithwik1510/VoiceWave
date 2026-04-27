@@ -2,9 +2,34 @@
 
 ![VoiceWave hero](docs/assets/readme/hero-banner.svg)
 
-VoiceWave is a privacy-first desktop dictation system built for low-latency local transcription and reliable text insertion.
+> 🎙️ **Offline, privacy-first dictation for Windows** · no cloud · no subscription trap · Whisper accuracy · < 500 ms cold start
 
-All transcription runs on-device. The default runtime is `faster-whisper` (CTranslate2) with optional CUDA acceleration; `whisper.cpp` (via `whisper-rs`) ships as an opt-in backend. Windows-first execution scope.
+```powershell
+winget install VoiceWave.LocalCore
+```
+
+[![GitHub Stars](https://img.shields.io/github/stars/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative?style=flat-square&color=gold&label=⭐%20Stars)](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/stargazers)
+[![GitHub Downloads](https://img.shields.io/github/downloads/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/total?style=flat-square&color=blue&label=Downloads)](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases)
+[![Release](https://img.shields.io/github/v/release/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative?style=flat-square&label=Latest)](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/latest)
+[![License](https://img.shields.io/github/license/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square&logo=windows)](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/latest)
+[![winget](https://img.shields.io/badge/winget-VoiceWave.LocalCore-0078d4?style=flat-square&logo=windows)](https://winstall.app/apps/VoiceWave.LocalCore)
+
+---
+
+## ![Overview](docs/assets/readme/section-overview.svg) Live Demo
+
+<p align="center">
+  <video src="Timeline%201.mp4" controls width="920">
+    <a href="Timeline%201.mp4">▶ Watch VoiceWave Live Demo</a>
+  </video>
+</p>
+
+<p align="center">
+  <em>VoiceWave in action: pill activation, live capture, and instant text insertion — all on-device.</em>
+</p>
+
+---
 
 ## Install
 
@@ -18,21 +43,41 @@ winget install VoiceWave.LocalCore
 
 Or grab the [v0.3.1 installer directly](https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/download/v0.3.1/VoiceWave.Local.Core_0.3.1_x64-setup.exe) and run it.
 
-## What's new in 0.3.1
+---
 
-Audio pipeline
+## Why VoiceWave?
+
+| | **VoiceWave** | Wispr Flow Pro | Dragon Professional | Windows Speech |
+|---|:---:|:---:|:---:|:---:|
+| **Price** | **$4/mo** *(launch: $1.50/mo)* | $15/mo | ~$500 one-time | Free |
+| **Works Offline** | ✅ Always | ❌ Cloud-only | ✅ Yes | ✅ Yes |
+| **Audio stays on device** | ✅ Never leaves | ❌ Sent to servers | ✅ Local | ✅ Local |
+| **Accuracy engine** | Whisper (local) | Whisper (cloud) | Proprietary | Proprietary |
+| **Open Source** | ✅ | ❌ | ❌ | ❌ |
+| **Windows** | ✅ | ✅ | ✅ | ✅ |
+| **Free tier** | ✅ (open source) | 2,000 words/week | ❌ | ✅ (limited) |
+| **Latency** | < 500 ms | Network-dependent | < 1 s | Varies |
+| **Customizable** | ✅ Rust/React | ❌ | ❌ | ❌ |
+
+Wispr Flow Pro pricing source: [wisprflow.ai/pricing](https://wisprflow.ai/pricing) (April 2026 — $15/mo, $12/mo billed annually).
+
+---
+
+## What's New in 0.3.1
+
+**Audio pipeline**
 
 1. Soft word endings ("s", "th", "f", drifted "e") no longer clipped — post-release capture window lifted to 300 ms, with a matching 300 ms trim pad on both capture and inference layers.
 1. Volume-adaptive trim thresholds — quiet speakers and post-pause resumptions now land fully instead of being truncated as silence.
 1. All aggressive DSP (pre-emphasis, gain normalization, noise attenuation, hum notch, soft limiter) defaults to off. Whisper receives audio as captured.
 
-Inference
+**Inference**
 
-1. Cold-start prewarm at app launch — first dictation drops from 2-5 s to ~500 ms.
+1. Cold-start prewarm at app launch — first dictation drops from 2–5 s to ~500 ms.
 1. Extra hallucination guard: `log_prob_threshold = -1.0` on the primary decode alongside the existing `no_speech` and `compression_ratio` floors.
 1. Opt-in `whisper.cpp` models: `wcpp-small.en` (~466 MB) and `wcpp-large-v3-turbo` (~1.6 GB). `Vulkan` backend available behind the `whisper-vulkan` cargo feature.
 
-Reliability
+**Reliability**
 
 1. Push-to-talk release no longer drops silently on key bounce.
 1. Clipboard paste keeps the dictated text — no more "old content pasted" after delayed Ctrl+V.
@@ -40,22 +85,7 @@ Reliability
 1. Worker stdout drained between requests to prevent ID-mismatch stalls after cancel/retry.
 1. Decode threads reserve one CPU core for the UI to stop taskbar stutter during transcription.
 
-Website and distribution
-
-1. `v0.3.0` NSIS installer published to GitHub Releases.
-1. Marketing site refreshed: real app logos in the marquee, editorial section rhythm, "Out Now" particle text.
-
-## ![Overview](docs/assets/readme/section-overview.svg) Live Demo
-
-<p align="center">
-  <img src="docs/assets/readme/voicewave-demo.gif" alt="VoiceWave live demo preview" width="920" />
-</p>
-
-<p align="center">
-  <strong>VoiceWave in action:</strong> pill activation, live capture, and translated output flow.
-</p>
-
-Full-quality recording: [voicewave-demo.mp4](docs/assets/readme/voicewave-demo.mp4)
+---
 
 ## ![Overview](docs/assets/readme/section-overview.svg) Product At A Glance
 
@@ -322,6 +352,8 @@ vendor/                # Local whisper-rs / whisper.cpp vendored deps
 1. Phase III remaining: [docs/PHASE3_REMAINING.md](docs/PHASE3_REMAINING.md)
 1. Phase IV readiness: [docs/PHASE4_READINESS.md](docs/PHASE4_READINESS.md)
 1. Phase V readiness: [docs/PHASE5_READINESS.md](docs/PHASE5_READINESS.md)
+1. Changelog: [CHANGELOG.md](CHANGELOG.md)
+1. Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## ![Verify](docs/assets/readme/section-verify.svg) Local Verification Utility
 
