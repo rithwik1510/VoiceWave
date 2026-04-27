@@ -20,9 +20,7 @@ winget install VoiceWave.LocalCore
 ## ![Overview](docs/assets/readme/section-overview.svg) Live Demo
 
 <p align="center">
-  <video src="https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/download/v0.3.1/timeline-demo.mp4" controls width="920">
-    <a href="https://github.com/rithwik1510/VoiceWave-Open-Source-WhisperFlow-Alternative/releases/download/v0.3.1/timeline-demo.mp4">▶ Watch VoiceWave Live Demo</a>
-  </video>
+  <img src="docs/assets/readme/voicewave-demo.gif" alt="VoiceWave live demo" width="920" />
 </p>
 
 <p align="center">
